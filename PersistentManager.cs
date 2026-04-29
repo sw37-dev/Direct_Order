@@ -1,0 +1,2967 @@
+﻿using GTA;
+using GTA.Math;
+using GTA.Native;
+using GTA.UI;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Windows.Forms;
+using iFruitAddon2;
+
+public partial class PersistentManager : Script
+{
+    private static string L(string key, string fallback)
+    {
+        return Language.Get(key, fallback);
+    }
+
+    // --- Thay thế phần khai báo Folder / file paths ---
+    private static readonly string DataFolder = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "GTA V Mods", "PersistentManager"
+    );
+
+    private static readonly string WeaponsFile = Path.Combine(DataFolder, "persistent_weapons.txt");
+    private static readonly string VehiclesFile = Path.Combine(DataFolder, "persistent_vehicles.txt");
+    private const int MAX_BACKUPS = 1; // số bản backup giữ lại
+    private const bool ENABLE_LOG = false;
+    private const string MMI_CONTACT_NAME = "Mors Mutual Insurance";
+    private const int MMI_CALL_DURATION_MS = 2000;
+
+    private static bool _mmiRestorePending = false;
+    private static int _mmiRestoreDueTime = 0;
+    private bool _mmiContactAdded = false;
+
+    private const string ASSET_RECOVERY_CONTACT_NAME = "Asset Recovery Center";
+    private const int ASSET_RECOVERY_CALL_DURATION_MS = 2000;
+
+    private static bool _assetRecoveryRestorePending = false;
+    private static int _assetRecoveryRestoreDueTime = 0;
+    private bool _assetRecoveryContactAdded = false;
+
+    private static readonly Dictionary<int, List<PersistentWeapon>> _characterWeapons = new Dictionary<int, List<PersistentWeapon>>();
+    private static readonly List<PersistentVehicle> _persistVehicles = new List<PersistentVehicle>();
+
+    // ===== Patch: Refund percent + vehicle name lookup =====
+    private const double REFUND_PERCENT = 0.45;
+
+    // Bảng ánh xạ modelHash -> tên hiển thị
+    private static readonly Dictionary<uint, string> _vehicleNameMap = new Dictionary<uint, string>()
+    {
+    { 0x46699F47u, "Akula" },
+    { 0x20314B42u, "Apocalypse ZR380" },
+    { 0x81BD2ED0u, "Avenger" },
+    { 0xB779A091u, "Adder" },
+    { 0xED552C74u, "Autarch" },
+    { 0x9A474B5Eu, "Avisa" },
+    { 0xFE5F0722u, "Apocalypse Deathbike" },
+    { 0x31F0B376u, "Annihilator" },
+    { 0xF7004C86u, "Atomic Blimp" },
+    { 0x2189D250u, "APC" },
+    { 0x64DE07A1u, "B-11 Strikeforce" },
+    { 0xD8A914D3u, "Banshee GTS" },
+    { 0x4BFCF28Bu, "Bestia GTS" },
+    { 0xA1355F67u, "Blazer Aqua" },
+    { 0x25C5AF13u, "Banshee 900R" },
+    { 0xFD231729u, "Blazer Lifeguard" },
+    { 0x43779C54u, "BMX" },
+    { 0xF9300CC5u, "Bati 801" },
+    { 0xCADD5D2Du, "Bati 801RR" },
+    { 0x05283265u, "BF400" }, // 0x5283265u in list (normalized leading zero)
+    { 0x55365079u, "Brioso 300" },
+    { 0x09E478B3u, "Buffalo EVX" },
+    { 0xB1D95DA0u, "Cheetah" },
+    { 0xC972A155u, "Champion" },
+    { 0x52FF9437u, "Cyclone" },
+    { 0x00ABB0C0u, "Carbon RS" }, // Carbon RS (single entry to avoid duplicate key)
+    { 0x53174EEFu, "Cargobob" },
+    { 0xC1AE4D16u, "Comet" },
+    { 0x991EFC04u, "Comet S2" },
+    { 0xE384DD25u, "Conada" },
+    { 0x067BC037u, "Coquette" }, // 0x67BC037u in list (normalized)
+    { 0x98F65A5Eu, "Coquette D10" },
+    { 0x0796B7A5u, "Coquette D5" }, // 0x796B7A5u in list (normalized)
+    { 0x79C12D73u, "Coquette D10 Pursuit" },
+    { 0x5B531351u, "Deity" },
+    { 0x586765FBu, "Deluxo" },
+    { 0xF1B44F44u, "Diabolus" },
+    { 0x107F392Cu, "Dinghy" },
+    { 0xD876DBE2u, "Desert Raid" },
+    { 0x9C669788u, "Double-T" },
+    { 0xE882E5F6u, "Dubsta" },
+    { 0x5EE005DAu, "Deveste Eight" },
+    { 0xE5B3ACA1u, "Dominator GT" },
+    { 0x4EE74355u, "Emerus" },
+    { 0x8198AEDCu, "Entity XXR" },
+    { 0x6838FC1Du, "Entity MT" },
+    { 0x42D623C7u, "Envisage" },
+    { 0xE4C8C4Du, "F-160 Raiju" },
+    { 0x25676EAFu, "FCR 1000" },
+    { 0x9DC66994u, "FIB" },
+    { 0x9229E4EBu, "Faggio Sport" },
+    { 0x5502626Cu, "FMJ" },
+    { 0xC3F57329u, "FMJ MK V" },
+    { 0x92EF6E04u, "811" },
+    { 0x432EA949u, "FIB (Granger)" },
+    { 0xCE23D3BFu, "Fixter" },
+    { 0x93F09558u, "Future Shock Deathbike" },
+    { 0x8911B9F5u, "Feltzer" },
+    { 0xFD707EDEu, "FH-1 Hunter" },
+    { 0x843B73DEu, "Fieldmaster" },
+    { 0x5BEB3CE0u, "Future Shock Scarab" },
+    { 0x817AFAADu, "Gauntlet" },
+    { 0xDCBC1C3Bu, "Go Go Monkey Blista" },
+    { 0x2C2C2324u, "Gargoyle" },
+    { 0xF0C2A91Fu, "Hakuchou Drag" },
+    { 0x39D6E83Fu, "Hydra" },
+    { 0xB44F0582u, "Hot Rod Blazer" },
+    { 0xC3F25753u, "Howard NX-25" },
+    { 0x4B6C568Au, "Hakuchou" },
+    { 0xFE141DA6u, "Half-track" },
+    { 0xA9EC907Bu, "Ignus" },
+    { 0xCA7C4AE9u, "Inductor" },
+    { 0x5649FF41u, "Itali GTO Stinger TT" },
+    { 0xBB78956Au, "Itali RSX" },
+    { 0x85E8E76Bu, "Itali GTB" },
+    { 0xE33A477Bu, "Itali GTB Custom" },
+    { 0x1B8165D3u, "Jubilee" },
+    { 0xB2A716A3u, "Jester" },
+    { 0x5882160Fu, "Jester RR Widebody" },
+    { 0x4FAF0D70u, "Kosatka" },
+    { 0xD86A0247u, "Krieger" },
+    { 0x206D1B68u, "Khamelion" },
+    { 0xEF813606u, "Kurtz 31 Patrol" },
+    { 0xC07107EEu, "Kraken" },
+    { 0xFF5968CDu, "LM87" },
+    { 0x1BF8D381u, "Lifeguard" },
+    { 0x26321E67u, "Lectro" },
+    { 0xCD93A7DBu, "Liberator" },
+    { 0xC8163646u, "Luiva" },
+    { 0x9A9EB7DEu, "LF-22 Starling" },
+    { 0xC7E55211u, "Locust" },
+    { 0xB79F589Eu, "Luxor Deluxe" },
+    { 0x6EF89CCCu, "Longfin" },
+    { 0xC1CE1183u, "Marquis" },
+    { 0xB53C6C52u, "Mini Tank" },
+    { 0xDA5819A3u, "Massacro (Racecar)" },
+    { 0xD35698EFu, "Mogul" },
+    { 0x79DD18AEu, "Menacer" },
+    { 0x70241EEAu, "Niobe" },
+    { 0x9F6ED5A2u, "Neo" },
+    { 0x91CA96EEu, "Neon" },
+    { 0xDA288376u, "Nemesis" },
+    { 0xAE12C99Cu, "Nightmare Deathbike" },
+    { 0x3DA47243u, "Nero" },
+    { 0xA8E38B01u, "9F Cabrio" },
+    { 0x4131F378u, "Nero Custom" },
+    { 0xA0438767u, "Nightblade" },
+    { 0x34B82784u, "Oppressor" },
+    { 0x7B54A9D3u, "Oppressor Mk 2" },
+    { 0x185E2FF3u, "Outlaw" },
+    { 0x767164D6u, "Osiris" },
+    { 0xB39B0AE6u, "P-996 LAZER" },
+    { 0x9734F3EAu, "Penetrator" },
+    { 0xE2E7D4ABu, "Police Predator" },
+    { 0x33B98FE2u, "Pariah" },
+    { 0x3DC92356u, "P-45 Nokota" },
+    { 0x9DAE1398u, "Phantom Wedge" },
+    { 0xD80F4A44u, "Patriot Mil-Spec" },
+    { 0xF2AE3F81u, "Pipistrello" },
+    { 0x75599EA7u, "Pizza Boy" },
+    { 0xFDEFAEC3u, "Police Bike" },
+    { 0xE644E480u, "Panto" },
+    { 0x2C33B46Eu, "Park Ranger" },
+    { 0xA46462F7u, "Police Rancher" },
+    { 0xAD5E30D7u, "Powersurge" },
+    { 0x71FA16EAu, "Police Cruiser" },
+    { 0xAD6065C0u, "Pyro" },
+    { 0x8B213907u, "R88" },
+    { 0xEEF345ECu, "RC Bandito" },
+    { 0xD7C56D39u, "Raptor" },
+    { 0x2EA68690u, "Rhino Tank" },
+    { 0x04F48FC4u, "Rebla GTS" }, // normalized 0x4F48FC4u
+    { 0xCEB28249u, "Ramp Buggy (DUNE4)" },
+    { 0xED62BFA9u, "Ramp Buggy (DUNE5)" },
+    { 0xE00BADABu, "Ratel" },
+    { 0x0DF381E5u, "Reaper" },
+    { 0x3AF76F4Au, "Rocket Voltic" },
+    { 0xC5DD6967u, "Rogue" },
+    { 0xCABD11E8u, "Ruffian" },
+    { 0x76D7C404u, "Reever" },
+    { 0xFE0A508Cu, "RM-10 Bombushka" },
+    { 0xEA313705u, "RO-86 Alkonost" },
+    { 0x381E10BDu, "Ruiner 2000" },
+    { 0x58E316C7u, "Sanctus" },
+    { 0xD4AE63D9u, "Sea Sparrow" },
+    { 0x97398A4Bu, "Seven-70" },
+    { 0x2E3967B0u, "SM722" },
+    { 0x400F5147u, "Specter Custom" },
+    { 0x2A54C47Du, "SuperVolito" },
+    { 0x9C5E5644u, "SuperVolito Carbon" },
+    { 0x2EF89E46u, "Sanchez (SANCHEZ01)" },
+    { 0xA960B13Eu, "Sanchez (SANCHEZ02)" },
+    { 0xE5BA6858u, "Street Blazer" },
+    { 0xEF2295C9u, "Suntrap" },
+    { 0x28FC5B78u, "Suzume" },
+    { 0xD9F0503Du, "Scramjet" },
+    { 0x4019CB4Cu, "Swift Deluxe" },
+    { 0xE8983F9Fu, "Seabreeze" },
+    { 0x9C32EB57u, "Stanier LE Cruiser" },
+    { 0x3AF8C345u, "Sandking SWB" },
+    { 0x3E48BF23u, "Skylift" },
+    { 0x2C509634u, "Sovereign" },
+    { 0xF4E1AA15u, "Scorcher" },
+    { 0x50A6FB9Cu, "Shinobi" },
+    { 0xE7D2A16Eu, "Shotaro" },
+    { 0x34DBA661u, "Stromberg" },
+    { 0x42BC5E19u, "Slamvan Custom" },
+    { 0xEE6024BCu, "Sultan RS" },
+    { 0x1FD824AFu, "Space Docker" },
+    { 0xEBC24DF2u, "Swift" },
+    { 0x0D17099Du, "Speedo" },
+    { 0x11F58A5Au, "Stryder" },
+    { 0x6322B39Au, "T20" },
+    { 0x58CDAF30u, "Thruster" },
+    { 0x56C8A5EFu, "Toreador" },
+    { 0x1044926Fu, "Tempesta" },
+    { 0x3E3D1F59u, "Thrax" },
+    { 0x761E2AD3u, "Titan" },
+    { 0x3329757Eu, "Titan 250 D" },
+    { 0xF8AB457Bu, "Turismo Omaggio" },
+    { 0x7B406EFBu, "Tyrus" },
+    { 0x3E2E4F8Au, "Tula" },
+    { 0x185484E1u, "Turismo R" },
+    { 0xE99011C2u, "Tyrant" },
+    { 0x10635A0Eu, "10F Widebody" },
+    { 0xA31CB573u, "Tornado Rat Rod" },
+    { 0xBC5DC07Eu, "Taipan" },
+    { 0x4662BCBBu, "Technical Aqua" },
+    { 0x3D7C6410u, "Tezeract" },
+    { 0x6D6F8F43u, "Thrust" },
+    { 0xAA6F980Au, "TM-02 Khanjali" },
+    { 0x96E24857u, "Ultralight" },
+    { 0x8A63C7B9u, "Unmarked Cruiser" },
+    { 0x7397224Cu, "Vagner" },
+    { 0xB5EF4C33u, "Vigilante" },
+    { 0xF79A00F7u, "Vader" },
+    { 0x11CBC051u, "Verus" },
+    { 0xAF599F01u, "Vindicator" },
+    { 0xC4810400u, "Visione" },
+    { 0x142E0DC3u, "Vacca" },
+    { 0x5BFA5C4Bu, "Valkyrie MOD.0" },
+    { 0x1AAD0DEDu, "Volatol" },
+    { 0xAE2CC02Au, "Vivanite" },
+    { 0xC58DA34Au, "Weaponized Dinghy" },
+    { 0xB7D9F7F1u, "Weaponized Tampa" },
+    { 0x7E8F677Fu, "X80 Proto" },
+    { 0x36B4A8A9u, "XA-21" },
+    { 0x95F6A2C9u, "X-treme" },
+    { 0x2D3BD401u, "Z-Type" },
+    { 0xAC5DF515u, "Zentorno" },
+    { 0xDE05FB87u, "Zombie Chopper" },
+    { 0x2714AA93u, "Zeno" },
+    { 0xD757D97Du, "Zorrusso" },
+    { 0x4C8DBA51u, "Zhaba" },
+};
+
+    private T SafeCall<T>(Func<T> fn, T fallback = default)
+    {
+        try
+        {
+            if (fn == null) return fallback;
+            return fn();
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    // --- safety caps & throttles ---
+    private const int MAX_PERSIST_VEHICLES = 30;      // giới hạn tổng số entry persistent vehicle
+    private const int MAX_WEAPON_ENTRIES_PER_CHAR = 128; // cap weapons per character to avoid blowup
+    private const int VEHICLE_POSITIONS_PER_TICK = 5; // process 5 vehicles / tick (throttle)
+    private const int BLIPS_PER_TICK = 20;
+    private const int SAVE_BACKOFF_MS = 10000;         // auto-save backoff 10s (thay cho 5s)
+    private int _vehiclePositionsCursor = 0;
+    private int _blipsCursor = 0;
+    private int _lastSaveAttempt = 0;
+
+    // per-character cap: mỗi nhân vật chỉ được lưu tối đa N xe
+    private const int MAX_VEHICLES_PER_CHAR = 10;
+
+    // add these near the top with other private fields
+    private int _weaponFullScanCounter = 0;
+    private const int WEAPON_FULL_SCAN_TICKS = 10; // mỗi 10 tick (~10s) làm 1 full-scan
+    private const int MAX_COMPONENTS_PER_WEAPON = 16; // cap components để tránh blowup
+
+    private bool _loaded = false;
+    private int _readyTime;
+    private int _lastPedHandle = 0;
+
+    private static volatile bool _weaponsDirty = false;
+    private static volatile bool _vehiclesDirty = false;
+    private static volatile bool _dealershipMenuDirty = false;
+
+    private int _lastSaveTime = 0;
+    private int _maintenanceClock = 0;
+    private int _weaponIdleCounter = 0;
+
+    // NEW: track player vehicle state to detect exit events
+    private bool _playerWasInVehicle = false;
+    private Vehicle _lastPlayerVehicle = null;
+
+    public PersistentManager()
+    {
+        Interval = 1000;
+        Tick += OnTick;
+        KeyDown += OnKeyDown;
+        _readyTime = Game.GameTime + 2500;
+    }
+
+    private void OnTick(object sender, EventArgs e)
+    {
+        try
+        {
+            if (Game.IsLoading) return;
+
+            // --- KHỐI INIT (Chạy 1 lần) ---
+            if (!_loaded)
+            {
+                if (Game.GameTime >= _readyTime)
+                {
+                    _loaded = true;
+                    TryLoadAll();
+                    _lastPedHandle = GetCurrentPedHandleSafe();
+
+                    try { EnforceF2OnlyAfterLoad(); }
+                    catch (Exception ex) { Log("OnTick: EnforceF2OnlyAfterLoad failed: " + ex.Message); }
+
+                    EnsureMmiContactRegistered();
+                    EnsureAssetRecoveryContactRegistered();
+                    CreateBlipsForAllLoadedVehicles();
+                }
+                else return;
+            }
+
+            // --- Dealership UI / marker logic ---
+            UpdateDealershipWorldState();
+            UpdateDealershipSignalState();
+
+            if (_dealershipMenuDirty)
+            {
+                RefreshDealershipMenu();
+                _dealershipMenuDirty = false;
+            }
+
+            if ((_dealershipMenu != null && _dealershipMenu.Visible) ||
+                (_dealershipDetailMenu != null && _dealershipDetailMenu.Visible) ||
+                (_dealershipBulkMenu != null && _dealershipBulkMenu.Visible))
+            {
+                _menuPool.Process();
+                FlushUiActions();
+            }
+            else
+            {
+                FlushUiActions();
+            }
+
+            bool dealershipMenuOpen = (_dealershipMenu != null && _dealershipMenu.Visible) ||
+                 (_dealershipDetailMenu != null && _dealershipDetailMenu.Visible) ||
+                 (_dealershipBulkMenu != null && _dealershipBulkMenu.Visible);
+
+            if (dealershipMenuOpen)
+                Interval = 0;
+            else if (_mmiRestorePending)
+                Interval = 0;
+            else if (_dealershipSignalActive)
+                Interval = 100;
+            else
+                Interval = _dealershipNeedsFastTick ? 0 : 1000;
+
+            // --- KHỐI LOGIC CHÍNH ---
+
+            Ped player = Game.Player.Character;
+            int currentHandle = (player != null && player.Exists()) ? player.Handle : 0;
+
+            if (currentHandle != 0 && currentHandle != _lastPedHandle)
+            {
+                _lastPedHandle = currentHandle;
+            }
+
+            try
+            {
+                bool currentlyInVehicle = (player != null && player.Exists() && player.IsInVehicle());
+
+                if (currentlyInVehicle)
+                {
+                    _lastPlayerVehicle = player.CurrentVehicle;
+                    _playerWasInVehicle = true;
+                }
+                else
+                {
+                    if (_playerWasInVehicle)
+                    {
+                        if (_lastPlayerVehicle != null)
+                        {
+                            OnPlayerExitedVehicle(_lastPlayerVehicle);
+                        }
+
+                        _playerWasInVehicle = false;
+                        _lastPlayerVehicle = null;
+                    }
+                }
+            }
+            catch (Exception ex) { Log("OnTick: vehicle-exit detect error: " + ex.Message); }
+
+            UpdateVehiclePositionsLogic();
+            UpdateCurrentWeaponState();
+
+            UpdateMmiContactCall();
+            EnsureAssetRecoveryContactRegistered();
+            UpdateAssetRecoveryContactCall();
+
+            _maintenanceClock++;
+            if (_maintenanceClock >= 3)
+            {
+                UpdatePersistentVehicleState();
+                UpdateBlips();
+                _maintenanceClock = 0;
+            }
+
+            if ((_weaponsDirty || _vehiclesDirty) && (Game.GameTime - _lastSaveTime > SAVE_BACKOFF_MS))
+            {
+                if (Game.GameTime - _lastSaveAttempt > SAVE_BACKOFF_MS)
+                {
+                    _lastSaveAttempt = Game.GameTime;
+
+                    if (_weaponsDirty)
+                    {
+                        try { SaveWeaponFileInternal(); }
+                        catch (Exception ex) { Log("OnTick: SaveWeaponFileInternal failed: " + ex.Message); }
+                    }
+
+                    if (_vehiclesDirty)
+                    {
+                        try { SaveVehiclesFileInternal(); }
+                        catch (Exception ex) { Log("OnTick: SaveVehiclesFileInternal failed: " + ex.Message); }
+                    }
+
+                    _lastSaveTime = Game.GameTime;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("OnTick exception: " + ex.ToString());
+        }
+    }
+
+    private List<PersistentVehicle> GetOwnedVehiclesForCurrentPlayer()
+    {
+        try
+        {
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+                return new List<PersistentVehicle>();
+
+            int ownerHash = player.Model.Hash;
+
+            lock (_persistVehicles)
+            {
+                return _persistVehicles
+                    .Where(v => v.OwnerModelHash == ownerHash)
+                    .ToList();
+            }
+        }
+        catch
+        {
+            return new List<PersistentVehicle>();
+        }
+    }
+
+    private void EnsureAssetRecoveryContactRegistered()
+    {
+        try
+        {
+            if (_assetRecoveryContactAdded)
+                return;
+
+            var phone = CustomiFruit.GetCurrentInstance();
+            if (phone == null || phone.Contacts == null)
+                return;
+
+            if (phone.Contacts.Any(c =>
+                string.Equals(c.Name, ASSET_RECOVERY_CONTACT_NAME, StringComparison.OrdinalIgnoreCase)))
+            {
+                _assetRecoveryContactAdded = true;
+                return;
+            }
+
+            var arc = new iFruitContact(ASSET_RECOVERY_CONTACT_NAME)
+            {
+                Active = true,
+                DialTimeout = ASSET_RECOVERY_CALL_DURATION_MS,
+                Bold = false,
+                Icon = ContactIcon.MP_StripclubPr,
+            };
+
+            arc.Answered += OnAssetRecoveryContactAnswered;
+            phone.Contacts.Add(arc);
+
+            _assetRecoveryContactAdded = true;
+            Log("Asset Recovery Center contact registered into iFruitAddon2 contacts.");
+        }
+        catch (Exception ex)
+        {
+            Log("EnsureAssetRecoveryContactRegistered failed: " + ex);
+        }
+    }
+
+    private void OnAssetRecoveryContactAnswered(iFruitContact sender)
+    {
+        try
+        {
+            _assetRecoveryRestorePending = true;
+            _assetRecoveryRestoreDueTime = Game.GameTime + 1;
+        }
+        catch (Exception ex)
+        {
+            Log("OnAssetRecoveryContactAnswered failed: " + ex);
+        }
+    }
+
+    private void UpdateAssetRecoveryContactCall()
+    {
+        try
+        {
+            if (!_assetRecoveryRestorePending)
+                return;
+
+            if (Game.GameTime < _assetRecoveryRestoreDueTime)
+                return;
+
+            _assetRecoveryRestorePending = false;
+
+            try
+            {
+                Game.Player.Character.Task.PutAwayMobilePhone();
+            }
+            catch { }
+
+            try
+            {
+                var phone = CustomiFruit.GetCurrentInstance();
+                phone?.Close(0);
+            }
+            catch { }
+
+            TriggerAssetRecoveryCenter();
+        }
+        catch (Exception ex)
+        {
+            Log("UpdateAssetRecoveryContactCall failed: " + ex);
+        }
+    }
+
+    private void TriggerAssetRecoveryCenter()
+    {
+        try
+        {
+            if ((_dealershipMenu != null && _dealershipMenu.Visible) ||
+                (_dealershipDetailMenu != null && _dealershipDetailMenu.Visible) ||
+                (_dealershipBulkMenu != null && _dealershipBulkMenu.Visible))
+                return;
+
+            if (IsPlayerInsideDealershipZone())
+            {
+                OpenDealershipMenu(PickRandomDealershipAlias());
+            }
+            else
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    L("PM_Subtitle_VisitDealershipToSellVehicle",
+                      "~HUD_COLOUR_DEGEN_YELLOW~Bạn cần đến đại lý để bán phương tiện"),
+                    3000);
+
+                StartDealershipSignal();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("TriggerAssetRecoveryCenter failed: " + ex.ToString());
+        }
+    }
+
+    // ---------------- Key handling (F2 restore) ----------------
+    private void OnKeyDown(object sender, KeyEventArgs e)
+    {
+        try
+        {
+            // Đã chuyển trigger đại lý sang contact điện thoại
+        }
+        catch (Exception ex)
+        {
+            Log("OnKeyDown: " + ex.ToString());
+        }
+    }
+
+    private void EnsureMmiContactRegistered()
+    {
+        try
+        {
+            if (_mmiContactAdded)
+                return;
+
+            var phone = CustomiFruit.GetCurrentInstance();
+            if (phone == null || phone.Contacts == null)
+                return;
+
+            if (phone.Contacts.Any(c =>
+                string.Equals(c.Name, MMI_CONTACT_NAME, StringComparison.OrdinalIgnoreCase)))
+            {
+                _mmiContactAdded = true;
+                return;
+            }
+
+            var mmi = new iFruitContact(MMI_CONTACT_NAME)
+            {
+                Active = true,
+                DialTimeout = 2000,
+                Bold = false,
+                Icon = ContactIcon.MP_MorsMutual,
+            };
+
+            mmi.Answered += OnMmiContactAnswered;
+            phone.Contacts.Add(mmi);
+
+            _mmiContactAdded = true;
+            Log("MMI contact registered into iFruitAddon2 contacts.");
+        }
+        catch (Exception ex)
+        {
+            Log("EnsureMmiContactRegistered failed: " + ex);
+        }
+    }
+
+    private void OnMmiContactAnswered(iFruitContact sender)
+    {
+        try
+        {
+            _mmiRestorePending = true;
+            _mmiRestoreDueTime = Game.GameTime + MMI_CALL_DURATION_MS;
+
+            Log("MMI call answered, scheduled restore in 2 seconds.");
+        }
+        catch (Exception ex)
+        {
+            Log("OnMmiContactAnswered failed: " + ex);
+        }
+    }
+
+    private void UpdateMmiContactCall()
+    {
+        try
+        {
+            if (!_mmiRestorePending)
+                return;
+
+            if (Game.GameTime < _mmiRestoreDueTime)
+                return;
+
+            _mmiRestorePending = false;
+
+            RestoreForCurrentPlayer();
+
+            try
+            {
+                Game.Player.Character.Task.PutAwayMobilePhone();
+            }
+            catch { }
+
+            try
+            {
+                var phone = CustomiFruit.GetCurrentInstance();
+                phone?.Close(0);
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            Log("UpdateMmiContactCall failed: " + ex);
+        }
+    }
+
+    // ================= Vũ Khí =================
+
+    public static void RegisterCurrentWeapon()
+    {
+        try
+        {
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists()) return;
+            Weapon currentWeapon = player.Weapons.Current;
+            if (currentWeapon == null || currentWeapon.Hash == WeaponHash.Unarmed) return;
+            RegisterWeaponInternal(player, currentWeapon);
+        }
+        catch (Exception ex) { Log("RegisterCurrentWeapon: " + ex.ToString()); }
+    }
+
+    public static void RegisterWeaponHash(uint weaponHash)
+    {
+        try
+        {
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists()) return;
+            if (!player.Weapons.HasWeapon((WeaponHash)weaponHash))
+            {
+                player.Weapons.Give((WeaponHash)weaponHash, 0, false, true);
+            }
+            RegisterWeaponInternal(player, player.Weapons[(WeaponHash)weaponHash]);
+        }
+        catch (Exception ex) { Log("RegisterWeaponHash: " + ex.ToString()); }
+    }
+
+    private static void RegisterWeaponInternal(Ped player, Weapon w)
+    {
+        if (player == null || w == null) return;
+        int charHash = player.Model.Hash;
+        lock (_characterWeapons)
+        {
+            try
+            {
+                if (!_characterWeapons.ContainsKey(charHash))
+                    _characterWeapons[charHash] = new List<PersistentWeapon>();
+
+                var list = _characterWeapons[charHash];
+                var existing = list.FirstOrDefault(x => x.Hash == (uint)w.Hash);
+
+                // Read current active components
+                List<uint> currentComponents = new List<uint>();
+                foreach (var comp in w.Components)
+                {
+                    try
+                    {
+                        if (comp.Active) currentComponents.Add((uint)comp.ComponentHash);
+                    }
+                    catch { }
+                }
+                if (currentComponents.Count > MAX_COMPONENTS_PER_WEAPON)
+                    currentComponents = currentComponents.Take(MAX_COMPONENTS_PER_WEAPON).ToList();
+
+                if (existing != null)
+                {
+                    bool changed = false;
+                    if (existing.Ammo != w.Ammo) { existing.Ammo = w.Ammo; changed = true; }
+                    int tint = (int)w.Tint;
+                    if (existing.Tint != tint) { existing.Tint = tint; changed = true; }
+
+                    // compare components quickly
+                    if (existing.Components == null) existing.Components = new List<uint>();
+                    if (existing.Components.Count != currentComponents.Count || !existing.Components.SequenceEqual(currentComponents))
+                    {
+                        existing.Components = new List<uint>(currentComponents);
+                        changed = true;
+                    }
+
+                    if (changed) _weaponsDirty = true;
+                }
+                else
+                {
+                    if (list.Count >= MAX_WEAPON_ENTRIES_PER_CHAR)
+                    {
+                        Log($"RegisterWeaponInternal: character 0x{charHash:X} reached MAX_WEAPON_ENTRIES_PER_CHAR, ignoring additional weapon 0x{w.Hash:X}");
+                    }
+                    else
+                    {
+                        list.Add(new PersistentWeapon
+                        {
+                            Hash = (uint)w.Hash,
+                            Ammo = w.Ammo,
+                            Tint = (int)w.Tint,
+                            Components = currentComponents
+                        });
+                        _weaponsDirty = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("RegisterWeaponInternal: " + ex.ToString());
+            }
+        }
+    }
+
+    // --- Patch: Refresh a PersistentVehicle from its runtime Vehicle (best-effort, safe) ---
+    private static void RefreshPersistentFromRuntime(PersistentVehicle pv)
+    {
+        if (pv == null) return;
+        try
+        {
+            var v = pv.RuntimeVehicle;
+            if (v == null) return;
+            bool exists = false;
+            try { exists = v.Exists(); } catch { exists = false; }
+            if (!exists) return;
+
+            // Ensure mod kit before reading
+            try { Function.Call(Hash.SET_VEHICLE_MOD_KIT, v.Handle, 0); } catch { }
+
+            // Read mods 0..49
+            var mods = new Dictionary<int, int>();
+            for (int modType = 0; modType <= 49; modType++)
+            {
+                try
+                {
+                    int idx = Function.Call<int>(Hash.GET_VEHICLE_MOD, v.Handle, modType);
+                    if (idx >= 0) mods[modType] = idx;
+                }
+                catch { /* ignore per-mod errors */ }
+            }
+            pv.Mods = mods;
+
+            // Turbo (toggle)
+            try { pv.TurboOn = Function.Call<bool>(Hash.IS_TOGGLE_MOD_ON, v.Handle, 18); } catch { }
+
+            // Livery
+            try
+            {
+                int liv = Function.Call<int>(Hash.GET_VEHICLE_LIVERY, v.Handle);
+                if (liv >= 0) pv.SavedLivery = liv;
+                else pv.SavedLivery = null;
+            }
+            catch { }
+
+            // Colours
+            try
+            {
+                var out1 = new OutputArgument();
+                var out2 = new OutputArgument();
+                Function.Call(Hash.GET_VEHICLE_COLOURS, v.Handle, out1, out2);
+                pv.PrimaryColor = out1.GetResult<int>();
+                pv.SecondaryColor = out2.GetResult<int>();
+            }
+            catch { }
+
+            // Extra colours (pearl / wheel)
+            try
+            {
+                var pearl = new OutputArgument();
+                var wheel = new OutputArgument();
+                Function.Call(Hash.GET_VEHICLE_EXTRA_COLOURS, v.Handle, pearl, wheel);
+                pv.PearlColor = pearl.GetResult<int>();
+                pv.WheelColor = wheel.GetResult<int>();
+            }
+            catch { }
+
+            // Window tint
+            try { pv.WindowTint = Function.Call<int>(Hash.GET_VEHICLE_WINDOW_TINT, v.Handle); } catch { }
+
+            // Tyre smoke
+            try
+            {
+                var r = new OutputArgument();
+                var g = new OutputArgument();
+                var b = new OutputArgument();
+                Function.Call(Hash.GET_VEHICLE_TYRE_SMOKE_COLOR, v.Handle, r, g, b);
+                pv.TyreSmokeColor[0] = r.GetResult<int>();
+                pv.TyreSmokeColor[1] = g.GetResult<int>();
+                pv.TyreSmokeColor[2] = b.GetResult<int>();
+            }
+            catch { }
+
+            // Extras: record which extras exist on this model
+            try
+            {
+                pv.ExtrasExist = new List<int>();
+                for (int ex = 1; ex <= 20; ex++)
+                {
+                    try
+                    {
+                        if (Function.Call<bool>(Hash.DOES_EXTRA_EXIST, v.Handle, ex))
+                            pv.ExtrasExist.Add(ex);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            // Neon colour (if available)
+            try
+            {
+                var nr = new OutputArgument();
+                var ng = new OutputArgument();
+                var nb = new OutputArgument();
+                Function.Call(Hash.GET_VEHICLE_NEON_COLOUR, v.Handle, nr, ng, nb);
+                pv.NeonColor = new int[] { nr.GetResult<int>(), ng.GetResult<int>(), nb.GetResult<int>() };
+            }
+            catch { /* ignore if not supported */ }
+
+            // Dashboard colour (best-effort)
+            try
+            {
+                var outDash = new OutputArgument();
+                Function.Call(Hash.GET_VEHICLE_EXTRA_COLOUR_6, v.Handle, outDash);
+                pv.DashboardColor = outDash.GetResult<int>();
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            Log("RefreshPersistentFromRuntime failed: " + ex.ToString());
+        }
+    }
+
+    // Call this after you finish applying mods to a Vehicle in other mods
+    public static void UpdatePersistentFromVehicle(Vehicle v)
+    {
+        try
+        {
+            if (v == null || !v.Exists()) return;
+            lock (_persistVehicles)
+            {
+                // prefer exact runtime handle match
+                var pv = _persistVehicles.FirstOrDefault(p => p.RuntimeVehicle != null && p.RuntimeVehicle.Handle == v.Handle);
+                if (pv == null)
+                {
+                    // fallback: model + proximity + owner
+                    int ownerHash = Game.Player?.Character?.Model.Hash ?? 0;
+                    uint model = (uint)v.Model.Hash;
+                    var pos = v.Position;
+                    pv = _persistVehicles.FirstOrDefault(p => p.ModelHash == model && p.OwnerModelHash == ownerHash && p.Position.DistanceTo2D(pos) < 5f);
+                }
+
+                if (pv != null)
+                {
+                    // Refresh and mark dirty
+                    RefreshPersistentFromRuntime(pv);
+                    _vehiclesDirty = true;
+                }
+                else
+                {
+                    // not found -> create/register a new persistent entry
+                    try
+                    {
+                        RegisterVehicle(v, null);
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("UpdatePersistentFromVehicle failed: " + ex.ToString());
+        }
+    }
+
+    private void UpdateCurrentWeaponState()
+    {
+        try
+        {
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists()) return;
+
+            // Nếu đang hành động (bắn/nhắm) -> reset idle counter để tránh cập nhật khi đang dùng
+            if (Game.IsControlPressed(GTA.Control.Attack) || Game.IsControlPressed(GTA.Control.Aim))
+            {
+                _weaponIdleCounter = 0;
+                return;
+            }
+
+            // tăng bộ đếm idle; chỉ tiếp tục khi đã idle đủ
+            _weaponIdleCounter++;
+            if (_weaponIdleCounter < 2) return;
+
+            int charHash = player.Model.Hash;
+
+            // 1) Update current weapon ammo quickly (low-cost)
+            try
+            {
+                Weapon currentWep = player.Weapons.Current;
+                if (currentWep != null && currentWep.Hash != WeaponHash.Unarmed)
+                {
+                    lock (_characterWeapons)
+                    {
+                        if (!_characterWeapons.ContainsKey(charHash))
+                        {
+                            // ensure list exists but don't create excessive entries
+                            _characterWeapons[charHash] = new List<PersistentWeapon>();
+                        }
+
+                        var list = _characterWeapons[charHash];
+                        var stored = list.FirstOrDefault(x => x.Hash == (uint)currentWep.Hash);
+                        if (stored != null)
+                        {
+                            // ammo change?
+                            if (stored.Ammo != currentWep.Ammo)
+                            {
+                                stored.Ammo = currentWep.Ammo;
+                                _weaponsDirty = true;
+                                _weaponIdleCounter = 0;
+                            }
+
+                            // tint change?
+                            int tint = (int)currentWep.Tint;
+                            if (stored.Tint != tint)
+                            {
+                                stored.Tint = tint;
+                                _weaponsDirty = true;
+                            }
+                        }
+                        else
+                        {
+                            // Add if under cap
+                            if (list.Count < MAX_WEAPON_ENTRIES_PER_CHAR)
+                            {
+                                var comps = new List<uint>();
+                                foreach (var c in currentWep.Components)
+                                {
+                                    try
+                                    {
+                                        if (c.Active) comps.Add((uint)c.ComponentHash);
+                                    }
+                                    catch { }
+                                }
+                                if (comps.Count > MAX_COMPONENTS_PER_WEAPON) comps = comps.Take(MAX_COMPONENTS_PER_WEAPON).ToList();
+
+                                list.Add(new PersistentWeapon
+                                {
+                                    Hash = (uint)currentWep.Hash,
+                                    Ammo = currentWep.Ammo,
+                                    Tint = (int)currentWep.Tint,
+                                    Components = comps
+                                });
+                                _weaponsDirty = true;
+                            }
+                            else
+                            {
+                                Log($"UpdateCurrentWeaponState: char 0x{charHash:X} reached MAX weapons, skipping add of 0x{currentWep.Hash:X}");
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Log("UpdateCurrentWeaponState current-wep: " + ex.ToString()); }
+
+            // 2) Periodic FULL SCAN of all player's weapons (throttled to WEAPON_FULL_SCAN_TICKS)
+            _weaponFullScanCounter++;
+            if (_weaponFullScanCounter >= WEAPON_FULL_SCAN_TICKS)
+            {
+                _weaponFullScanCounter = 0;
+                try
+                {
+                    lock (_characterWeapons)
+                    {
+                        if (!_characterWeapons.ContainsKey(charHash))
+                            _characterWeapons[charHash] = new List<PersistentWeapon>();
+
+                        var list = _characterWeapons[charHash];
+
+                        // Build a temporary map of current in-game weapons for faster lookup
+                        var currentMap = new Dictionary<uint, (int ammo, int tint, List<uint> components)>();
+
+                        foreach (var w in player.Weapons)
+                        {
+                            try
+                            {
+                                if (w == null || w.Hash == WeaponHash.Unarmed) continue;
+                                var comps = new List<uint>();
+                                foreach (var c in w.Components)
+                                {
+                                    try { if (c.Active) comps.Add((uint)c.ComponentHash); } catch { }
+                                }
+                                if (comps.Count > MAX_COMPONENTS_PER_WEAPON) comps = comps.Take(MAX_COMPONENTS_PER_WEAPON).ToList();
+
+                                currentMap[(uint)w.Hash] = (w.Ammo, (int)w.Tint, comps);
+                            }
+                            catch { /* ignore per-weapon errors */ }
+                        }
+
+                        // Sync stored list with currentMap: update ammo/tint/components when changed
+                        foreach (var wp in list)
+                        {
+                            try
+                            {
+                                if (currentMap.TryGetValue(wp.Hash, out var info))
+                                {
+                                    bool changed = false;
+                                    if (wp.Ammo != info.ammo) { wp.Ammo = info.ammo; changed = true; }
+                                    if (wp.Tint != info.tint) { wp.Tint = info.tint; changed = true; }
+
+                                    // components comparison (cheap): lengths first, then sequence
+                                    var newComps = info.components;
+                                    bool compsDifferent = false;
+                                    if (wp.Components == null) wp.Components = new List<uint>();
+                                    if (wp.Components.Count != newComps.Count) compsDifferent = true;
+                                    else
+                                    {
+                                        for (int i = 0; i < newComps.Count; i++)
+                                        {
+                                            if (wp.Components[i] != newComps[i]) { compsDifferent = true; break; }
+                                        }
+                                    }
+                                    if (compsDifferent)
+                                    {
+                                        wp.Components = newComps;
+                                        changed = true;
+                                    }
+
+                                    if (changed) _weaponsDirty = true;
+                                }
+                            }
+                            catch { }
+                        }
+
+                        // Also: add any in-game weapons not yet tracked (respect cap)
+                        foreach (var kv in currentMap)
+                        {
+                            if (!list.Any(x => x.Hash == kv.Key))
+                            {
+                                if (list.Count >= MAX_WEAPON_ENTRIES_PER_CHAR) break;
+                                list.Add(new PersistentWeapon
+                                {
+                                    Hash = kv.Key,
+                                    Ammo = kv.Value.ammo,
+                                    Tint = kv.Value.tint,
+                                    Components = kv.Value.components
+                                });
+                                _weaponsDirty = true;
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex) { Log("UpdateCurrentWeaponState full-scan: " + ex.ToString()); }
+            }
+        }
+        catch (Exception ex) { Log("UpdateCurrentWeaponState: " + ex.ToString()); }
+    }
+
+    // Restore logic (F2)
+    private void RestoreForCurrentPlayer()
+    {
+        try
+        {
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+            {
+                Notification.Show(L("PM_Restore_NoCharacter", "~y~Không có nhân vật (restore thất bại)."));
+                return;
+            }
+
+            int charHash = player.Model.Hash;
+            int restoredWeapons = 0;
+            int vehiclesMarked = 0;
+            int vehiclesSpawned = 0;
+
+            // --- Weapons
+            lock (_characterWeapons)
+            {
+                try
+                {
+                    if (_characterWeapons.ContainsKey(charHash))
+                    {
+                        var list = _characterWeapons[charHash];
+                        var copy = list.ToList(); // iterate a copy for safety
+
+                        foreach (var pw in copy)
+                        {
+                            try
+                            {
+                                bool valid = false;
+                                try { valid = Function.Call<bool>(Hash.IS_WEAPON_VALID, pw.Hash); } catch { valid = false; }
+                                if (!valid)
+                                {
+                                    Log($"Restore: weapon 0x{pw.Hash:X} invalid => skip");
+                                    continue;
+                                }
+
+                                try
+                                {
+                                    // Give weapon with ammo: clamp ammo >= 0
+                                    int ammoToGive = Math.Max(0, pw.Ammo);
+
+                                    // Give the weapon (do not equip)
+                                    player.Weapons.Give((WeaponHash)pw.Hash, ammoToGive, false, false);
+
+                                    // Set properties defensively
+                                    var w = player.Weapons[(WeaponHash)pw.Hash];
+                                    if (w != null)
+                                    {
+                                        try { w.Ammo = ammoToGive; } catch { }
+                                        try { w.Tint = (WeaponTint)pw.Tint; } catch { }
+                                    }
+
+                                    // Native fallback for ammo
+                                    try { Function.Call(Hash.SET_PED_AMMO, player.Handle, pw.Hash, ammoToGive); } catch { }
+
+                                    // Give components (if any) - cap to avoid error
+                                    if (pw.Components != null && pw.Components.Count > 0)
+                                    {
+                                        int compCount = 0;
+                                        foreach (var c in pw.Components)
+                                        {
+                                            try
+                                            {
+                                                if (compCount >= MAX_COMPONENTS_PER_WEAPON) break;
+                                                Function.Call(Hash.GIVE_WEAPON_COMPONENT_TO_PED, player.Handle, pw.Hash, c);
+                                                compCount++;
+                                            }
+                                            catch { }
+                                        }
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Log("Restore weapon give failed: " + ex.ToString());
+                                    continue;
+                                }
+
+                                restoredWeapons++;
+                            }
+                            catch (Exception ex) { Log("Restore weapon loop error: " + ex.ToString()); }
+                        }
+
+                        // IMPORTANT: Do NOT remove the stored weapons entry here.
+                        // Keeping stored data allows multiple restores (like vehicles) and keeps ammo/components persistent.
+                        // We still mark dirty to ensure file-synced state remains consistent if we changed anything.
+                        _weaponsDirty = true;
+                    }
+                }
+                catch (Exception ex) { Log("RestoreForCurrentPlayer weapons block: " + ex.ToString()); }
+            }
+
+            // --- Vehicles: (unchanged code from original) ---
+            List<PersistentVehicle> owned;
+            lock (_persistVehicles)
+            {
+                owned = _persistVehicles.Where(p => p.OwnerModelHash == charHash).ToList();
+            }
+
+            foreach (var pv in owned)
+            {
+                try
+                {
+                    if (pv.RuntimeVehicle != null && pv.RuntimeVehicle.Exists())
+                    {
+                        Log($"Restore: vehicle model 0x{pv.ModelHash:X} already exists in world -> skip marking.");
+                        continue;
+                    }
+
+                    Model m = new Model((int)pv.ModelHash);
+                    bool modelValid = (m.IsValid && m.IsInCdImage);
+                    if (!modelValid)
+                    {
+                        Log($"Restore: model 0x{pv.ModelHash:X} invalid or not in cdimage -> cannot restore (skip).");
+                        m.MarkAsNoLongerNeeded();
+                        continue;
+                    }
+
+                    lock (_persistVehicles)
+                    {
+                        pv.AutoSpawnEnabled = true;
+                        try
+                        {
+                            SafeRemoveBlip(pv.MapBlip);
+                            pv.MapBlip = World.CreateBlip(pv.Position);
+                            if (pv.MapBlip != null)
+                            {
+                                pv.MapBlip.IsShortRange = false;
+                                pv.MapBlip.Sprite = GetVehicleBlipSprite(pv.ModelHash);
+                                pv.MapBlip.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
+                                pv.MapBlip.Name = "Phương tiện đã trả lại";
+                            }
+                        }
+                        catch (Exception ex) { Log("Restore create static blip: " + ex.ToString()); pv.MapBlip = null; }
+
+                        _vehiclesDirty = true;
+                        vehiclesMarked++;
+                    }
+
+                    try
+                    {
+                        var playerPos = Game.Player.Character.Position;
+                        if (playerPos.DistanceTo(pv.Position) < 150f)
+                        {
+                            SpawnPersistentVehicle(pv);
+                            if (pv.RuntimeVehicle != null && pv.RuntimeVehicle.Exists()) vehiclesSpawned++;
+                        }
+                    }
+                    catch (Exception ex) { Log("Restore spawn-on-restore check: " + ex.ToString()); }
+                }
+                catch (Exception ex) { Log("Restore vehicle loop error: " + ex.ToString()); }
+            }
+
+            ShowFeedMessage(
+                    L("PM_Feed_RestoreSender", "Mors Mutual"),
+                    L("PM_Feed_RestoreSubject", "Hoàn trả vật phẩm"),
+                    string.Format(
+                    L("PM_Feed_RestoreBody",
+                    "Trả vật hoàn tất: ~g~{0}~s~ vũ khí đã trả, ~y~{1}~s~ phương tiện kích hoạt ({2} đã được trả lại)."),
+                    restoredWeapons, vehiclesMarked, vehiclesSpawned)
+            );
+            Log($"RestoreForCurrentPlayer: restoredWeapons={restoredWeapons}, vehiclesMarked={vehiclesMarked}, vehiclesSpawned={vehiclesSpawned}, forChar=0x{charHash:X}");
+        }
+        catch (Exception ex)
+        {
+            Log("RestoreForCurrentPlayer failed: " + ex.ToString());
+            Notification.Show(L("PM_RestoreFailed", "~r~Restore thất bại. Kiểm tra logs."));
+        }
+    }
+
+    // NEW: called when we detect the player just exited a vehicle
+    private void OnPlayerExitedVehicle(Vehicle veh)
+    {
+        try
+        {
+            // Check nhanh để đỡ tốn resource
+            if (veh == null || !veh.Exists()) return;
+
+            lock (_persistVehicles)
+            {
+                // Tìm xe trùng khớp Handle (Runtime) trước - Nhanh nhất
+                var pv = _persistVehicles.FirstOrDefault(p => p.RuntimeVehicle != null && p.RuntimeVehicle.Handle == veh.Handle);
+
+                // Nếu không thấy, tìm theo Hash + Vị trí + Chủ sở hữu (Fallback)
+                if (pv == null)
+                {
+                    // Lấy hash một lần để dùng trong LINQ
+                    int ownerHash = Game.Player.Character?.Model.Hash ?? 0;
+                    uint vehModelHash = (uint)veh.Model.Hash;
+                    Vector3 vehPos = veh.Position;
+
+                    pv = _persistVehicles.FirstOrDefault(p =>
+                        p.ModelHash == vehModelHash &&
+                        p.OwnerModelHash == ownerHash &&
+                        p.Position.DistanceTo2D(vehPos) < 5f);
+                }
+
+                // Nếu tìm thấy xe trong database -> Cập nhật vị trí mới nhất
+                if (pv != null)
+                {
+                    try
+                    {
+                        pv.Position = veh.Position;
+                        pv.Heading = veh.Heading;
+
+                        // Lấy biển số (chỉ khi cần thiết)
+                        string plate = veh.Mods.LicensePlate;
+                        if (!string.IsNullOrEmpty(plate)) pv.Plate = plate;
+
+                        _vehiclesDirty = true;
+                        Log($"OnPlayerExitedVehicle: updated pos for model 0x{pv.ModelHash:X} -> {pv.Position}");
+                    }
+                    catch (Exception ex) { Log("OnPlayerExitedVehicle update failed: " + ex.Message); }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("OnPlayerExitedVehicle failed: " + ex.ToString());
+        }
+    }
+
+    private void UpdateVehiclePositionsLogic()
+    {
+        try
+        {
+            lock (_persistVehicles)
+            {
+                if (_persistVehicles.Count == 0) return;
+
+                // process a window of entries per tick to avoid long blocking loops
+                int total = _persistVehicles.Count;
+                int toProcess = Math.Min(VEHICLE_POSITIONS_PER_TICK, total);
+                for (int processed = 0; processed < toProcess; processed++)
+                {
+                    // calculate index circularly from cursor
+                    int i = (_vehiclePositionsCursor + processed) % total;
+                    var pv = _persistVehicles[i];
+                    try
+                    {
+                        if (pv.RuntimeVehicle == null) continue;
+
+                        Vehicle v = pv.RuntimeVehicle;
+                        if (v == null) continue;
+
+                        bool exists = false;
+                        try { exists = v.Exists(); } catch { exists = false; }
+                        if (!exists)
+                        {
+                            HandleEngineDeletionForVehicle(pv);
+                            continue;
+                        }
+
+                        if (!v.IsDead)
+                        {
+                            if (v.Velocity.LengthSquared() < 0.25f)
+                            {
+                                pv.StopCounter++;
+                                if (pv.StopCounter >= 5)
+                                {
+                                    pv.Position = v.Position;
+                                    pv.Heading = v.Heading;
+                                    try { pv.Plate = v.Mods.LicensePlate; } catch { }
+                                    _vehiclesDirty = true;
+                                }
+                            }
+                            else
+                            {
+                                pv.StopCounter = 0;
+                            }
+                        }
+                    }
+                    catch (Exception ex) { Log($"UpdateVehiclePositionsLogic error at idx {i}: " + ex.Message); }
+                }
+
+                // advance cursor
+                _vehiclePositionsCursor = (_vehiclePositionsCursor + toProcess) % Math.Max(1, _persistVehicles.Count);
+            }
+        }
+        catch (Exception ex) { Log("UpdateVehiclePositionsLogic outer: " + ex.ToString()); }
+    }
+
+    // Overload: RegisterVehicle that captures meta from the vehicle (best-effort).
+    public static void RegisterVehicle(Vehicle v)
+    {
+        RegisterVehicle(v, null);
+    }
+
+    // New overload: optional meta parameter (caller can pass metadata explicitly).
+    public static void RegisterVehicle(Vehicle v, VehicleMeta explicitMeta)
+    {
+        try
+        {
+            if (v == null || !v.Exists()) return;
+            if (Game.Player?.Character == null) return;
+
+            int ownerHash = Game.Player.Character.Model.Hash;
+
+            var pv = new PersistentVehicle
+            {
+                ModelHash = (uint)v.Model.Hash,
+                Position = v.Position,
+                Heading = v.Heading,
+                Plate = SafeGetPlate(v),
+                RuntimeVehicle = v,
+                OwnerModelHash = ownerHash,
+                StopCounter = 0,
+                AutoSpawnEnabled = false
+            };
+
+            try
+            {
+                if (explicitMeta != null)
+                {
+                    pv.PurchasePrice = explicitMeta.PurchasePrice;
+                }
+                else
+                {
+                    pv.PurchasePrice = 0;
+                }
+            }
+            catch { pv.PurchasePrice = 0; }
+
+            // ===== META FROM INPUT ===
+            if (explicitMeta != null)
+            {
+                if (explicitMeta.Mods != null)
+                    pv.Mods = new Dictionary<int, int>(explicitMeta.Mods);
+
+                pv.TurboOn = explicitMeta.TurboOn;
+            }
+            else
+            {
+                try
+                {
+                    Function.Call(Hash.SET_VEHICLE_MOD_KIT, v.Handle, 0);
+
+                    for (int modType = 0; modType <= 49; modType++)
+                    {
+                        try
+                        {
+                            int idx = Function.Call<int>(Hash.GET_VEHICLE_MOD, v.Handle, modType);
+                            if (idx >= 0)
+                                pv.Mods[modType] = idx;
+                        }
+                        catch { }
+                    }
+
+                    try
+                    {
+                        pv.TurboOn = Function.Call<bool>(Hash.IS_TOGGLE_MOD_ON, v.Handle, 18);
+                    }
+                    catch { }
+                }
+                catch (Exception ex)
+                {
+                    Log("RegisterVehicle read mods: " + ex);
+                }
+            }
+
+            // ===== VISUAL DATA =======
+            try
+            {
+                int liv = Function.Call<int>(Hash.GET_VEHICLE_LIVERY, v.Handle);
+                if (liv >= 0)
+                    pv.SavedLivery = liv;
+            }
+            catch { }
+
+            try
+            {
+                var out1 = new OutputArgument();
+                var out2 = new OutputArgument();
+                Function.Call(Hash.GET_VEHICLE_COLOURS, v.Handle, out1, out2);
+
+                pv.PrimaryColor = out1.GetResult<int>();
+                pv.SecondaryColor = out2.GetResult<int>();
+            }
+            catch { }
+
+            try
+            {
+                var pearl = new OutputArgument();
+                var wheel = new OutputArgument();
+                Function.Call(Hash.GET_VEHICLE_EXTRA_COLOURS, v.Handle, pearl, wheel);
+
+                pv.PearlColor = pearl.GetResult<int>();
+                pv.WheelColor = wheel.GetResult<int>();
+            }
+            catch { }
+
+            try
+            {
+                pv.WindowTint = Function.Call<int>(Hash.GET_VEHICLE_WINDOW_TINT, v.Handle);
+            }
+            catch { }
+
+            try
+            {
+                var r = new OutputArgument();
+                var g = new OutputArgument();
+                var b = new OutputArgument();
+
+                Function.Call(Hash.GET_VEHICLE_TYRE_SMOKE_COLOR, v.Handle, r, g, b);
+
+                pv.TyreSmokeColor[0] = r.GetResult<int>();
+                pv.TyreSmokeColor[1] = g.GetResult<int>();
+                pv.TyreSmokeColor[2] = b.GetResult<int>();
+            }
+            catch { }
+
+            // --- PHẦN BỔ SUNG: Extras + Neon + Dashboard (Best-effort) ---
+            try
+            {
+                // Extras: Ghi lại danh sách extra đang tồn tại trên model
+                pv.ExtrasExist = new List<int>();
+                for (int ex = 1; ex <= 20; ex++)
+                {
+                    try
+                    {
+                        bool exists = Function.Call<bool>(Hash.DOES_EXTRA_EXIST, v.Handle, ex);
+                        if (exists) pv.ExtrasExist.Add(ex);
+                    }
+                    catch { /* ignore */ }
+                }
+
+                // Neon colour
+                try
+                {
+                    var outR = new OutputArgument();
+                    var outG = new OutputArgument();
+                    var outB = new OutputArgument();
+                    Function.Call(Hash.GET_VEHICLE_NEON_COLOUR, v.Handle, outR, outG, outB);
+                    int nr = outR.GetResult<int>();
+                    int ng = outG.GetResult<int>();
+                    int nb = outB.GetResult<int>();
+
+                    if (nr >= 0 || ng >= 0 || nb >= 0)
+                    {
+                        pv.NeonColor = new int[3] { nr, ng, nb };
+                    }
+                }
+                catch { /* swallow neon read errors */ }
+
+                // Dashboard colour
+                try
+                {
+                    var outDash = new OutputArgument();
+                    Function.Call(Hash.GET_VEHICLE_EXTRA_COLOUR_6, v.Handle, outDash);
+                    int dashIdx = outDash.GetResult<int>();
+                    pv.DashboardColor = dashIdx;
+                }
+                catch { /* ignore if getter not available */ }
+            }
+            catch (Exception ex)
+            {
+                Log("RegisterVehicle read extras/neon/dashboard: " + ex.ToString());
+            }
+            // --- KẾT THÚC PHẦN BỔ SUNG ---
+
+            // === REGISTER / UPDATE ===
+
+            lock (_persistVehicles)
+            {
+                try
+                {
+                    var existing = _persistVehicles.FirstOrDefault(x =>
+                        x.ModelHash == pv.ModelHash &&
+                        x.OwnerModelHash == ownerHash &&
+                        x.Position.DistanceTo2D(pv.Position) < 5f);
+
+                    if (existing != null)
+                    {
+                        // ===== UPDATE EXISTING =====
+                        existing.RuntimeVehicle = v;
+                        existing.Position = pv.Position;
+                        existing.Heading = pv.Heading;
+                        existing.Plate = pv.Plate;
+
+                        existing.Mods = pv.Mods;
+                        existing.TurboOn = pv.TurboOn;
+
+                        existing.SavedLivery = pv.SavedLivery;
+                        existing.PrimaryColor = pv.PrimaryColor;
+                        existing.SecondaryColor = pv.SecondaryColor;
+                        existing.PearlColor = pv.PearlColor;
+                        existing.WheelColor = pv.WheelColor;
+                        existing.WindowTint = pv.WindowTint;
+
+                        existing.TyreSmokeColor = pv.TyreSmokeColor;
+
+                        // Cập nhật các trường mới vào existing
+                        existing.ExtrasExist = pv.ExtrasExist;
+                        existing.NeonColor = pv.NeonColor;
+                        existing.DashboardColor = pv.DashboardColor;
+
+                        try
+                        {
+                            if (explicitMeta != null && explicitMeta.PurchasePrice > 0)
+                            {
+                                existing.PurchasePrice = explicitMeta.PurchasePrice;
+                            }
+                        }
+                        catch { }
+
+                        _vehiclesDirty = true;
+                    }
+                    else
+                    {
+                        // ===== 1) PER-CHAR FIFO TRIM =====
+                        int ownerCount = _persistVehicles.Count(x => x.OwnerModelHash == ownerHash);
+
+                        if (ownerCount >= MAX_VEHICLES_PER_CHAR)
+                        {
+                            var oldestForOwner = _persistVehicles
+                                .FirstOrDefault(x => x.OwnerModelHash == ownerHash);
+                            if (oldestForOwner != null)
+                            {
+                                try
+                                {
+                                    int refund = 0;
+                                    try
+                                    {
+                                        if (oldestForOwner.PurchasePrice > 0)
+                                            refund = (int)Math.Round(oldestForOwner.PurchasePrice * REFUND_PERCENT);
+                                    }
+                                    catch { refund = 0; }
+
+                                    try
+                                    {
+                                        if (refund > 0)
+                                        {
+                                            Game.Player.Money += refund;
+                                            string vehicleName = GetVehicleDisplayName(oldestForOwner.ModelHash);
+
+                                            try
+                                            {
+                                                string msg = string.Format(
+                                                    CultureInfo.InvariantCulture,
+                                                    L("PM_RegisterVehicle_RefundBody",
+                                                    "Quyền lợi tất toán ~HUD_COLOUR_DEGEN_YELLOW~{1}~s~: ~HUD_COLOUR_DEGEN_GREEN~+${0:N0}~s~. Quý khách cứ mua thỏa thích vì việc hoàn tiền này sẽ giúp quý khách tái đầu tư tốt hơn. Cảm ơn quý khách đã ủng hộ!"),
+                                                    refund,
+                                                    vehicleName
+                                                );
+
+                                                ShowFeedMessage(
+                                                    L("PM_RegisterVehicle_RefundSender", "Mors Mutual"),
+                                                    L("PM_RegisterVehicle_RefundSubject", "Bảo Hiểm (hết hạn)"),
+                                                    msg);
+                                            }
+                                            catch { }
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Log("RegisterVehicle: refund credit failed: " + ex.ToString());
+                                    }
+
+                                    RemovePersistentVehicleSafe(oldestForOwner);
+                                    Log($"RegisterVehicle: evicted oldest vehicle for owner 0x{ownerHash:X} (per-char cap) refund={refund}, model=0x{oldestForOwner.ModelHash:X}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    Log("RegisterVehicle: per-char eviction failed: " + ex);
+                                }
+                            }
+                        }
+
+                        // ===== 2) GLOBAL CAP CHECK =====
+                        if (_persistVehicles.Count >= MAX_PERSIST_VEHICLES)
+                        {
+                            Log("RegisterVehicle: reached MAX_PERSIST_VEHICLES, refusing to add new persistent vehicle");
+                        }
+                        else
+                        {
+                            _persistVehicles.Add(pv);
+                            _vehiclesDirty = true;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("RegisterVehicle lock block failed: " + ex);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("RegisterVehicle: " + ex);
+        }
+    }
+
+    // Handle engine deletion
+    private void HandleEngineDeletionForVehicle(PersistentVehicle pv)
+    {
+        try
+        {
+            if (pv == null) return;
+
+            lock (_persistVehicles)
+            {
+                try
+                {
+                    pv.RuntimeVehicle = null;
+
+                    try
+                    {
+                        if (pv.MapBlip != null)
+                        {
+                            try { if (pv.MapBlip.Exists()) pv.MapBlip.Delete(); } catch (Exception ex) { Log("HandleEngineDeletionForVehicle delete old blip: " + ex.Message); }
+                            pv.MapBlip = null;
+                        }
+                    }
+                    catch (Exception ex) { Log("HandleEngineDeletionForVehicle inner delete: " + ex.ToString()); }
+
+                    pv.AutoSpawnEnabled = false;
+
+                    _vehiclesDirty = true;
+                    Log($"HandleEngineDeletionForVehicle: engine removed runtime vehicle for model 0x{pv.ModelHash:X} at {pv.Position} owner=0x{pv.OwnerModelHash:X}");
+                }
+                catch (Exception ex) { Log("HandleEngineDeletionForVehicle lock body: " + ex.ToString()); }
+            }
+        }
+        catch (Exception ex) { Log("HandleEngineDeletionForVehicle failed: " + ex.ToString()); }
+    }
+
+    private void UpdatePersistentVehicleState()
+    {
+        try
+        {
+            List<PersistentVehicle> copy;
+            lock (_persistVehicles) { copy = _persistVehicles.ToList(); }
+
+            for (int idx = copy.Count - 1; idx >= 0; idx--)
+            {
+                var pv = copy[idx];
+                try
+                {
+                    if (pv.RuntimeVehicle != null)
+                    {
+                        bool exists = false;
+                        try { exists = pv.RuntimeVehicle.Exists(); } catch (Exception ex) { Log("UpdatePersistentVehicleState exists check: " + ex.Message); exists = false; }
+
+                        if (!exists)
+                        {
+                            HandleEngineDeletionForVehicle(pv);
+                            continue;
+                        }
+
+                        if (pv.RuntimeVehicle.IsDead)
+                        {
+                            try { SafeRemoveBlip(pv.MapBlip); } catch (Exception ex) { Log("UpdatePersistentVehicleState remove blip: " + ex.Message); }
+
+                            lock (_persistVehicles)
+                            {
+                                try
+                                {
+                                    var found = _persistVehicles.FirstOrDefault(x => x == pv);
+                                    if (found != null) _persistVehicles.Remove(found);
+                                    _vehiclesDirty = true;
+                                }
+                                catch (Exception ex) { Log("UpdatePersistentVehicleState remove from list: " + ex.ToString()); }
+                            }
+
+                            Log($"UpdatePersistentVehicleState: vehicle destroyed -> removed entry model 0x{pv.ModelHash:X}");
+                            continue;
+                        }
+
+                        continue;
+                    }
+                    else
+                    {
+                        var player = Game.Player.Character;
+                        if (player != null && player.Exists())
+                        {
+                            if (pv.AutoSpawnEnabled && player.Position.DistanceTo(pv.Position) < 150f)
+                                SpawnPersistentVehicle(pv);
+                        }
+                    }
+                }
+                catch (Exception ex) { Log("UpdatePersistentVehicleState inner: " + ex.ToString()); }
+            }
+        }
+        catch (Exception ex) { Log("UpdatePersistentVehicleState: " + ex.ToString()); }
+    }
+
+    private void SpawnPersistentVehicle(PersistentVehicle pv)
+    {
+        if (pv == null) return;
+
+        try
+        {
+            Model m = new Model((int)pv.ModelHash);
+
+            if (!m.IsValid || !m.IsInCdImage)
+            {
+                Log($"SpawnPersistentVehicle: model 0x{pv.ModelHash:X} invalid.");
+                lock (_persistVehicles)
+                {
+                    var found = _persistVehicles.FirstOrDefault(x => x == pv);
+                    if (found != null) _persistVehicles.Remove(found);
+                    _vehiclesDirty = true;
+                }
+                m.MarkAsNoLongerNeeded();
+                return;
+            }
+
+            if (!m.IsLoaded) m.Request(1500);
+            if (!m.IsLoaded)
+            {
+                Log($"SpawnPersistentVehicle: model load failed 0x{pv.ModelHash:X}");
+                m.MarkAsNoLongerNeeded();
+                return;
+            }
+
+            Vehicle v = null;
+            try
+            {
+                v = World.CreateVehicle(m, pv.Position, pv.Heading);
+            }
+            catch (Exception ex)
+            {
+                Log("CreateVehicle error: " + ex);
+            }
+
+            if (v == null || !v.Exists())
+            {
+                m.MarkAsNoLongerNeeded();
+                return;
+            }
+
+            // ===== BASIC SETUP =====
+            try
+            {
+                v.PlaceOnGround();
+                if (!string.IsNullOrEmpty(pv.Plate))
+                    v.Mods.LicensePlate = pv.Plate;
+
+                v.IsEngineRunning = true;
+                v.DirtLevel = 0f;
+            }
+            catch { }
+
+            // ===== APPLY MODS =====
+            try
+            {
+                Function.Call(Hash.SET_VEHICLE_MOD_KIT, v.Handle, 0);
+
+                // Restore all saved mods
+                if (pv.Mods != null)
+                {
+                    foreach (var kv in pv.Mods)
+                    {
+                        try
+                        {
+                            Function.Call(Hash.SET_VEHICLE_MOD, v.Handle, kv.Key, kv.Value, false);
+                        }
+                        catch { }
+                    }
+                }
+
+                // Turbo
+                if (pv.TurboOn)
+                {
+                    try
+                    {
+                        Function.Call(Hash.TOGGLE_VEHICLE_MOD, v.Handle, 18, true);
+                    }
+                    catch { }
+                }
+
+                // Livery
+                if (pv.SavedLivery.HasValue)
+                {
+                    try
+                    {
+                        Function.Call(Hash.SET_VEHICLE_LIVERY, v.Handle, pv.SavedLivery.Value);
+                    }
+                    catch { }
+                }
+
+                // Colors
+                if (pv.PrimaryColor.HasValue && pv.SecondaryColor.HasValue)
+                {
+                    try
+                    {
+                        Function.Call(Hash.SET_VEHICLE_COLOURS,
+                            v.Handle,
+                            pv.PrimaryColor.Value,
+                            pv.SecondaryColor.Value);
+                    }
+                    catch { }
+                }
+
+                if (pv.PearlColor.HasValue && pv.WheelColor.HasValue)
+                {
+                    try
+                    {
+                        Function.Call(Hash.SET_VEHICLE_EXTRA_COLOURS,
+                            v.Handle,
+                            pv.PearlColor.Value,
+                            pv.WheelColor.Value);
+                    }
+                    catch { }
+                }
+
+                if (pv.WindowTint.HasValue)
+                {
+                    try
+                    {
+                        Function.Call(Hash.SET_VEHICLE_WINDOW_TINT, v.Handle, pv.WindowTint.Value);
+                    }
+                    catch { }
+                }
+
+                // Tyre Smoke
+                if (pv.TyreSmokeColor != null && pv.TyreSmokeColor.Length >= 3)
+                {
+                    try
+                    {
+                        Function.Call(Hash.SET_VEHICLE_TYRE_SMOKE_COLOR,
+                            v.Handle,
+                            pv.TyreSmokeColor[0],
+                            pv.TyreSmokeColor[1],
+                            pv.TyreSmokeColor[2]);
+                    }
+                    catch { }
+                }
+
+                // Extras: if we have saved extras list, enable those extras; else fallback to enabling all existing extras
+                try
+                {
+                    if (pv.ExtrasExist != null && pv.ExtrasExist.Count > 0)
+                    {
+                        foreach (var ex in pv.ExtrasExist)
+                        {
+                            try
+                            {
+                                if (Function.Call<bool>(Hash.DOES_EXTRA_EXIST, v.Handle, ex))
+                                {
+                                    Function.Call(Hash.SET_VEHICLE_EXTRA, v.Handle, ex, 0); // 0 => enable/visible (as used in ApplyOnlineLikeUpgrades)
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    else
+                    {
+                        // fallback: enable all extras that exist on this vehicle
+                        for (int ex = 1; ex <= 20; ex++)
+                        {
+                            try
+                            {
+                                if (Function.Call<bool>(Hash.DOES_EXTRA_EXIST, v.Handle, ex))
+                                    Function.Call(Hash.SET_VEHICLE_EXTRA, v.Handle, ex, 0);
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch { }
+
+                // Neon: apply neon colour + enable neon positions (if neon saved)
+                try
+                {
+                    if (pv.NeonColor != null && pv.NeonColor.Length >= 3)
+                    {
+                        for (int i = 0; i <= 3; i++)
+                        {
+                            try { Function.Call(Hash.SET_VEHICLE_NEON_ENABLED, v.Handle, i, true); } catch { }
+                        }
+                        try
+                        {
+                            Function.Call(Hash.SET_VEHICLE_NEON_COLOUR, v.Handle, pv.NeonColor[0], pv.NeonColor[1], pv.NeonColor[2]);
+                        }
+                        catch { }
+                    }
+                }
+                catch { /* swallow */ }
+
+                // Dashboard colour (best-effort)
+                try
+                {
+                    if (pv.DashboardColor.HasValue)
+                    {
+                        try { Function.Call(Hash.SET_VEHICLE_EXTRA_COLOUR_6, v.Handle, pv.DashboardColor.Value); } catch { }
+                    }
+                }
+                catch { /* ignore */ }
+
+                // Repair
+                try { v.Repair(); } catch { }
+            }
+            catch (Exception ex)
+            {
+                Log("SpawnPersistentVehicle mod error: " + ex);
+            }
+
+            // ===== BLIP =====
+            try
+            {
+                pv.RuntimeVehicle = v;
+
+                lock (_persistVehicles)
+                {
+                    if (pv.MapBlip != null && pv.MapBlip.Exists())
+                        pv.MapBlip.Delete();
+
+                    Blip b = v.AddBlip();
+                    if (b != null)
+                    {
+                        b.IsShortRange = false;
+                        b.Sprite = GetVehicleBlipSprite(v);
+                        b.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
+                        b.Name = L("PM_VehicleRestoredBlip", "Phương tiện đã khôi phục");
+                        pv.MapBlip = b;
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
+                m.MarkAsNoLongerNeeded();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("SpawnPersistentVehicle total failure: " + ex);
+        }
+    }
+
+    private void UpdateBlips()
+    {
+        try
+        {
+            List<PersistentVehicle> copy;
+            lock (_persistVehicles) { copy = _persistVehicles.ToList(); }
+            if (copy.Count == 0) return;
+
+            int total = copy.Count;
+            int toProcess = Math.Min(BLIPS_PER_TICK, total);
+            for (int processed = 0; processed < toProcess; processed++)
+            {
+                int i = (_blipsCursor + processed) % total;
+                var pv = copy[i];
+                try
+                {
+                    if (pv.RuntimeVehicle != null)
+                    {
+                        bool exists = false;
+                        try { exists = pv.RuntimeVehicle.Exists(); } catch { exists = false; }
+                        if (!exists) { HandleEngineDeletionForVehicle(pv); continue; }
+
+                        if (pv.MapBlip == null || !pv.MapBlip.Exists())
+                        {
+                            var b = pv.RuntimeVehicle.AddBlip();
+                            if (b != null)
+                            {
+                                b.IsShortRange = false;
+                                b.Sprite = GetVehicleBlipSprite(pv.RuntimeVehicle);
+                                b.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
+                                b.Name = L("PM_VehicleNearbyBlip", "Phương tiện đang ở gần");
+                            }
+                            pv.MapBlip = b;
+                        }
+                        else
+                        {
+                            try { pv.MapBlip.Position = pv.RuntimeVehicle.Position; } catch { }
+                            try { pv.MapBlip.Color = GetBlipColorForCharacter(pv.OwnerModelHash); } catch { }
+                        }
+                    }
+                    else
+                    {
+                        if (!pv.AutoSpawnEnabled)
+                        {
+                            if (pv.MapBlip != null) { SafeRemoveBlip(pv.MapBlip); pv.MapBlip = null; }
+                            continue;
+                        }
+
+                        if (pv.MapBlip == null || !pv.MapBlip.Exists())
+                        {
+                            pv.MapBlip = World.CreateBlip(pv.Position);
+                            if (pv.MapBlip != null)
+                            {
+                                pv.MapBlip.IsShortRange = false;
+                                pv.MapBlip.Sprite = GetVehicleBlipSprite(pv.ModelHash);
+                                pv.MapBlip.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
+                                pv.MapBlip.Name = L("PM_VehicleReturnedBlip", "Phương tiện đã trả lại");
+                            }
+                        }
+                        else
+                        {
+                            try { pv.MapBlip.Position = pv.Position; } catch { }
+                        }
+                    }
+                }
+                catch (Exception ex) { Log("UpdateBlips loop error: " + ex.ToString()); }
+            }
+
+            _blipsCursor = (_blipsCursor + toProcess) % Math.Max(1, copy.Count);
+        }
+        catch (Exception ex) { Log("UpdateBlips: " + ex.ToString()); }
+    }
+
+    private void CreateBlipsForAllLoadedVehicles()
+    {
+        try
+        {
+            lock (_persistVehicles)
+            {
+                foreach (var pv in _persistVehicles)
+                {
+                    try
+                    {
+                        if (!pv.AutoSpawnEnabled) continue;
+
+                        if (pv.MapBlip == null || !pv.MapBlip.Exists())
+                        {
+                            pv.MapBlip = World.CreateBlip(pv.Position);
+                            if (pv.MapBlip != null)
+                            {
+                                pv.MapBlip.IsShortRange = false;
+                                pv.MapBlip.Sprite = GetVehicleBlipSprite(pv.ModelHash);
+                                pv.MapBlip.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
+                                pv.MapBlip.Name = L("PM_VehicleReturnedBlip", "Phương tiện đã trả lại");
+                            }
+                        }
+                    }
+                    catch (Exception ex) { Log("CreateBlipsForAllLoadedVehicles inner: " + ex.ToString()); }
+                }
+            }
+        }
+        catch (Exception ex) { Log("CreateBlipsForAllLoadedVehicles: " + ex.ToString()); }
+    }
+
+    // =======================================================
+    private static BlipColor GetBlipColorForCharacter(int modelHash)
+    {
+        uint hash = (uint)modelHash;
+
+        if (hash == (uint)PedHash.Michael) return BlipColor.Blue;
+        if (hash == (uint)PedHash.Franklin) return BlipColor.Green;
+        if (hash == (uint)PedHash.Trevor) return BlipColor.Orange;
+
+        return BlipColor.White;
+    }
+
+    private static BlipSprite GetVehicleBlipSprite(Vehicle v)
+    {
+        try
+        {
+            if (v != null && v.Exists())
+            {
+                if (v.IsBlimp) return BlipSprite.Blimp;
+                if (v.IsSubmarine) return BlipSprite.Sub;
+                if (v.IsBoat) return BlipSprite.Boat;
+                if (v.IsHelicopter) return BlipSprite.Helicopter;
+                if (v.IsPlane) return BlipSprite.Plane;
+                if (v.IsBike || v.IsBicycle || v.IsMotorcycle) return BlipSprite.PersonalVehicleBike;
+                if (v.IsTrain) return BlipSprite.PersonalVehicleCar; // không có icon train riêng trong enum SHVDN hiện tại
+                return BlipSprite.PersonalVehicleCar;
+            }
+        }
+        catch { }
+
+        return BlipSprite.PersonalVehicleCar;
+    }
+
+    private static BlipSprite GetVehicleBlipSprite(uint modelHash)
+    {
+        try
+        {
+            int vehicleClass = Function.Call<int>(Hash.GET_VEHICLE_CLASS_FROM_NAME, modelHash);
+
+            switch (vehicleClass)
+            {
+                case 8:   // Motorcycles
+                case 13:  // Cycles
+                    return BlipSprite.PersonalVehicleBike;
+
+                case 14:  // Boats
+                    return BlipSprite.Boat;
+
+                case 15:  // Helicopters
+                    return BlipSprite.Helicopter;
+
+                case 16:  // Planes
+                    return BlipSprite.Plane;
+
+                default:
+                    break;
+            }
+
+            // Nếu model properties khả dụng thì dùng thêm lớp đặc biệt
+            try
+            {
+                var m = new Model((int)modelHash);
+                if (m.IsBlimp) return BlipSprite.Blimp;
+                if (m.IsSubmarine) return BlipSprite.Sub;
+                if (m.IsMotorcycle) return BlipSprite.PersonalVehicleBike;
+            }
+            catch { }
+
+            return BlipSprite.PersonalVehicleCar;
+        }
+        catch
+        {
+            return BlipSprite.PersonalVehicleCar;
+        }
+    }
+
+    // ================= Hệ thống Lưu File =================
+    private static void SaveWeaponFileInternal()
+    {
+        try
+        {
+            EnsureDataFolderExists();
+
+            var lines = new List<string>();
+            lock (_characterWeapons)
+            {
+                foreach (var kvp in _characterWeapons)
+                {
+                    foreach (var wp in kvp.Value)
+                    {
+                        string comps = wp.Components != null ? string.Join(",", wp.Components) : "";
+                        lines.Add($"{kvp.Key}|{wp.Hash}|{wp.Ammo}|{wp.Tint}|{comps}");
+                    }
+                }
+            }
+
+            WriteLinesAtomic(WeaponsFile, lines.ToArray());
+            _weaponsDirty = false;
+        }
+        catch (Exception ex)
+        {
+            Log("SaveWeaponFileInternal failed: " + ex.ToString());
+        }
+    }
+
+    private static void SaveVehiclesFileInternal()
+    {
+        try
+        {
+            EnsureDataFolderExists();
+
+            string[] lines;
+            lock (_persistVehicles)
+            {
+                // --- REFRESH: for any PV that currently has a runtime vehicle, read live values before save
+                foreach (var pv in _persistVehicles)
+                {
+                    try
+                    {
+                        if (pv.RuntimeVehicle != null)
+                        {
+                            bool ex = false;
+                            try { ex = pv.RuntimeVehicle.Exists(); } catch { ex = false; }
+                            if (ex) RefreshPersistentFromRuntime(pv);
+                        }
+                    }
+                    catch { /* tolerate per-entry errors */ }
+                }
+
+                lines = _persistVehicles.Select(v =>
+                {
+                    string modsSerialized = "";
+                    if (v.Mods != null && v.Mods.Count > 0)
+                    {
+                        var parts = v.Mods.Select(kv => $"{kv.Key}:{kv.Value}");
+                        modsSerialized = string.Join(",", parts);
+                    }
+
+                    int turbo = v.TurboOn ? 1 : 0;
+
+                    // extrasExist: comma-separated integer list (e.g. "1,3,5")
+                    string extrasSerialized = "";
+                    try
+                    {
+                        if (v.ExtrasExist != null && v.ExtrasExist.Count > 0)
+                            extrasSerialized = string.Join(",", v.ExtrasExist);
+                    }
+                    catch { extrasSerialized = ""; }
+
+                    // tyre smoke as "r,g,b"
+                    string tyreRgb = "";
+                    try
+                    {
+                        if (v.TyreSmokeColor != null && v.TyreSmokeColor.Length >= 3)
+                            tyreRgb = $"{v.TyreSmokeColor[0]},{v.TyreSmokeColor[1]},{v.TyreSmokeColor[2]}";
+                    }
+                    catch { tyreRgb = ""; }
+
+                    // neon color as "r,g,b" or empty
+                    string neonRgb = "";
+                    try
+                    {
+                        if (v.NeonColor != null && v.NeonColor.Length >= 3)
+                            neonRgb = $"{v.NeonColor[0]},{v.NeonColor[1]},{v.NeonColor[2]}";
+                    }
+                    catch { neonRgb = ""; }
+
+                    string dashStr = v.DashboardColor.HasValue ? v.DashboardColor.Value.ToString(CultureInfo.InvariantCulture) : "";
+
+                    // model string: "Hakuchou Drag (0xF0C2A91F)"  -- đảm bảo không có ký tự '|' trong tên
+                    string modelString = GetVehicleDisplayName(v.ModelHash) ?? $"0x{v.ModelHash:X}";
+                    modelString = modelString.Replace("|", ""); // tránh phá định dạng file
+                    string hexSuffix = $" (0x{v.ModelHash:X})";
+                    if (!modelString.EndsWith($"(0x{v.ModelHash:X})", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // nếu GetVehicleDisplayName đã bao gồm hex (hiếm), vẫn đảm bảo có hex trong ngoặc
+                        modelString = $"{modelString}{hexSuffix}";
+                    }
+
+                    return string.Format(CultureInfo.InvariantCulture,
+                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}",
+                        modelString,
+                        v.Position.X, v.Position.Y, v.Position.Z,
+                        v.Heading,
+                        (v.Plate ?? "").Replace("|", ""),
+                        v.OwnerModelHash,
+                        v.AutoSpawnEnabled ? 1 : 0,
+                        modsSerialized,
+                        turbo,
+                        v.PurchasePrice,
+                        (v.SavedLivery.HasValue ? v.SavedLivery.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.PrimaryColor.HasValue ? v.PrimaryColor.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.SecondaryColor.HasValue ? v.SecondaryColor.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.PearlColor.HasValue ? v.PearlColor.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.WheelColor.HasValue ? v.WheelColor.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.WindowTint.HasValue ? v.WindowTint.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        tyreRgb,
+                        extrasSerialized,
+                        neonRgb,
+                        dashStr
+                    );
+                }).ToArray();
+            }
+
+            WriteLinesAtomic(VehiclesFile, lines);
+            _vehiclesDirty = false;
+        }
+        catch (Exception ex)
+        {
+            Log("SaveVehiclesFileInternal failed: " + ex.ToString());
+        }
+    }
+
+    private void TryLoadAll()
+    {
+        try
+        {
+            // --- LOAD WEAPONS ---
+            var weaponLines = ReadAllLinesSafeTryBackups(WeaponsFile);
+            foreach (var line in weaponLines)
+            {
+                try
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var p = line.Split('|');
+                    if (p.Length < 4) continue;
+
+                    int cHash;
+                    if (!int.TryParse(p[0], out cHash)) continue;
+                    if (!_characterWeapons.ContainsKey(cHash)) _characterWeapons[cHash] = new List<PersistentWeapon>();
+
+                    List<uint> comps = new List<uint>();
+                    if (p.Length > 4 && !string.IsNullOrEmpty(p[4]))
+                    {
+                        foreach (var s in p[4].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            uint v;
+                            if (uint.TryParse(s, out v)) comps.Add(v);
+                        }
+                    }
+
+                    uint wpHash; int ammo; int tint;
+                    if (!uint.TryParse(p[1], out wpHash)) continue;
+                    if (!int.TryParse(p[2], out ammo)) ammo = 0;
+                    if (!int.TryParse(p[3], out tint)) tint = 0;
+
+                    _characterWeapons[cHash].Add(new PersistentWeapon
+                    {
+                        Hash = wpHash,
+                        Ammo = ammo,
+                        Tint = tint,
+                        Components = comps
+                    });
+                }
+                catch (Exception ex) { Log("TryLoadAll(weapons-line) failed: " + ex.ToString()); }
+            }
+
+            // --- LOAD VEHICLES ---
+            var vehicleLines = ReadAllLinesSafeTryBackups(VehiclesFile);
+            foreach (var line in vehicleLines)
+            {
+                try
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var p = line.Split('|');
+                    if (p.Length < 7) continue;
+
+                    int ownerH = 0;
+                    if (p.Length > 6) int.TryParse(p[6], out ownerH);
+
+                    // --- modelHash parsing: chấp nhận "0xHEX" hoặc "Tên" hoặc "Tên (0xHEX)" ---
+                    uint modelHash = 0; // <-- khởi tạo để tránh "use of unassigned local variable"
+                    string modelField = p[0].Trim();
+
+                    bool parsed = false;
+                    try
+                    {
+                        // Nếu field chứa "0x" anywhere -> try extract phần sau "0x"
+                        int idx = modelField.IndexOf("0x", StringComparison.OrdinalIgnoreCase);
+                        if (idx >= 0)
+                        {
+                            // Lấy phần sau "0x" (bỏ prefix) — tránh dùng Replace với StringComparison
+                            string hexPart = modelField.Substring(idx + 2).Trim();
+                            if (uint.TryParse(hexPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out modelHash))
+                                parsed = true;
+                        }
+
+                        // Nếu chưa parse được, thử parse toàn bộ field như hex (không có prefix)
+                        if (!parsed)
+                        {
+                            if (uint.TryParse(modelField, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out modelHash))
+                                parsed = true;
+                        }
+                    }
+                    catch { parsed = false; }
+
+                    if (!parsed)
+                    {
+                        // fallback: try lookup bằng tên qua helper (cần đảm bảo TryGetModelHashFromName có tồn tại)
+                        if (!TryGetModelHashFromName(modelField, out modelHash))
+                        {
+                            Log($"TryLoadAll: unable to parse model field '{modelField}' into a modelHash; skipping line.");
+                            continue;
+                        }
+                    }
+
+                    float x = 0f, y = 0f, z = 0f, heading = 0f;
+                    float.TryParse(p[1], NumberStyles.Float, CultureInfo.InvariantCulture, out x);
+                    float.TryParse(p[2], NumberStyles.Float, CultureInfo.InvariantCulture, out y);
+                    float.TryParse(p[3], NumberStyles.Float, CultureInfo.InvariantCulture, out z);
+                    float.TryParse(p[4], NumberStyles.Float, CultureInfo.InvariantCulture, out heading);
+
+                    bool autoSpawn = false;
+                    if (p.Length > 7)
+                    {
+                        int a = 0;
+                        int.TryParse(p[7], out a);
+                        autoSpawn = (a != 0);
+                    }
+
+                    Dictionary<int, int> modsDict = new Dictionary<int, int>();
+                    if (p.Length > 8 && !string.IsNullOrEmpty(p[8]))
+                    {
+                        var parts = p[8].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (var part in parts)
+                        {
+                            try
+                            {
+                                var kv = part.Split(':');
+                                if (kv.Length != 2) continue;
+                                int mt = 0, mi = 0;
+                                if (int.TryParse(kv[0], out mt) && int.TryParse(kv[1], out mi))
+                                {
+                                    modsDict[mt] = mi;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+
+                    int turbo = 0;
+                    if (p.Length > 9) int.TryParse(p[9], out turbo);
+                    int purchasePrice = 0;
+                    if (p.Length > 10) int.TryParse(p[10], out purchasePrice);
+
+                    // NEW/EXTENDED FIELDS (optional)
+                    int? savedLivery = null;
+                    int? primary = null;
+                    int? secondary = null;
+                    int? pearl = null;
+                    int? wheel = null;
+                    int? windowTint = null;
+                    int[] tyreRgb = new int[3] { 0, 0, 0 };
+                    List<int> extrasExist = new List<int>();
+                    int[] neonRgb = null;
+                    int? dashColor = null;
+
+                    try
+                    {
+                        if (p.Length > 11 && !string.IsNullOrEmpty(p[11])) { int tmp; if (int.TryParse(p[11], out tmp)) savedLivery = tmp; }
+                        if (p.Length > 12 && !string.IsNullOrEmpty(p[12])) { int tmp; if (int.TryParse(p[12], out tmp)) primary = tmp; }
+                        if (p.Length > 13 && !string.IsNullOrEmpty(p[13])) { int tmp; if (int.TryParse(p[13], out tmp)) secondary = tmp; }
+                        if (p.Length > 14 && !string.IsNullOrEmpty(p[14])) { int tmp; if (int.TryParse(p[14], out tmp)) pearl = tmp; }
+                        if (p.Length > 15 && !string.IsNullOrEmpty(p[15])) { int tmp; if (int.TryParse(p[15], out tmp)) wheel = tmp; }
+                        if (p.Length > 16 && !string.IsNullOrEmpty(p[16])) { int tmp; if (int.TryParse(p[16], out tmp)) windowTint = tmp; }
+
+                        if (p.Length > 17 && !string.IsNullOrEmpty(p[17]))
+                        {
+                            var rr = p[17].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                            if (rr.Length >= 3)
+                            {
+                                int.TryParse(rr[0], out tyreRgb[0]);
+                                int.TryParse(rr[1], out tyreRgb[1]);
+                                int.TryParse(rr[2], out tyreRgb[2]);
+                            }
+                        }
+
+                        if (p.Length > 18 && !string.IsNullOrEmpty(p[18]))
+                        {
+                            foreach (var s in p[18].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                            {
+                                int ei = 0;
+                                if (int.TryParse(s, out ei)) extrasExist.Add(ei);
+                            }
+                        }
+
+                        if (p.Length > 19 && !string.IsNullOrEmpty(p[19]))
+                        {
+                            var rr = p[19].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                            if (rr.Length >= 3)
+                            {
+                                int nr = 0, ng = 0, nb = 0;
+                                int.TryParse(rr[0], out nr);
+                                int.TryParse(rr[1], out ng);
+                                int.TryParse(rr[2], out nb);
+                                neonRgb = new int[] { nr, ng, nb };
+                            }
+                        }
+
+                        if (p.Length > 20 && !string.IsNullOrEmpty(p[20]))
+                        {
+                            int tmp; if (int.TryParse(p[20], out tmp)) dashColor = tmp;
+                        }
+                    }
+                    catch { /* tolerate parse errors */ }
+
+                    lock (_persistVehicles)
+                    {
+                        _persistVehicles.Add(new PersistentVehicle
+                        {
+                            ModelHash = modelHash,
+                            Position = new Vector3(x, y, z),
+                            Heading = heading,
+                            Plate = p.Length > 5 ? p[5] : "",
+                            OwnerModelHash = ownerH,
+                            MapBlip = null,
+                            RuntimeVehicle = null,
+                            StopCounter = 0,
+                            AutoSpawnEnabled = autoSpawn,
+                            Mods = modsDict,
+                            TurboOn = turbo != 0,
+                            PurchasePrice = purchasePrice,
+                            SavedLivery = savedLivery,
+                            PrimaryColor = primary,
+                            SecondaryColor = secondary,
+                            PearlColor = pearl,
+                            WheelColor = wheel,
+                            WindowTint = windowTint,
+                            TyreSmokeColor = tyreRgb ?? new int[3] { 0, 0, 0 },
+                            ExtrasExist = extrasExist ?? new List<int>(),
+                            NeonColor = neonRgb,
+                            DashboardColor = dashColor
+                        });
+                    }
+                }
+                catch (Exception ex) { Log("TryLoadAll(vehicles-line) failed: " + ex.ToString()); }
+            }
+
+            // --- SAU KHI LOAD: TRIM PER-CHARACTER (Giới hạn xe mỗi nhân vật) ---
+            try
+            {
+                lock (_persistVehicles)
+                {
+                    // Lấy danh sách các chủ xe hiện có
+                    var owners = _persistVehicles.Select(x => x.OwnerModelHash).Distinct().ToList();
+                    foreach (var owner in owners)
+                    {
+                        // Đếm số lượng xe của owner này
+                        var ownedList = _persistVehicles.Where(x => x.OwnerModelHash == owner).ToList();
+
+                        while (ownedList.Count > MAX_VEHICLES_PER_CHAR)
+                        {
+                            // Tìm xe cũ nhất (vị trí đầu tiên trong list) của owner này
+                            var oldest = _persistVehicles.FirstOrDefault(x => x.OwnerModelHash == owner);
+                            if (oldest == null) break;
+
+                            // Xóa xe cũ nhất
+                            RemovePersistentVehicleSafe(oldest);
+                            _vehiclesDirty = true;
+
+                            // Cập nhật lại danh sách tạm để kiểm tra điều kiện lặp
+                            ownedList = _persistVehicles.Where(x => x.OwnerModelHash == owner).ToList();
+                            Log($"TryLoadAll: trimmed oldest for owner 0x{owner:X} to respect MAX_VEHICLES_PER_CHAR");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Log("TryLoadAll per-character trim failed: " + ex.ToString()); }
+
+            // --- KIỂM TRA GIỚI HẠN SAU KHI LOAD XONG (Global cap) ---
+            lock (_persistVehicles)
+            {
+                if (_persistVehicles.Count > MAX_PERSIST_VEHICLES)
+                {
+                    int removeCount = _persistVehicles.Count - MAX_PERSIST_VEHICLES;
+                    _persistVehicles.RemoveRange(0, removeCount);
+                    _vehiclesDirty = true;
+                    Log($"TryLoadAll: trimmed {removeCount} persisted vehicles to respect MAX_PERSIST_VEHICLES");
+                }
+            }
+
+            // --- ĐĂNG KÝ VŨ KHÍ HIỆN TẠI ---
+            try
+            {
+                RegisterCurrentWeapon();
+            }
+            catch
+            {
+                // Catch lặng lẽ để không làm gián đoạn quá trình load chính
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("TryLoadAll failed: " + ex.ToString());
+        }
+    }
+
+    private void EnsurePersistentForCurrentPlayer() { }
+
+    private void EnforceF2OnlyAfterLoad()
+    {
+        try
+        {
+            bool anyChange = false;
+            lock (_persistVehicles)
+            {
+                foreach (var pv in _persistVehicles)
+                {
+                    try
+                    {
+                        if (pv.MapBlip != null)
+                        {
+                            try { if (pv.MapBlip.Exists()) pv.MapBlip.Delete(); } catch (Exception ex) { Log("EnforceF2AfterLoad remove blip: " + ex.ToString()); }
+                            pv.MapBlip = null;
+                        }
+
+                        if (pv.AutoSpawnEnabled)
+                        {
+                            pv.AutoSpawnEnabled = false;
+                            anyChange = true;
+                        }
+                    }
+                    catch (Exception ex) { Log("EnforceF2AfterLoad inner: " + ex.ToString()); }
+                }
+            }
+
+            if (anyChange)
+            {
+                _vehiclesDirty = true;
+                try { SaveVehiclesFileInternal(); }
+                catch (Exception ex) { Log("EnforceF2AfterLoad SaveVehiclesFileInternal failed: " + ex.ToString()); }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("EnforceF2OnlyAfterLoad failed: " + ex.ToString());
+        }
+    }
+
+    private int GetCurrentPedHandleSafe() => Game.Player.Character?.Handle ?? 0;
+    private static void SafeRemoveBlip(Blip b) { try { if (b != null && b.Exists()) b.Delete(); } catch (Exception ex) { Log("SafeRemoveBlip: " + ex.ToString()); } }
+    private static string SafeGetPlate(Vehicle v) { try { return v.Mods.LicensePlate ?? ""; } catch (Exception ex) { Log("SafeGetPlate: " + ex.ToString()); return ""; } }
+
+    // Xóa an toàn 1 PersistentVehicle khỏi danh sách (không cố gắng xóa runtime vehicle trong world).
+    private static float ClampStat(float value)
+    {
+        if (value < 0f) return 0f;
+        if (value > 100f) return 100f;
+        return value;
+    }
+
+    private static float NormalizeStat(float raw, float cap)
+    {
+        if (cap <= 0f) return 0f;
+        return ClampStat((raw / cap) * 100f);
+    }
+
+    private static void ShowFeedMessage(string sender, string subject, string body)
+    {
+        try
+        {
+            Notification.Show(NotificationIcon.MpMorsMutual, sender, subject, body);
+        }
+        catch
+        {
+            GTA.UI.Notification.Show(body);
+        }
+    }
+
+    private static void RemovePersistentVehicleSafe(PersistentVehicle pv)
+    {
+        if (pv == null) return;
+        try
+        {
+            lock (_persistVehicles)
+            {
+                try
+                {
+                    // Remove map blip if any
+                    try { SafeRemoveBlip(pv.MapBlip); pv.MapBlip = null; } catch { }
+
+                    // Do NOT forcibly Delete() the runtime vehicle to avoid interfering with gameplay.
+                    // Just drop the runtime reference so Restore/F2 won't treat it as persistent anymore.
+                    try { pv.RuntimeVehicle = null; } catch { }
+
+                    // Remove from the list if present
+                    var found = _persistVehicles.FirstOrDefault(x => x == pv);
+                    if (found != null)
+                    {
+                        _persistVehicles.Remove(found);
+                        _vehiclesDirty = true;
+                        Log($"RemovePersistentVehicleSafe: removed entry model 0x{pv.ModelHash:X} owner=0x{pv.OwnerModelHash:X}");
+                    }
+                }
+                catch (Exception ex) { Log("RemovePersistentVehicleSafe inner: " + ex.ToString()); }
+            }
+        }
+        catch (Exception ex) { Log("RemovePersistentVehicleSafe failed: " + ex.ToString()); }
+    }
+    private static void Log(string msg)
+    {
+        if (!ENABLE_LOG) return;
+        try
+        {
+            EnsureDataFolderExists();
+            var fp = Path.Combine(DataFolder, "persistent_log.txt");
+            File.AppendAllText(fp, DateTime.Now.ToString("s") + "  " + msg + Environment.NewLine, Encoding.UTF8);
+        }
+        catch { /* swallow */ }
+    }
+
+    private class PersistentWeapon { public uint Hash; public int Ammo; public int Tint; public List<uint> Components; }
+
+    private class PersistentVehicle
+    {
+        public uint ModelHash;
+        public Vector3 Position;
+        public float Heading;
+        public string Plate;
+        public Vehicle RuntimeVehicle;
+        public Blip MapBlip;
+        public int StopCounter;
+        public int OwnerModelHash;
+        public bool AutoSpawnEnabled;
+        public Dictionary<int, int> Mods;
+        public bool TurboOn;
+        public int PurchasePrice;
+
+        // Visual / extra state
+        public int? SavedLivery;
+        public int? PrimaryColor;
+        public int? SecondaryColor;
+        public int? PearlColor;
+        public int? WheelColor;
+        public int? WindowTint;
+
+        // Tyre smoke RGB (default zeros)
+        public int[] TyreSmokeColor;
+
+        // Extras that exist on this model (1..20). We save the list of extras that exist;
+        // when spawning we will set them to visible (SET_VEHICLE_EXTRA ... 0) if present.
+        public List<int> ExtrasExist;
+
+        // Neon colour (RGB). If null => not saved.
+        public int[] NeonColor;
+
+        // Dashboard / dash paint index (SET_VEHICLE_EXTRA_COLOUR_6). nullable.
+        public int? DashboardColor;
+
+        public PersistentVehicle()
+        {
+            Mods = new Dictionary<int, int>();
+            TyreSmokeColor = new int[3] { 0, 0, 0 };
+            ExtrasExist = new List<int>();
+            NeonColor = null;
+            PurchasePrice = 0;
+        }
+    }
+
+    // optional helper container for explicit meta passing
+    // --- Helper IO an toàn --- (thêm vào class)
+    private static void EnsureDataFolderExists()
+    {
+        try { Directory.CreateDirectory(DataFolder); }
+        catch { /* swallow - không ném ra */ }
+    }
+
+    private static string GetBackupName(string path)
+    {
+        var dir = Path.GetDirectoryName(path);
+        var name = Path.GetFileNameWithoutExtension(path);
+        var ext = Path.GetExtension(path);
+        var ts = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        return Path.Combine(dir, $"{name}.backup.{ts}{ext}");
+    }
+
+    private static void RotateBackups(string path)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
+            var name = Path.GetFileNameWithoutExtension(path);
+            var ext = Path.GetExtension(path);
+
+            var all = Directory.EnumerateFiles(dir, $"{name}.backup.*{ext}")
+                .OrderByDescending(f => f) // newest first (timestamp in name)
+                .ToList();
+
+            for (int i = MAX_BACKUPS; i < all.Count; i++)
+            {
+                try { File.Delete(all[i]); } catch { }
+            }
+        }
+        catch { }
+    }
+
+    private static void WriteLinesAtomic(string path, string[] lines)
+    {
+        try
+        {
+            EnsureDataFolderExists();
+
+            string tmp = path + ".tmp";
+
+            // Write with FileStream to avoid partial writes and flush to disk
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (var sw = new StreamWriter(fs, Encoding.UTF8))
+            {
+                foreach (var line in lines)
+                {
+                    sw.WriteLine(line);
+                }
+                sw.Flush();
+                fs.Flush(true);
+            }
+
+            // Backup current file (if exists)
+            if (File.Exists(path))
+            {
+                try
+                {
+                    var backup = GetBackupName(path);
+                    File.Move(path, backup);
+                    RotateBackups(path);
+                }
+                catch (Exception ex)
+                {
+                    // nếu backup fail thì vẫn tiếp tục attempt replace để không mất tmp
+                    Log("WriteLinesAtomic backup failed: " + ex.Message);
+                }
+            }
+
+            // Move tmp -> final (atomic rename on same volume)
+            if (File.Exists(path)) File.Delete(path);
+            File.Move(tmp, path);
+        }
+        catch (Exception ex)
+        {
+            Log("WriteLinesAtomic failed: " + ex.ToString());
+            // cleanup tmp if exists
+            try { var tmp = path + ".tmp"; if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            throw;
+        }
+    }
+
+    private static string[] ReadAllLinesSafeTryBackups(string path)
+    {
+        try
+        {
+            EnsureDataFolderExists();
+            if (File.Exists(path))
+            {
+                return File.ReadAllLines(path, Encoding.UTF8);
+            }
+            // nếu file chính không tồn tại -> return empty
+            return new string[0];
+        }
+        catch (Exception ex)
+        {
+            Log("ReadAllLinesSafeTryBackups failed for " + path + " : " + ex.ToString());
+            // thử lấy backup gần nhất
+            try
+            {
+                var dir = Path.GetDirectoryName(path);
+                var name = Path.GetFileNameWithoutExtension(path);
+                var ext = Path.GetExtension(path);
+                var all = Directory.EnumerateFiles(dir, $"{name}.backup.*{ext}")
+                    .OrderByDescending(f => f)
+                    .ToList();
+                if (all.Count > 0)
+                {
+                    try { return File.ReadAllLines(all[0], Encoding.UTF8); }
+                    catch (Exception ex2) { Log("ReadAllLinesSafeTryBackups fallback failed: " + ex2.Message); }
+                }
+            }
+            catch (Exception ex2) { Log("ReadAllLinesSafeTryBackups enumerate backups failed: " + ex2.Message); }
+
+            return new string[0];
+        }
+    }
+
+    public class VehicleMeta
+    {
+        public Dictionary<int, int> Mods;
+        public bool TurboOn;
+        public int PurchasePrice;
+        // removed: SavedTopKmh, SavedPowerMul
+    }
+}
