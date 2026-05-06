@@ -7,9 +7,19 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
+using iFruitAddon2;
+using LemonUI;
+using LemonUI.Menus;
 
 public class VehicleDelivery : Script
 {
+    private readonly ObjectPool _luiPool = new ObjectPool();
+
+    private static string ContactName(string key, string fallback)
+    {
+        return Language.Get(key, fallback);
+    }
+
     private enum SpawnStage
     {
         NotStarted,
@@ -360,9 +370,14 @@ public class VehicleDelivery : Script
 
     // --- PATCH: spawn-mode toggle fields (INSERT near other fields / tunables) ---
     private bool _forceSpawnInFrontMode = false; // false = mặc định dùng chế độ giao xe (NPC). true = mọi xe spawn trước mặt player.
-    private Keys _toggleDeliveryKey = Keys.NumPad0; // phím để bật/tắt chế độ (Numpad0)
-    private int _lastToggleKeyMs = 0; // debounce
-    private int _toggleDebounceMs = 300; // 300 ms debounce
+
+    // --- Pegasus Concierge phone/menu ---
+    private CustomiFruit _pegasusPhoneInstance = null;
+    private bool _pegasusContactAdded = false;
+    private NativeMenu _pegasusConciergeMenu = null;
+    private NativeCheckboxItem _pegasusCurrentLocationItem = null;
+    private NativeCheckboxItem _pegasusExpressItem = null;
+    private bool _pegasusMenuSyncLock = false;
 
     // Optional: expose default via INI (được xử lý trong LoadSettings patch)
     // singleton guard
@@ -568,50 +583,13 @@ public class VehicleDelivery : Script
     {
         if (!_isPrimaryInstance) return;
 
-        // --- PATCH: key toggle handler (INSERT at top of OnTick, after _isPrimaryInstance guard) ---
+        EnsurePegasusConciergeContactRegistered();
+
         try
         {
-            // Debounced key toggle
-            if (Game.IsKeyPressed(_toggleDeliveryKey) && (Game.GameTime - _lastToggleKeyMs) > _toggleDebounceMs)
-            {
-                _lastToggleKeyMs = Game.GameTime;
-                try
-                {
-                    ToggleSpawnMode();
-                }
-                catch
-                {
-                    // fallback: if ToggleSpawnMode has issue, still flip flag safely and notify
-                    _forceSpawnInFrontMode = !_forceSpawnInFrontMode;
-                    if (_forceSpawnInFrontMode) Notification.Show(Language.Get("VehicleDelivery_ModeOff", "~y~~h~Chế độ giao xe: Tắt~h~~s~"));
-                    else
-                    {
-                        Notification.Show(Language.Get("VehicleDelivery_ModeOn", "~g~~h~Chế độ giao xe: Bật~h~~s~"));
-                        LoadAllowedVehicles();
-                    }
-
-                    lock (_tasks)
-                    {
-                        foreach (var tt in _tasks)
-                        {
-                            try
-                            {
-                                if (!tt.HasSpawned)
-                                {
-                                    tt.IsRegistered = !_forceSpawnInFrontMode ? tt.IsRegistered : false;
-                                    tt.Stage = SpawnStage.NotStarted;
-                                    tt.RequestedModel = null;
-                                    tt.ModelRequestStartMs = 0;
-                                    tt.SpawnAttempts = 0;
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                }
-            }
+            _luiPool?.Process();
         }
-        catch { /* swallow input errors to avoid crash */ }
+        catch { }
 
         if (_tasks.Count == 0) return;
 
@@ -1884,38 +1862,199 @@ public class VehicleDelivery : Script
         Everything = 65535
     }
 
-    // --- Helpers ---
-    private void ToggleSpawnMode()
+    // Pegasus Concierge phone contact + LemonUI menu
+    private void EnsurePegasusConciergeContactRegistered()
     {
-        _forceSpawnInFrontMode = !_forceSpawnInFrontMode;
-        if (_forceSpawnInFrontMode)
-            Notification.Show(Language.Get("VehicleDelivery_ModeOff", "~y~~h~Chế độ giao xe: Tắt~h~~s~"));
-        else
+        try
         {
-            Notification.Show(Language.Get("VehicleDelivery_ModeOn", "~g~~h~Chế độ giao xe: Bật~h~~s~"));
-            // refresh vehicle list from INI when re-enabling NPC-deliveries
-            LoadAllowedVehicles();
-        }
+            var phone = CustomiFruit.GetCurrentInstance();
+            if (phone == null || phone.Contacts == null)
+                return;
 
-        // apply immediate conversion to queued tasks (safe lock)
-        lock (_tasks)
-        {
-            foreach (var tt in _tasks)
+            if (!ReferenceEquals(_pegasusPhoneInstance, phone))
             {
-                try
-                {
-                    if (!tt.HasSpawned)
-                    {
-                        tt.IsRegistered = !_forceSpawnInFrontMode ? tt.IsRegistered : false;
-                        tt.Stage = SpawnStage.NotStarted;
-                        tt.RequestedModel = null;
-                        tt.ModelRequestStartMs = 0;
-                        tt.SpawnAttempts = 0;
-                    }
-                }
-                catch { }
+                _pegasusPhoneInstance = phone;
+                _pegasusContactAdded = false;
+            }
+
+            if (_pegasusContactAdded)
+                return;
+
+            string pegasusName = ContactName("Contact_PegasusConcierge", "Pegasus Concierge");
+
+            if (phone.Contacts.Any(c =>
+                string.Equals(c.Name, pegasusName, StringComparison.OrdinalIgnoreCase)))
+            {
+                _pegasusContactAdded = true;
+                return;
+            }
+
+            var pegasusContact = new iFruitContact(pegasusName)
+            {
+                Active = true,
+                DialTimeout = 2000,
+                Bold = false,
+                Icon = ContactIcon.Pegasus
+            };
+
+            pegasusContact.Answered += OnPegasusConciergeAnswered;
+            phone.Contacts.Add(pegasusContact);
+            _pegasusContactAdded = true;
+        }
+        catch (Exception ex)
+        { }
+    }
+
+    private void OnPegasusConciergeAnswered(iFruitContact sender)
+    {
+        try
+        {
+            OpenPegasusConciergeMenu();
+
+            try
+            {
+                CustomiFruit.GetCurrentInstance()?.Close(0);
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        { }
+    }
+
+    private void OpenPegasusConciergeMenu()
+    {
+        try
+        {
+            EnsurePegasusConciergeMenu();
+            SyncPegasusConciergeMenuState();
+
+            if (_pegasusConciergeMenu != null)
+            {
+                _pegasusConciergeMenu.Visible = true;
+                Interval = 0;
             }
         }
+        catch (Exception ex)
+        { }
+    }
+
+    private void EnsurePegasusConciergeMenu()
+    {
+        if (_pegasusConciergeMenu != null)
+            return;
+
+        _pegasusConciergeMenu = new NativeMenu(
+            Tr("Pegasus_MenuTitle", "Vehicle Delivery"),
+            Tr("Pegasus_MenuSubtitle", "VẬN CHUYỂN PHƯƠNG TIỆN"));
+
+        _luiPool.Add(_pegasusConciergeMenu);
+
+        _pegasusCurrentLocationItem = new NativeCheckboxItem(
+            Tr("Pegasus_DeliverToLocation", "Giao đến vị trí"),
+            true);
+
+        _pegasusExpressItem = new NativeCheckboxItem(
+            Tr("Pegasus_ExpressDelivery", "Chuyển phát cấp tốc"),
+            false);
+
+        _pegasusCurrentLocationItem.CheckboxChanged += PegasusCurrentLocationItem_CheckboxChanged;
+        _pegasusExpressItem.CheckboxChanged += PegasusExpressItem_CheckboxChanged;
+
+        var cancel = new NativeItem(
+            Tr("Pegasus_CancelService", "Hủy dịch vụ"));
+
+        cancel.Activated += (s, e) => ClosePegasusConciergeMenu(false);
+
+        _pegasusConciergeMenu.Add(_pegasusCurrentLocationItem);
+        _pegasusConciergeMenu.Add(_pegasusExpressItem);
+        _pegasusConciergeMenu.Add(cancel);
+    }
+
+    private void SyncPegasusConciergeMenuState()
+    {
+        if (_pegasusCurrentLocationItem == null || _pegasusExpressItem == null)
+            return;
+
+        _pegasusMenuSyncLock = true;
+        try
+        {
+            _pegasusCurrentLocationItem.Checked = !_forceSpawnInFrontMode;
+            _pegasusExpressItem.Checked = _forceSpawnInFrontMode;
+        }
+        finally
+        {
+            _pegasusMenuSyncLock = false;
+        }
+    }
+
+    private void PegasusCurrentLocationItem_CheckboxChanged(object sender, EventArgs e)
+    {
+        if (_pegasusMenuSyncLock || _pegasusCurrentLocationItem == null || _pegasusExpressItem == null)
+            return;
+
+        _pegasusMenuSyncLock = true;
+        try
+        {
+            if (_pegasusCurrentLocationItem.Checked)
+            {
+                _forceSpawnInFrontMode = false;
+                if (_pegasusExpressItem.Checked)
+                    _pegasusExpressItem.Checked = false;
+
+                ClosePegasusConciergeMenu(false);
+            }
+            else
+            {
+                // Không cho phép cả hai cùng tắt.
+                if (!_pegasusExpressItem.Checked)
+                    _pegasusCurrentLocationItem.Checked = true;
+            }
+        }
+        finally
+        {
+            _pegasusMenuSyncLock = false;
+        }
+    }
+
+    private void PegasusExpressItem_CheckboxChanged(object sender, EventArgs e)
+    {
+        if (_pegasusMenuSyncLock || _pegasusCurrentLocationItem == null || _pegasusExpressItem == null)
+            return;
+
+        _pegasusMenuSyncLock = true;
+        try
+        {
+            if (_pegasusExpressItem.Checked)
+            {
+                _forceSpawnInFrontMode = true;
+                if (_pegasusCurrentLocationItem.Checked)
+                    _pegasusCurrentLocationItem.Checked = false;
+
+                ClosePegasusConciergeMenu(false);
+            }
+            else
+            {
+                // Không cho phép cả hai cùng tắt.
+                if (!_pegasusCurrentLocationItem.Checked)
+                    _pegasusExpressItem.Checked = true;
+            }
+        }
+        finally
+        {
+            _pegasusMenuSyncLock = false;
+        }
+    }
+
+    private void ClosePegasusConciergeMenu(bool countCancel)
+    {
+        try
+        {
+            if (_pegasusConciergeMenu != null)
+                _pegasusConciergeMenu.Visible = false;
+        }
+        catch { }
+
+        Interval = 1000;
     }
 
     private bool SafeExists(Entity e) { try { return e != null && e.Exists(); } catch { return false; } }

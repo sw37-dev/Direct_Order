@@ -22,7 +22,6 @@ public class CompanionCloner : Script
     private int RemoveNavThrottleMs = 150;
 
     // Tuning
-    private int IntervalMs = 150; // tick interval (150ms -> within 100-500ms)
     private int MaxClones = 3;
     private float FollowDistance = 2.5f;
     private float FollowOffsetBaseY = -1.0f;

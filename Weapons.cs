@@ -1322,7 +1322,7 @@ public partial class InstantRefill : Script
                 return;
 
             _luiWeaponDetailMenu = new NativeMenu(
-                "Ammu-Nation",
+                "AmmuNation",
                 L("WeaponMenu_DetailTitle", "Thông tin chi tiết vũ khí"));
 
             _luiPool.Add(_luiWeaponDetailMenu);

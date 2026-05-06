@@ -8,6 +8,11 @@ using System.Windows.Forms;
 
 public class AutoRepairCtrlZ : Script
 {
+    private static string ContactName(string key, string fallback)
+    {
+        return Language.Get(key, fallback);
+    }
+
     // cấu hình
     private readonly int DefaultInterval = 1700; // ms khi không hiển thị help-box
     private readonly int HelpDurationMs = 15000; // 15 giây
@@ -588,17 +593,19 @@ public class AutoRepairCtrlZ : Script
             if (_losSantosContactAdded)
                 return;
 
+            string lscName = ContactName("Contact_LosSantosCustom", "Los Santos Custom");
+
             if (phone.Contacts.Any(c =>
-                string.Equals(c.Name, "Los Santos Customs", StringComparison.OrdinalIgnoreCase)))
+                string.Equals(c.Name, lscName, StringComparison.OrdinalIgnoreCase)))
             {
                 _losSantosContactAdded = true;
                 return;
             }
 
-            var lsc = new iFruitContact("Los Santos Customs")
+            var lsc = new iFruitContact(lscName)
             {
                 Active = true,
-                DialTimeout = REPAIR_CALL_DURATION_MS,
+                DialTimeout = 2000,
                 Bold = false,
                 Icon = ContactIcon.LSCustoms
             };

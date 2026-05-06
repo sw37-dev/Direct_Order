@@ -49,7 +49,8 @@
     <ErrorReport>prompt</ErrorReport>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="iFruitAddon2 v3.1.1 %28fix%29">
+    <Reference Include="iFruitAddon2 v3.1.1 %28fix%29, Version=1.0.0.0, Culture=neutral, processorArchitecture=AMD64">
+      <SpecificVersion>False</SpecificVersion>
       <HintPath>..\iFruitAddon2 v3.1.1 (fix)\bin\x64\Release\iFruitAddon2 v3.1.1 (fix).dll</HintPath>
     </Reference>
     <Reference Include="LemonUI.SHVDN3">
@@ -71,6 +72,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="AuctionHouse.cs" />
     <Compile Include="AutoDrive.cs" />
     <Compile Include="CityBlackout.cs" />
     <Compile Include="CompanionCloner.cs" />
@@ -78,6 +80,7 @@
     <Compile Include="Helper.cs" />
     <Compile Include="InstantRefill.cs" />
     <Compile Include="LanguageManager.cs" />
+    <Compile Include="Credit.cs" />
     <Compile Include="MoneyTruckEvent.cs" />
     <Compile Include="PersistentManager.cs" />
     <Compile Include="PlaneDeliveryContractEvent.cs" />

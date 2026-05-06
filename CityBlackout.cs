@@ -5,6 +5,8 @@ using System.IO;
 using GTA;
 using GTA.Math;
 using GTA.Native;
+using System.Linq;
+using iFruitAddon2;
 
 public class CityBlackout : Script
 {
@@ -14,6 +16,8 @@ public class CityBlackout : Script
     }
 
     private Random _rng = new Random();
+
+    private static string PaigeContactName => T("CityBlackout_ContactName", "Paige Harris");
 
     // --- Configurable (được load 1 lần khi mod khởi tạo) ---
     private int _cfgStartHour = 21;
@@ -26,8 +30,8 @@ public class CityBlackout : Script
 
     // --- Explosion sound config ---
     private bool _cfgPlayExplosion = true;
-    private string _cfgExplosionSound = "TIMER_STOP";
-    private string _cfgExplosionSoundSet = "HUD_MINI_GAME_SOUNDSET";
+    private string _cfgExplosionSound = "EMP_Blast";
+    private string _cfgExplosionSoundSet = "DLC_HEISTS_BIOLAB_FINALE_SOUNDS";
     private bool _cfgExplosionUseFrontend = true;
 
     // --- Window roll state ---
@@ -38,6 +42,14 @@ public class CityBlackout : Script
     // --- Blackout state ---
     private bool _blackoutActive = false;
     private int _blackoutEndGameTime = 0; // ms
+
+    // --- Daily lock state ---
+    private int _lastObservedDayKey = -1;
+    private int _blackoutLockedDayKey = -1;
+
+    // --- Phone contact state ---
+    private CustomiFruit _paigePhoneInstance = null;
+    private bool _paigeContactAdded = false;
 
     // --- Smoothing / flicker ---
     private bool _smoothingActive = false;
@@ -227,6 +239,17 @@ public class CityBlackout : Script
     {
         try
         {
+            EnsurePaigeHarrisContactRegistered();
+
+            int currentDayKey = GetCurrentGameDayKey();
+            if (currentDayKey != -1 && currentDayKey != _lastObservedDayKey)
+            {
+                _lastObservedDayKey = currentDayKey;
+                _targetHour = -1;
+                _targetMinute = -1;
+                _rolledThisWindow = false;
+            }
+
             // Nếu đang blackout: xử lý smoothing / kết thúc
             if (_blackoutActive)
             {
@@ -269,10 +292,13 @@ public class CityBlackout : Script
                 if (!_rolledThisWindow && hour == _targetHour && minute == _targetMinute)
                 {
                     _rolledThisWindow = true;
-                    double roll = _rng.NextDouble();
-                    if (roll <= _cfgTriggerChance)
+                    if (!IsBlackoutLockedToday(currentDayKey))
                     {
-                        StartBlackout();
+                        double roll = _rng.NextDouble();
+                        if (roll <= _cfgTriggerChance)
+                        {
+                            StartBlackoutAndLock();
+                        }
                     }
                 }
             }
@@ -389,6 +415,98 @@ public class CityBlackout : Script
         }
     }
 
+    private void StartBlackoutAndLock()
+    {
+        int dayKey = GetCurrentGameDayKey();
+        if (dayKey == -1)
+            dayKey = _lastObservedDayKey;
+
+        if (IsBlackoutLockedToday(dayKey))
+            return;
+
+        _blackoutLockedDayKey = dayKey;
+        StartBlackout();
+    }
+
+    private bool IsBlackoutLockedToday(int dayKey)
+    {
+        return dayKey != -1 && _blackoutLockedDayKey == dayKey;
+    }
+
+    private int GetCurrentGameDayKey()
+    {
+        try
+        {
+            int year = Function.Call<int>(Hash.GET_CLOCK_YEAR);
+            int month = Function.Call<int>(Hash.GET_CLOCK_MONTH);
+            int day = Function.Call<int>(Hash.GET_CLOCK_DAY_OF_MONTH);
+            return (year * 10000) + (month * 100) + day;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    private void EnsurePaigeHarrisContactRegistered()
+    {
+        try
+        {
+            var phone = CustomiFruit.GetCurrentInstance();
+            if (phone == null || phone.Contacts == null)
+                return;
+
+            if (!ReferenceEquals(_paigePhoneInstance, phone))
+            {
+                _paigePhoneInstance = phone;
+                _paigeContactAdded = false;
+            }
+
+            if (_paigeContactAdded)
+                return;
+
+            if (phone.Contacts.Any(c =>
+                string.Equals(c.Name, PaigeContactName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(c.Name, "Paige Harris", StringComparison.OrdinalIgnoreCase)))
+            {
+                _paigeContactAdded = true;
+                return;
+            }
+
+            var contact = new iFruitContact(PaigeContactName)
+            {
+                Active = true,
+                DialTimeout = 10000,
+                Bold = false,
+                Icon = ContactIcon.PaigeHarris
+            };
+
+            contact.Answered += OnPaigeHarrisContactAnswered;
+            phone.Contacts.Add(contact);
+
+            _paigeContactAdded = true;
+        }
+        catch
+        {
+        }
+    }
+
+    private void OnPaigeHarrisContactAnswered(iFruitContact sender)
+    {
+        try
+        {
+            StartBlackoutAndLock();
+        }
+        finally
+        {
+            try
+            {
+                CustomiFruit.GetCurrentInstance()?.Close(0);
+            }
+            catch { }
+        }
+    }
+
     private void TriggerExplosionSound()
     {
         try
@@ -437,6 +555,12 @@ public class CityBlackout : Script
             }
         }
         catch { /* im lặng nếu lỗi âm thanh */ }
+    }
+
+    private void TriggerPowerOnSound()
+    {
+        // Sử dụng âm thanh "tạch" của cầu dao khi có điện lại
+        GTA.Audio.PlaySoundFrontend("Breaker_01", "DLC_HALLOWEEN_FVJ_Sounds");
     }
 
     private void StartSmoothingSequence()
@@ -506,6 +630,7 @@ public class CityBlackout : Script
                 }
 
                 GTA.UI.Screen.ShowSubtitle(T("CityBlackout_PowerRestored", "~HUD_COLOUR_CONTROLLER_MICHAEL~~h~Đã có điện trở lại."), 3000);
+                TriggerPowerOnSound();
             }
         }
         catch (Exception ex)
@@ -542,6 +667,7 @@ public class CityBlackout : Script
             _smoothingActive = false;
             Interval = IDLE_INTERVAL_MS;
             GTA.UI.Screen.ShowSubtitle(T("CityBlackout_PowerRestored", "~HUD_COLOUR_CONTROLLER_MICHAEL~~h~Đã có điện trở lại."), 3000);
+            TriggerPowerOnSound();
         }
         catch (Exception ex)
         {

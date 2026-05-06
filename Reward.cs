@@ -264,8 +264,8 @@ public partial class InstantRefill : Script
         _luiRewardRootMenu.Add(pointsItem);
 
         var vehicleItem = new NativeItem(T("RewardVehicleMenuLabel", "1. Siêu phẩm phương tiện"));
-        vehicleItem.AltTitle = "~c~>~s~";
-        vehicleItem.Description = T("RewardVehicleMenuDescription", "Mở danh sách siêu phẩm phương tiện.");
+        vehicleItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+        vehicleItem.Description = T("RewardVehicleMenuDescription", "Mở danh sách siêu phẩm.");
         vehicleItem.Activated += (s, e) =>
         {
             RedeemReward();
@@ -273,8 +273,8 @@ public partial class InstantRefill : Script
         _luiRewardRootMenu.Add(vehicleItem);
 
         var insuranceItem = new NativeItem(T("RewardInsuranceMenuLabel", "2. Thẻ bảo hiểm nhiệm vụ"));
-        insuranceItem.AltTitle = "~c~>~s~";
-        insuranceItem.Description = T("RewardInsuranceMenuDescription", "Đổi thẻ bảo hiểm để giảm mức đền bù nhiệm vụ.");
+        insuranceItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+        insuranceItem.Description = T("RewardInsuranceMenuDescription", "Đổi thẻ bảo hiểm.");
         insuranceItem.Activated += (s, e) =>
         {
             OpenRewardInsuranceMenu();
@@ -282,8 +282,8 @@ public partial class InstantRefill : Script
         _luiRewardRootMenu.Add(insuranceItem);
 
         var bribeItem = new NativeItem(T("RewardBribeMenuLabel", "3. Hối lộ sao truy nã"));
-        bribeItem.AltTitle = "~c~>~s~";
-        bribeItem.Description = T("RewardBribeMenuDescription", "Dùng điểm thưởng để giảm sao truy nã.");
+        bribeItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+        bribeItem.Description = T("RewardBribeMenuDescription", "Hối lộ cảnh sát.");
         bribeItem.Activated += (s, e) =>
         {
             OpenRewardBribeMenu();

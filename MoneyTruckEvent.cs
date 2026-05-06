@@ -1521,7 +1521,11 @@ public class MoneyTruckEvent : Script
             "MoneyTruckEvent_IntroMessage",
             "~HUD_COLOUR_CONTROLLER_MICHAEL~Bạn có muốn kiếm chút đỉnh không? Có thấy 2 chiếc xe trên bản đồ không? Hãy đến chỗ của chúng!");
 
-        Notification.Show(message);
+        Notification.Show(
+            NotificationIcon.Lester,
+            "Annonymous",
+            "",
+            message);
     }
 
     private void ShowRewardNotification(long points)

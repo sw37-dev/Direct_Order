@@ -206,7 +206,6 @@ public class SubmarineDeliveryContractEvent : Script
         ResetDeliveryFlowFlags();
 
         DeliveryContractBridge.CurrentKind = DeliveryContractMissionKind.Submarine;
-        DeliveryContractBridge.SubmarinePendingStart = true;
 
         _state = EventState.MarkerAvailable;
         _stateSince = Game.GameTime;
@@ -332,7 +331,9 @@ public class SubmarineDeliveryContractEvent : Script
 
     private bool SpawnMission()
     {
-        _selectedVehicleSpec = GetRandomVehicleSpec();
+        if (!TryConsumeAuctionForcedSubmarine(out _selectedVehicleSpec))
+            _selectedVehicleSpec = GetRandomVehicleSpec();
+
         if (_selectedVehicleSpec == null)
             return false;
 
@@ -385,6 +386,27 @@ public class SubmarineDeliveryContractEvent : Script
         }
 
         CreateDestinationBlip();
+        return true;
+    }
+
+    private bool TryConsumeAuctionForcedSubmarine(out VehicleSpec spec)
+    {
+        spec = null;
+
+        uint hash;
+        string displayName;
+        int classId;
+
+        if (!DeliveryContractBridge.TryConsumeForcedMission(
+                DeliveryContractMissionKind.Submarine,
+                out hash,
+                out displayName,
+                out classId))
+        {
+            return false;
+        }
+
+        spec = new VehicleSpec(hash, string.IsNullOrWhiteSpace(displayName) ? "Tàu thuyền" : displayName);
         return true;
     }
 
@@ -778,7 +800,7 @@ public class SubmarineDeliveryContractEvent : Script
         _missionAcceptedNotificationShown = false;
         _missionBaseReward = 0;
 
-        DeliveryContractBridge.CurrentKind = DeliveryContractMissionKind.None;
+        DeliveryContractBridge.CurrentKind = DeliveryContractMissionKind.Submarine;
         DeliveryContractBridge.SubmarinePendingStart = false;
         HelpBoxBridge.ClearPersistent();
     }

@@ -197,7 +197,7 @@ public class PlaneDeliveryContractEvent : Script
     {
         Tick += OnTick;
         Interval = 16;
-    }   
+    }
 
     public static void RequestSpawn()
     {
@@ -228,7 +228,7 @@ public class PlaneDeliveryContractEvent : Script
 
         if (DeliveryContractBridge.PlanePendingStart &&
             _state == EventState.Idle &&
-            DeliveryContractBridge.CurrentKind == DeliveryContractMissionKind.None)
+            DeliveryContractBridge.CurrentKind == DeliveryContractMissionKind.Plane)
         {
             DeliveryContractBridge.PlanePendingStart = false;
             StartMarkerEvent();
@@ -385,7 +385,9 @@ public class PlaneDeliveryContractEvent : Script
 
     private bool SpawnMission()
     {
-        _selectedPlaneSpec = GetRandomPlaneSpec();
+        if (!TryConsumeAuctionForcedPlane(out _selectedPlaneSpec))
+            _selectedPlaneSpec = GetRandomPlaneSpec();
+
         if (_selectedPlaneSpec == null)
             return false;
 
@@ -434,6 +436,27 @@ public class PlaneDeliveryContractEvent : Script
         catch { }
 
         CreateDestinationBlip();
+        return true;
+    }
+
+    private bool TryConsumeAuctionForcedPlane(out PlaneSpec spec)
+    {
+        spec = null;
+
+        uint hash;
+        string displayName;
+        int classId;
+
+        if (!DeliveryContractBridge.TryConsumeForcedMission(
+                DeliveryContractMissionKind.Plane,
+                out hash,
+                out displayName,
+                out classId))
+        {
+            return false;
+        }
+
+        spec = new PlaneSpec(hash, string.IsNullOrWhiteSpace(displayName) ? "Máy bay" : displayName);
         return true;
     }
 

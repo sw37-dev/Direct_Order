@@ -18,6 +18,11 @@ public partial class InstantRefill : Script
     private static string L(string key, string fallback = "")
     => Language.Get(key, fallback);
 
+    private static string ContactName(string key, string fallback)
+    {
+        return Language.Get(key, fallback);
+    }
+
     private static string[] LMany(string key, params string[] fallback)
     {
         string raw = Language.Get(key, fallback != null ? string.Join("|", fallback) : "");
@@ -640,6 +645,8 @@ public partial class InstantRefill : Script
                 return;
             }
         }
+
+        UpdateAuctionHouse();
 
         // --- NEW: sale timer / daily reset ---
         RefreshVehicleSaleDailyLock();
@@ -3314,14 +3321,16 @@ public partial class InstantRefill : Script
             if (_privilegeCreditsContactAdded)
                 return;
 
+            string mazeBankName = ContactName("Contact_MazeBank", "Maze Bank");
+
             if (phone.Contacts.Any(c =>
-                string.Equals(c.Name, "Privilege Credits", StringComparison.OrdinalIgnoreCase)))
+                string.Equals(c.Name, mazeBankName, StringComparison.OrdinalIgnoreCase)))
             {
                 _privilegeCreditsContactAdded = true;
                 return;
             }
 
-            var creditContact = new iFruitContact("Privilege Credits")
+            var creditContact = new iFruitContact(mazeBankName)
             {
                 Active = true,
                 DialTimeout = REWARD_REDEEM_CALL_DURATION_MS,
@@ -3371,14 +3380,16 @@ public partial class InstantRefill : Script
             if (_ammunationContactAdded)
                 return;
 
+            string ammoName = ContactName("Contact_AmmuNation", "AmmuNation");
+
             if (phone.Contacts.Any(c =>
-                string.Equals(c.Name, "Ammunation", StringComparison.OrdinalIgnoreCase)))
+                string.Equals(c.Name, ammoName, StringComparison.OrdinalIgnoreCase)))
             {
                 _ammunationContactAdded = true;
                 return;
             }
 
-            var ammoContact = new iFruitContact("Ammunation")
+            var ammoContact = new iFruitContact(ammoName)
             {
                 Active = true,
                 DialTimeout = AMMUNATION_CALL_DURATION_MS,
@@ -3427,14 +3438,16 @@ public partial class InstantRefill : Script
             if (_legendaryMotorSportContactAdded)
                 return;
 
+            string legendaryName = ContactName("Contact_LegendaryMotorsport", "Legendary Motorsport");
+
             if (phone.Contacts.Any(c =>
-                string.Equals(c.Name, "Legendary Motorsport", StringComparison.OrdinalIgnoreCase)))
+                string.Equals(c.Name, legendaryName, StringComparison.OrdinalIgnoreCase)))
             {
                 _legendaryMotorSportContactAdded = true;
                 return;
             }
 
-            var lmContact = new iFruitContact("Legendary Motorsport")
+            var lmContact = new iFruitContact(legendaryName)
             {
                 Active = true,
                 DialTimeout = LEGENDARY_MOTORSPORT_CALL_DURATION_MS,
@@ -3505,14 +3518,16 @@ public partial class InstantRefill : Script
             if (_eliteProtectionContactAdded)
                 return;
 
+            string eliteName = ContactName("Contact_EliteProtectionUnit", "Elite Protection Unit");
+
             if (phone.Contacts.Any(c =>
-                string.Equals(c.Name, "Elite Protection Unit", StringComparison.OrdinalIgnoreCase)))
+                string.Equals(c.Name, eliteName, StringComparison.OrdinalIgnoreCase)))
             {
                 _eliteProtectionContactAdded = true;
                 return;
             }
 
-            var eliteContact = new iFruitContact("Elite Protection Unit")
+            var eliteContact = new iFruitContact(eliteName)
             {
                 Active = true,
                 DialTimeout = BODYGUARDS_CALL_DURATION_MS,

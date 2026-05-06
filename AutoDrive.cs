@@ -5,11 +5,18 @@ using GTA;
 using GTA.Math;
 using GTA.Native;
 using GTA.UI;
+using iFruitAddon2;
 
 public class WaypointAutoDrive : Script
 {
-    private const Keys ToggleKey = Keys.F7;
     private const int WaypointSpriteId = 8;
+
+    private static string L(string key, string fallback = "")
+    {
+        return Language.Get(key, fallback);
+    }
+
+    private static string LifeinvaderContactName => L("Lifeinvader_ContactName", "Lifeinvader Enterprise");
 
     // Tốc độ khởi tạo ngẫu nhiên
     private const float RandomMinSpeedKph = 125.0f;
@@ -83,11 +90,14 @@ public class WaypointAutoDrive : Script
     private int _currentCameraMode = int.MinValue;
     private int _nextCameraSwitchAt;
 
+    // Phone contact replacement for F7 toggle
+    private CustomiFruit _lifeinvaderPhoneInstance = null;
+    private bool _lifeinvaderContactAdded = false;
+
     public WaypointAutoDrive()
     {
         Interval = MainTickIntervalMs;
         Tick += OnTick;
-        KeyDown += OnKeyDown;
     }
 
     private static string T(string key, string fallback, params string[] tokensAndValues)
@@ -98,16 +108,6 @@ public class WaypointAutoDrive : Script
 
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.KeyCode == ToggleKey)
-        {
-            if (_active)
-                StopAutoDrive(T("AUTODRIVE_STOPPED", "~HUD_COLOUR_DEGEN_YELLOW~Auto Drive đã tắt."));
-            else
-                StartAutoDrive();
-
-            return;
-        }
-
         if (!_active)
             return;
 
@@ -216,6 +216,8 @@ public class WaypointAutoDrive : Script
 
     private void OnTick(object sender, EventArgs e)
     {
+        EnsureLifeinvaderContactRegistered();
+
         if (!_active)
         {
             EnsureTickInterval(MainTickIntervalMs);
@@ -632,6 +634,21 @@ public class WaypointAutoDrive : Script
         GTA.UI.Screen.ShowSubtitle(message, 3000);
     }
 
+    private void ToggleAutoDrive()
+    {
+        try
+        {
+            if (_active)
+                StopAutoDrive(T("AUTODRIVE_STOPPED", "~HUD_COLOUR_DEGEN_YELLOW~Auto Drive đã tắt."));
+            else
+                StartAutoDrive();
+        }
+        catch
+        {
+            // Xử lý lỗi nếu cần thiết
+        }
+    }
+
     private void EnsureTickInterval(int intervalMs)
     {
         if (Interval != intervalMs)
@@ -709,5 +726,73 @@ public class WaypointAutoDrive : Script
         }
 
         return false;
+    }
+
+    // ----------------------- Lifeinvader Enterprise phone contact -----------------------
+    private void EnsureLifeinvaderContactRegistered()
+    {
+        try
+        {
+            var phone = CustomiFruit.GetCurrentInstance();
+            if (phone == null || phone.Contacts == null)
+                return;
+
+            if (!ReferenceEquals(_lifeinvaderPhoneInstance, phone))
+            {
+                _lifeinvaderPhoneInstance = phone;
+                _lifeinvaderContactAdded = false;
+            }
+
+            if (_lifeinvaderContactAdded)
+                return;
+
+            string contactName = LifeinvaderContactName;
+
+            foreach (var c in phone.Contacts)
+            {
+                if (c != null && string.Equals(c.Name, contactName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _lifeinvaderContactAdded = true;
+                    return;
+                }
+            }
+
+            var contact = new iFruitContact(contactName)
+            {
+                Active = true,
+                DialTimeout = 2000,
+                Bold = false,
+                Icon = ContactIcon.Lifeinvader
+            };
+
+            contact.Answered += OnLifeinvaderEnterpriseAnswered;
+            phone.Contacts.Add(contact);
+            _lifeinvaderContactAdded = true;
+        }
+        catch
+        {
+            // Xử lý ngoại lệ nếu cần thiết
+        }
+    }
+
+    private void OnLifeinvaderEnterpriseAnswered(iFruitContact sender)
+    {
+        try
+        {
+            ToggleAutoDrive();
+
+            try
+            {
+                CustomiFruit.GetCurrentInstance()?.Close(0);
+            }
+            catch
+            {
+                // Xử lý ngoại lệ khi đóng điện thoại
+            }
+        }
+        catch
+        {
+            // Xử lý ngoại lệ khi thực hiện ToggleAutoDrive
+        }
     }
 }

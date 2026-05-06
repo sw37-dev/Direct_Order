@@ -354,6 +354,15 @@ public class VehicleDeliveryContractEvent : Script
 
     private void UpdateIdleState()
     {
+        if (DeliveryContractBridge.VehiclePendingStart &&
+            DeliveryContractBridge.CurrentKind == DeliveryContractMissionKind.Vehicle &&
+            _state == EventState.Idle)
+        {
+            DeliveryContractBridge.VehiclePendingStart = false;
+            ShowMarkerEvent();
+            return;
+        }
+
         if (Game.GameTime < _nextRollTime)
             return;
 
@@ -603,7 +612,13 @@ public class VehicleDeliveryContractEvent : Script
     {
         _missionVehicleCleanupAt = -1;
 
-        _selectedVehicleSpec = GetRandomVehicleSpec();
+        // Thay đổi logic chọn xe: Ưu tiên xe từ Auction, nếu không có thì lấy ngẫu nhiên
+        if (!TryConsumeAuctionForcedVehicle(out _selectedVehicleSpec))
+        {
+            _selectedVehicleSpec = GetRandomVehicleSpec();
+        }
+
+        // Kiểm tra nếu vẫn không tìm thấy cấu hình xe nào
         if (_selectedVehicleSpec == null)
             return false;
 
@@ -611,9 +626,12 @@ public class VehicleDeliveryContractEvent : Script
         _selectedContactName = ContactNames[_rng.Next(ContactNames.Length)];
 
         Model vehicleModel = new Model((int)_selectedVehicleSpec.ModelHash);
+
+        // Kiểm tra model có hợp lệ trong file game không
         if (!vehicleModel.IsValid || !vehicleModel.IsInCdImage)
             return false;
 
+        // Yêu cầu nạp model vào bộ nhớ
         RequestModel(vehicleModel);
         if (!vehicleModel.IsLoaded)
             return false;
@@ -635,6 +653,7 @@ public class VehicleDeliveryContractEvent : Script
 
         try
         {
+            // Thiết lập các thuộc tính cho xe nhiệm vụ
             _missionVehicle.IsPersistent = true;
             _missionVehicle.IsInvincible = false;
             _missionVehicle.CanBeVisiblyDamaged = true;
@@ -642,6 +661,7 @@ public class VehicleDeliveryContractEvent : Script
             _missionVehicle.NeedsToBeHotwired = false;
             _missionVehicle.PlaceOnGround();
 
+            // Đánh dấu là thực thể nhiệm vụ và thiết lập trạng thái vận hành
             Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, _missionVehicle.Handle, true, true);
             Function.Call(Hash.SET_VEHICLE_ENGINE_ON, _missionVehicle.Handle, true, true, false);
             Function.Call(Hash.SET_VEHICLE_DOORS_LOCKED, _missionVehicle.Handle, 1);
@@ -652,9 +672,33 @@ public class VehicleDeliveryContractEvent : Script
         }
         catch
         {
+            // Xử lý lỗi ngoại lệ nếu việc thiết lập thuộc tính thất bại
         }
 
+        // Tạo điểm đánh dấu trên bản đồ
         CreateDestinationBlip();
+
+        return true;
+    }
+
+    private bool TryConsumeAuctionForcedVehicle(out VehicleSpec spec)
+    {
+        spec = null;
+
+        uint hash;
+        string displayName;
+        int classId;
+
+        if (!DeliveryContractBridge.TryConsumeForcedMission(
+                DeliveryContractMissionKind.Vehicle,
+                out hash,
+                out displayName,
+                out classId))
+        {
+            return false;
+        }
+
+        spec = new VehicleSpec(hash, string.IsNullOrWhiteSpace(displayName) ? "Phương tiện" : displayName);
         return true;
     }
 
@@ -1448,11 +1492,82 @@ internal static class DeliveryContractBridge
 {
     public static DeliveryContractMissionKind CurrentKind = DeliveryContractMissionKind.None;
 
-    // true = đã có roll ra máy bay, chờ PlaneDeliveryContractEvent nhận và dựng marker
+    public static bool VehiclePendingStart = false;
     public static bool PlanePendingStart = false;
-
-    // true = đã có roll ra tàu thuyền, chờ SubmarineDeliveryContractEvent nhận và dựng marker
     public static bool SubmarinePendingStart = false;
+
+    public static bool ForcedMissionPending = false;
+    public static DeliveryContractMissionKind ForcedMissionKind = DeliveryContractMissionKind.None;
+    public static uint ForcedMissionModelHash = 0;
+    public static string ForcedMissionDisplayName = string.Empty;
+    public static int ForcedMissionVehicleClassId = -1;
+
+    public static bool AuctionForcedMissionPending = false;
+    public static DeliveryContractMissionKind AuctionForcedMissionKind = DeliveryContractMissionKind.None;
+    public static uint AuctionForcedModelHash = 0;
+    public static string AuctionForcedDisplayName = string.Empty;
+    public static int AuctionForcedVehicleClassId = -1;
+
+    public static void ClearAuctionForcedMission()
+    {
+        AuctionForcedMissionPending = false;
+        AuctionForcedMissionKind = DeliveryContractMissionKind.None;
+        AuctionForcedModelHash = 0;
+        AuctionForcedDisplayName = string.Empty;
+        AuctionForcedVehicleClassId = -1;
+    }
+
+    public static void RequestForcedMission(
+        DeliveryContractMissionKind kind,
+        uint modelHash,
+        string displayName,
+        int vehicleClassId)
+    {
+        CurrentKind = kind;
+        ForcedMissionPending = true;
+        ForcedMissionKind = kind;
+        ForcedMissionModelHash = modelHash;
+        ForcedMissionDisplayName = displayName ?? string.Empty;
+        ForcedMissionVehicleClassId = vehicleClassId;
+
+        VehiclePendingStart = kind == DeliveryContractMissionKind.Vehicle;
+        PlanePendingStart = kind == DeliveryContractMissionKind.Plane;
+        SubmarinePendingStart = kind == DeliveryContractMissionKind.Submarine;
+    }
+
+    public static bool TryConsumeForcedMission(
+        DeliveryContractMissionKind kind,
+        out uint modelHash,
+        out string displayName,
+        out int vehicleClassId)
+    {
+        modelHash = 0;
+        displayName = string.Empty;
+        vehicleClassId = -1;
+
+        if (!ForcedMissionPending || ForcedMissionKind != kind || ForcedMissionModelHash == 0)
+            return false;
+
+        modelHash = ForcedMissionModelHash;
+        displayName = ForcedMissionDisplayName;
+        vehicleClassId = ForcedMissionVehicleClassId;
+
+        ClearForcedMission();
+        return true;
+    }
+
+    public static void ClearForcedMission()
+    {
+        ForcedMissionPending = false;
+        ForcedMissionKind = DeliveryContractMissionKind.None;
+        ForcedMissionModelHash = 0;
+        ForcedMissionDisplayName = string.Empty;
+        ForcedMissionVehicleClassId = -1;
+
+        VehiclePendingStart = false;
+        PlanePendingStart = false;
+        SubmarinePendingStart = false;
+    }
 }
 
 internal static class HelpBoxBridge

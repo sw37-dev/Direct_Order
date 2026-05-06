@@ -28,14 +28,14 @@ public partial class PersistentManager : Script
     private static readonly string VehiclesFile = Path.Combine(DataFolder, "persistent_vehicles.txt");
     private const int MAX_BACKUPS = 1; // số bản backup giữ lại
     private const bool ENABLE_LOG = false;
-    private const string MMI_CONTACT_NAME = "Mors Mutual Insurance";
+    private static string MMI_CONTACT_NAME => L("MMI_ContactName", "Mors Mutual Insurance");
     private const int MMI_CALL_DURATION_MS = 2000;
 
     private static bool _mmiRestorePending = false;
     private static int _mmiRestoreDueTime = 0;
     private bool _mmiContactAdded = false;
 
-    private const string ASSET_RECOVERY_CONTACT_NAME = "Asset Recovery Center";
+    private static string ASSET_RECOVERY_CONTACT_NAME => L("ARC_ContactName", "Asset Recovery Center");
     private const int ASSET_RECOVERY_CALL_DURATION_MS = 2000;
 
     private static bool _assetRecoveryRestorePending = false;
@@ -460,6 +460,31 @@ public partial class PersistentManager : Script
         }
     }
 
+    private static bool ContactNameMatches(string actualName, params string[] candidates)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(actualName) || candidates == null || candidates.Length == 0)
+                return false;
+
+            string actual = actualName.Trim();
+
+            foreach (var candidate in candidates)
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                    continue;
+
+                if (string.Equals(actual, candidate.Trim(), StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
     private List<PersistentVehicle> GetOwnedVehiclesForCurrentPlayer()
     {
         try
@@ -494,19 +519,21 @@ public partial class PersistentManager : Script
             if (phone == null || phone.Contacts == null)
                 return;
 
+            string arcName = ASSET_RECOVERY_CONTACT_NAME;
+
             if (phone.Contacts.Any(c =>
-                string.Equals(c.Name, ASSET_RECOVERY_CONTACT_NAME, StringComparison.OrdinalIgnoreCase)))
+                ContactNameMatches(c.Name, arcName, "Asset Recovery Center")))
             {
                 _assetRecoveryContactAdded = true;
                 return;
             }
 
-            var arc = new iFruitContact(ASSET_RECOVERY_CONTACT_NAME)
+            var arc = new iFruitContact(arcName)
             {
                 Active = true,
                 DialTimeout = ASSET_RECOVERY_CALL_DURATION_MS,
                 Bold = false,
-                Icon = ContactIcon.MP_StripclubPr,
+                Icon = ContactIcon.BankOfLiberty,
             };
 
             arc.Answered += OnAssetRecoveryContactAnswered;
@@ -620,14 +647,16 @@ public partial class PersistentManager : Script
             if (phone == null || phone.Contacts == null)
                 return;
 
+            string mmiName = MMI_CONTACT_NAME;
+
             if (phone.Contacts.Any(c =>
-                string.Equals(c.Name, MMI_CONTACT_NAME, StringComparison.OrdinalIgnoreCase)))
+                ContactNameMatches(c.Name, mmiName, "Mors Mutual Insurance")))
             {
                 _mmiContactAdded = true;
                 return;
             }
 
-            var mmi = new iFruitContact(MMI_CONTACT_NAME)
+            var mmi = new iFruitContact(mmiName)
             {
                 Active = true,
                 DialTimeout = 2000,
