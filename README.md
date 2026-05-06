@@ -1,5 +1,4 @@
-# Direct_Order
-README: DirectOrder Script  (v1.4.4)
+README: Direct Order Script  (v1.5)
 Author: SW37
 
 ------------------------------------------
@@ -21,7 +20,6 @@ Note: Your character’s stats will increase slightly with each purchase of heal
 
 ------------------------------------------
 
-                                              ======   FIX   =====
 
 III. ONLINE WEAPONS SUPPORT
 Call Ammunation via your phone to purchase a random rare weapon from GTA Online.
@@ -30,7 +28,6 @@ Customization: Weapons come with unique attachments. You can choose to buy them 
 
 ------------------------------------------
 
-                                              ======   FIX   =====
 
 IV. ONLINE SUPER VEHICLES
 Call Legendary Motorsport to open the vehicle purchase menu.
@@ -46,6 +43,7 @@ V. CHRISTMAS MAP & WEATHER TOGGLE
 
 ------------------------------------------
 
+
                                               ======   FIX   =====
 
 VI. VEHICLE PURCHASE METHODS
@@ -57,13 +55,12 @@ Delivery Note:
 + NPC Delivery: An NPC will personally deliver your vehicle to your location. This primarily applies to ground vehicles.
 + Special Vehicles: Please note that flying vehicles, helicopters, planes, RC vehicles, and boats will not be delivered by an NPC; they will be spawned nearby.
 + Delivery Issues: Occasionally, the NPC AI may glitch, causing your vehicle to be delivered to a nearby location on the map rather than directly to you. If this happens, check your radar for the vehicle icon.
-+ Toggle Delivery Mode: By default, the mod is set to NPC Delivery. If you prefer a different method, press "NumPad 0" to switch to "Teleport" mode.
++ Toggle Delivery Mode: By default, the mod is set to NPC Delivery. If you prefer a different method, call "Pegasus Concierge" to switch to "Teleport" mode.
 
 
 ------------------------------------------
 
 
-                                                     =====   FIX   ===== 
 
 VII. SALES & DISCOUNTS
 + Activate Sale Mode for vehicles (Does not apply to weapons).
@@ -76,12 +73,11 @@ Note: Allows you to adjust the discount multiplier in the DirectOrder.ini file.
 ------------------------------------------
 
 
-                                              ======   FIX   =====
-
 VIII. VEHICLE & WEAPON SAVING SYSTEM
 IMPORTANT: Story Mode handles persistence differently than Online. If you drive too far away or reload the game, the game engine may despawn your purchased items.
 
 Recovery: If your vehicle or weapon disappears, simply call Mors Mutual Insurance to recover it immediately (including all ammo and attachments). A vehicle icon will appear on the map; simply proceed to that location to retrieve your assets.
+
 
 ------------------------------------------
 
@@ -125,7 +121,7 @@ Press "F6" to toggle the jump ability - space (Currently optimized for motorcycl
 XII. EXPANDING COMPATIBILITY FOR CUSTOM VEHICLE MODS
 To add your own custom vehicles, first install them via OpenIV as you normally would. You will need the "spawn name" (usually provided by the vehicle’s creator). You must then register these vehicles in the DirectOrder_CustomVehicles.xml file to include them in the mod's menu and ensure they function as official entities.
 
-In the [Custom vehicles] section of DirectOrder.ini, use the following format to add your vehicles:
+In the DirectOrder_CustomVehicles.xml, use the following format to add your vehicles:
 
              <Vehicle token="spawn name" name="display name on menu" label="model name" class="category" priceMin="min price" priceMax="max price" />
 
@@ -152,7 +148,6 @@ If you already own 10 vehicles and decide to purchase another one, the mod will 
 
 ------------------------------------------
 
-                                              ======   FIX   =====
 
 XIV. LOYALTY POINTS AND REWARDS
 You can receive a free "masterpiece" from the list (including the custom vehicles you have added).
@@ -162,8 +157,6 @@ You can receive a free "masterpiece" from the list (including the custom vehicle
 
 ------------------------------------------
 
-
-                                                     =====   FIX   =====   
 
 XV. BODYGUARDS (COMPANIONS)
 You can "hire" 3 bodyguards at a low cost, provided you have at least $75,000 to use this feature. Your bodyguards have high survivability and are equipped with powerful weapons (excluding explosive weapons that could endanger you). When a bodyguard dies, you are typically not allowed to pick up their weapons (though you might be able to if you get lucky); you can purchase them in Section III.
@@ -197,7 +190,6 @@ This feature realistically simulates the power flickering effects before the cit
 
 ------------------------------------------
 
-                                              ======   FIX   =====
 
 XIX. VEHICLE REPAIR AND LIGHTING CUSTOMIZATION
 This feature allows you to automatically repair any vehicle (including NPC vehicles) and customize neon and dashboard colors (if the vehicle supports them).
@@ -226,7 +218,6 @@ XXI. OTHER SUPPORT FEATURES
 
 ------------------------------------------
 
-                                              ======   FIX   =====
 
 XXII. VEHICLE DEALERSHIP SYSTEM (VEHICLE LIQUIDATION)
 - Call the Asset Recovery Center via your phone to mark the dealership locations on your map.
@@ -291,3 +282,44 @@ XXVIII. POLICE BRIBERY
 XXIX. NIGHT VISION HELMET
 + Integrated into the Numpad 1 menu (free of charge).
 + Features 2 modes: Night Vision (Green) and Thermal Vision (Red-Orange).
+
+
+------------------------------------------
+
+                                              ======   NEW   =====
+XXX. AUCTION SYSTEM (STOCK MARKET STYLE)
++ Auctions occur randomly between 17:00 and 20:00, lasting for 180 seconds (~3 minutes).
++ High volatility with price fluctuations ranging from -25% to +25%.
++ NPC competitors have a 6% to 13% chance to purchase the vehicle every time the price updates.
++ To secure a deal, you must call Velocity Auctions to confirm your purchase and then proceed to the designated location to collect the vehicle. (For safety, you can preview the vehicle model before committing by calling Legendary Motorsport to locate it).
++ If a competitor outbids you and purchases the vehicle first, there is a chance they will hire you to deliver their newly acquired vehicle (the one you just missed out on).
+
+
+------------------------------------------
+
+                                              ======   NEW   =====
+XXXI. BANK LOAN SYSTEM
+- Call Fleeca Bank to select either "Borrow" or "Repay" depending on your current status.
+- The loan model is simplified for gameplay but remains fully functional.
+- Meet a bank representative at the designated cafe (marked location).
+- Loan eligibility and limits (Borrow as much as you need within your tier):
+  + Minimum Requirement: Must have at least 2.5M Loyalty Points (simulating your credit score).
+  + 2.5M - 5M Points: Borrow up to $3,000,000
+  + 5M - 10M Points: Borrow up to $8,000,000
+  + 10M - 20M Points: Borrow up to $15,000,000
+  + 20M - 50M Points: Borrow up to $45,000,000
+  + 50M - 100M Points: Borrow up to $90,000,000
+  + Over 100M Points: Borrow up to $200,000,000
+- The bank will deduct a daily interest and principal payment of 0.75% of your total loan.
+- If you have insufficient funds for the daily payment, the bank will seize your current balance AND repossess all vehicles you currently own.
+- If you have no collateral (no vehicles), you will be assigned a 5-star wanted level (simulating a debt evasion crackdown).
+- Switching characters may grant a temporary delay, but unpaid debts will accumulate and be due once you switch back to that character.
+- Early repayment is permitted, though additional interest/fees will apply.
+
+
+------------------------------------------
+
+                                              ======   NEW   =====
+XXXII. HACKER & TECHNOLOGY SYSTEM
+- Call Paige Harris to manually trigger a city-wide blackout (overriding your preset configurations). Once called, the automated blackout system will be disabled for that day, and vice versa.
+- Call Lifeinvader Enterprise to activate the Auto Drive feature.
