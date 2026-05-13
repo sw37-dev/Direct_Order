@@ -1,4 +1,4 @@
-README: Direct Order Script  (v1.5)
+README: Direct Order Script  (v1.5.1)
 Author: SW37
 
 ------------------------------------------
@@ -55,7 +55,7 @@ Delivery Note:
 + NPC Delivery: An NPC will personally deliver your vehicle to your location. This primarily applies to ground vehicles.
 + Special Vehicles: Please note that flying vehicles, helicopters, planes, RC vehicles, and boats will not be delivered by an NPC; they will be spawned nearby.
 + Delivery Issues: Occasionally, the NPC AI may glitch, causing your vehicle to be delivered to a nearby location on the map rather than directly to you. If this happens, check your radar for the vehicle icon.
-+ Toggle Delivery Mode: By default, the mod is set to NPC Delivery. If you prefer a different method, call "Pegasus Concierge" to switch to "Teleport" mode.
++ Toggle Delivery Mode: By default, the mod is set to NPC Delivery. If you prefer a different method, call "Pegasus Concierge" to switch to "Teleport" or "Waypoint" mode.
 
 
 ------------------------------------------
@@ -69,6 +69,7 @@ VII. SALES & DISCOUNTS
 + The discount rate is now based on a one-time luck roll when the event occurs. If you miss this window or the luck roll, prices will remain at their standard rates.
 
 Note: Allows you to adjust the discount multiplier in the DirectOrder.ini file.
+
 
 ------------------------------------------
 
@@ -286,7 +287,7 @@ XXIX. NIGHT VISION HELMET
 
 ------------------------------------------
 
-                                              ======   NEW   =====
+
 XXX. AUCTION SYSTEM (STOCK MARKET STYLE)
 + Auctions occur randomly between 17:00 and 20:00, lasting for 180 seconds (~3 minutes).
 + High volatility with price fluctuations ranging from -25% to +25%.
@@ -297,29 +298,60 @@ XXX. AUCTION SYSTEM (STOCK MARKET STYLE)
 
 ------------------------------------------
 
-                                              ======   NEW   =====
+                                              ======   FIX   =====
 XXXI. BANK LOAN SYSTEM
-- Call Fleeca Bank to select either "Borrow" or "Repay" depending on your current status.
-- The loan model is simplified for gameplay but remains fully functional.
-- Meet a bank representative at the designated cafe (marked location).
-- Loan eligibility and limits (Borrow as much as you need within your tier):
-  + Minimum Requirement: Must have at least 2.5M Loyalty Points (simulating your credit score).
-  + 2.5M - 5M Points: Borrow up to $3,000,000
+- Call Fleeca Bank to choose between “Take a Loan” or “Repay Debt” depending on your current situation.
+- The loan system has been simplified to better fit gameplay while still remaining fully functional.
+- Meet the bank representative at the designated café (marked location) or at bank branches on the map.
+- Loan requirements and limits (you can borrow within your current tier limit): Minimum requirement: Must have at least 2.5 million Loyalty Points (simulated credit score).
+  + 2.5M - 5M points: Borrow up to $3,000,000
   + 5M - 10M Points: Borrow up to $8,000,000
   + 10M - 20M Points: Borrow up to $15,000,000
   + 20M - 50M Points: Borrow up to $45,000,000
   + 50M - 100M Points: Borrow up to $90,000,000
   + Over 100M Points: Borrow up to $200,000,000
-- The bank will deduct a daily interest and principal payment of 0.75% of your total loan.
-- If you have insufficient funds for the daily payment, the bank will seize your current balance AND repossess all vehicles you currently own.
-- If you have no collateral (no vehicles), you will be assigned a 5-star wanted level (simulating a debt evasion crackdown).
-- Switching characters may grant a temporary delay, but unpaid debts will accumulate and be due once you switch back to that character.
-- Early repayment is permitted, though additional interest/fees will apply.
+- Fleeca Bank will now check whether you have vehicles available for collateral, then charge daily payments based on the number of collateralized vehicles at different rates.
+- The more vehicles you have, the lower the collected amount:
+  + 3 collateralized vehicles: 0.75%
+  + 2 collateralized vehicles: 1.5%
+  + 1 collateralized vehicle: 3%
+  + 0 collateralized vehicles: 8%
+  + If you have no collateral vehicles at the time of borrowing: 4%
+- If you fail to make daily payments, the bank will seize your entire current balance AND repossess one of your owned vehicles. (Collateral only reduces the payment rate.)
+- If you have no collateral assets (do not own any vehicles), you will receive a 5-star wanted level (simulating a debt evasion crackdown).
+- Switching characters may temporarily delay payments, but unpaid debt will continue to accumulate and must still be paid once you return to that character.
+- Early repayment is allowed, however additional interest/fees will apply depending on the loan age: Once your loan is approved by Fleeca Bank, fees will scale based on how long the loan has existed:
+  + First 7 days: 7.31%
+  + Next 10 days: 3.7%
+  + Following days: 1.67%
+- The additional fee rate may fluctuate within a ±0.5% range.
+- Allows viewing detailed "Collateral Assets" information to see the number of collateral vehicles, the daily payment amount, and detailed names of vehicles currently under seal. (Note: Sealed vehicles can still be used normally, but if destroyed/exploded, etc., the vehicle is considered lost and the penalty rate increases.)
+- Fleeca allows you to choose between “Preset Loan Packages” provided by the bank or “Custom Loan Amount” (manually enter the exact amount):
+  + Packages: $500,000, 1M, 3M, 5M, 8M, 12M, 30M, 50M, 100M, and 200M.
+- Collateral vehicles (sealed by Fleeca) cannot be sold/liquidated at dealerships.
+
+
+------------------------------------------
+
+                                              ======   FIX   =====
+XXXII. HACKER & TECHNOLOGY SYSTEM
+- Call Paige Harris to manually trigger a citywide blackout (overrides your preset configuration settings). Once activated, the automatic blackout system will be disabled for that day, and vice versa.
+- Paige Harris will warn you that you will become wanted when shutting down the city's power.
+- Changed the power failure system (system-triggered blackout) so you will remain "safe" (no wanted level).
+- If you manually request a blackout, you can call Paige Harris again to restore the power (including the built-in electrical surge effect).
+- If the blackout is system-triggered, Paige Harris cannot manually restore the power.
+- Call Lifeinvader Enterprise to activate the Auto Drive feature.
 
 
 ------------------------------------------
 
                                               ======   NEW   =====
-XXXII. HACKER & TECHNOLOGY SYSTEM
-- Call Paige Harris to manually trigger a city-wide blackout (overriding your preset configurations). Once called, the automated blackout system will be disabled for that day, and vice versa.
-- Call Lifeinvader Enterprise to activate the Auto Drive feature.
+XXXIII. LOMBANK SYSTEM
+- LomBank provides you with a personal LomBank credit account with an initial credit limit of $1 million.
+- Call LomBank to view your character details and current credit limits.
+- If you confirm a LomBank transaction, you must go to LomBank and head behind the building to find the ATM there.
+- The credit account allows you to withdraw/deposit money to complete transactions.
+- If you fail to repay within 7 days after withdrawing money, interest will increase daily from the following days with compound interest: +0.2% per day.
+- Your credit limit will increase slightly if you repay LomBank on time (easier than Fleeca Bank).
+- The maximum total credit limit is $10 million.
+- All 3 characters have separate accounts.
