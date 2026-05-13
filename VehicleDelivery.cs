@@ -10,6 +10,7 @@ using System.Windows.Forms;
 using iFruitAddon2;
 using LemonUI;
 using LemonUI.Menus;
+using System.Reflection;
 
 public class VehicleDelivery : Script
 {
@@ -28,6 +29,16 @@ public class VehicleDelivery : Script
         Spawned,
         Failed
     }
+
+    private enum DeliveryMode
+    {
+        NpcDelivery = 0,        // giao như hiện tại
+        ExpressSpawnFront = 1,  // spawn trước mặt player
+        SpawnAtWaypoint = 2     // mode mới
+    }
+
+    private DeliveryMode _deliveryMode = DeliveryMode.NpcDelivery;
+    private DeliveryMode _pendingDeliveryMode = DeliveryMode.NpcDelivery;
 
     // Behavior states for per-task state machine
     private enum BehaviorState
@@ -50,6 +61,10 @@ public class VehicleDelivery : Script
         public Action<Vehicle> OnDelivered;
         public bool IsActive;
         public bool HasSpawned;              // becomes true when vehicle + ped created
+
+        public DeliveryMode Mode = DeliveryMode.NpcDelivery;
+        public Vector3 WaypointSpawnPos = Vector3.Zero;
+        public bool HasWaypointSpawnPos = false;
 
         // NEW: whether this model is considered "registered for delivery" (set when processing task)
         public bool IsRegistered = true;
@@ -375,8 +390,9 @@ public class VehicleDelivery : Script
     private CustomiFruit _pegasusPhoneInstance = null;
     private bool _pegasusContactAdded = false;
     private NativeMenu _pegasusConciergeMenu = null;
-    private NativeCheckboxItem _pegasusCurrentLocationItem = null;
+    private NativeCheckboxItem _pegasusNpcItem = null;
     private NativeCheckboxItem _pegasusExpressItem = null;
+    private NativeCheckboxItem _pegasusWaypointItem = null;
     private bool _pegasusMenuSyncLock = false;
 
     // Optional: expose default via INI (được xử lý trong LoadSettings patch)
@@ -519,6 +535,60 @@ public class VehicleDelivery : Script
         catch { /* Ngậm lỗi để tránh crash game khi file INI hỏng */ }
     }
 
+    private bool TryGetCurrentWaypoint(out Vector3 waypoint)
+    {
+        waypoint = Vector3.Zero;
+        try
+        {
+            waypoint = World.WaypointPosition;
+            if (waypoint == Vector3.Zero)
+                return false;
+
+            // best-effort: kéo về vị trí đường gần nhất
+            var street = World.GetNextPositionOnStreet(waypoint);
+            if (street != Vector3.Zero)
+                waypoint = street;
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool CanUseWaypointDelivery(out string reason)
+    {
+        reason = "";
+        try
+        {
+            if (_singleton == null)
+                _singleton = new VehicleDelivery();
+
+            var inst = _singleton;
+            if (inst == null)
+            {
+                reason = ContactName("VehicleDelivery_CannotInit", "~r~Không thể khởi tạo dịch vụ giao xe.");
+                return false;
+            }
+
+            // Chỉ mode waypoint mới bắt buộc có waypoint
+            if (inst._deliveryMode != DeliveryMode.SpawnAtWaypoint)
+                return true;
+
+            if (inst.TryGetCurrentWaypoint(out Vector3 wp) && wp != Vector3.Zero)
+                return true;
+
+            reason = ContactName("VehicleDelivery_PlaceWaypointFirst", "~r~Hãy đặt waypoint trên bản đồ trước khi mua xe.~s~");
+            return false;
+        }
+        catch
+        {
+            reason = ContactName("VehicleDelivery_CannotCheckWaypoint", "~r~Không thể kiểm tra waypoint lúc này.");
+            return false;
+        }
+    }
+
     private void LoadAllowedVehicles()
     {
         try
@@ -587,7 +657,9 @@ public class VehicleDelivery : Script
 
         try
         {
+            ApplyMenuMouseState();
             _luiPool?.Process();
+            ApplyMenuMouseState();
         }
         catch { }
 
@@ -1282,19 +1354,17 @@ public class VehicleDelivery : Script
         {
             if (t.Stage == SpawnStage.NotStarted)
             {
-                // --- NEW: xác định task này có "registered" (được phép giao) hay không.
+                // --- XÁC ĐỊNH TASK CÓ REGISTERED HAY KHÔNG ---
                 bool anyRestriction = (_allowedVehicles.Count > 0) || (_hardcodedAllowed.Count > 0);
                 t.IsRegistered = !anyRestriction || _allowedVehicles.Contains(t.ModelHash) || _hardcodedAllowed.Contains(t.ModelHash);
 
                 // --- PATCH: force-spawn override ---
                 if (_forceSpawnInFrontMode)
                 {
-                    // Khi chế độ force bật, coi như mọi task đều KHÔNG registered 
-                    // => sẽ kích hoạt nhánh "spawn in front of player" ở Stage RequestedModel.
                     t.IsRegistered = false;
                 }
 
-                // request/validate model
+                // Request/Validate model
                 var mLocal = new Model((int)t.ModelHash);
                 if (!mLocal.IsValid || !mLocal.IsInCdImage)
                 {
@@ -1308,7 +1378,7 @@ public class VehicleDelivery : Script
                 t.RequestedModel = mLocal;
                 t.ModelRequestStartMs = now;
 
-                // normalize target pos to nearest street
+                // Normalize target pos to nearest street
                 try
                 {
                     var street = FindBestApproachPoint(t.TargetPos);
@@ -1326,10 +1396,90 @@ public class VehicleDelivery : Script
 
                 if (m.IsLoaded)
                 {
-                    // ---------- PHẦN ĐIỀU CHỈNH THEO HƯỚNG DẪN ----------
-                    // Nếu model KHÔNG registered để giao bằng NPC, thì chuyển sang luồng "spawn/teleport trước mặt người chơi"
-                    // Đây là hành vi mong muốn cả khi: (a) _forceSpawnInFrontMode == true (chế độ giao tắt) và (b) _forceSpawnInFrontMode == false (NPC-on nhưng model không trong INI)
-                    if (!t.IsRegistered)
+                    // NHÁNH MỚI: GIAO TẠI WAYPOINT
+                    if (t.Mode == DeliveryMode.SpawnAtWaypoint)
+                    {
+                        try
+                        {
+                            Vector3 spawnPos = t.HasWaypointSpawnPos ? t.WaypointSpawnPos : t.TargetPos;
+                            if (spawnPos == Vector3.Zero)
+                            {
+                                t.Stage = SpawnStage.Failed;
+                                CleanupTask(t, false);
+                                return;
+                            }
+
+                            float heading = 0f;
+                            try
+                            {
+                                TryFindRoadSpawnPointNear(spawnPos, 2.0f, 18.0f, 10, out spawnPos, out heading);
+                            }
+                            catch { }
+
+                            Vehicle spawned = null;
+                            try
+                            {
+                                spawned = World.CreateVehicle(m, spawnPos, heading);
+                            }
+                            catch
+                            {
+                                spawned = null;
+                            }
+
+                            if (spawned == null || !SafeExists(spawned))
+                            {
+                                try { spawned = World.CreateVehicle(m, spawnPos); } catch { spawned = null; }
+                            }
+
+                            if (spawned == null || !SafeExists(spawned))
+                            {
+                                t.Stage = SpawnStage.Failed;
+                                CleanupTask(t, false);
+                                return;
+                            }
+
+                            try
+                            {
+                                spawned.PlaceOnGround();
+                                spawned.Repair();
+                                spawned.DirtLevel = 0f;
+                                spawned.IsEngineRunning = false;
+                            }
+                            catch { }
+
+                            try { ApplyOnlineLikeUpgrades(spawned); } catch { }
+                            try { ApplyFinalVehicleFinish(spawned); } catch { }
+                            try { PersistentManager.RegisterVehicle(spawned); } catch { }
+
+                            t.SpawnedVehicle = spawned;
+                            t.DriverPed = null;
+                            t.HasSpawned = true;
+                            t.Stage = SpawnStage.Spawned;
+                            t.IsActive = false;
+
+                            try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
+                            try { t.OnDelivered?.Invoke(spawned); } catch { }
+
+                            ShowFeedMessage(
+                                Tr("VehicleDelivery_FeedSender", "Legendary Motorsport"),
+                                Tr("VehicleDelivery_FeedDeliveredSubject", "Giao xe"),
+                                Tr("VehicleDelivery_FeedDeliveredBody", "Xe của bạn đã được giao tại waypoint bạn đã đặt trên bản đồ.")
+                            );
+
+                            CleanupTask(t, true);
+                            return;
+                        }
+                        catch
+                        {
+                            try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
+                            t.Stage = SpawnStage.Failed;
+                            CleanupTask(t, false);
+                            return;
+                        }
+                    }
+
+                    // NHÁNH: EXPRESS SPAWN / NOT REGISTERED
+                    if (!t.IsRegistered || t.Mode == DeliveryMode.ExpressSpawnFront)
                     {
                         try
                         {
@@ -1343,8 +1493,6 @@ public class VehicleDelivery : Script
                             }
 
                             Vehicle spawned = null;
-
-                            // ưu tiên spawn trên node đường lộ phía trước player
                             Vector3 roadSpawnPos = Vector3.Zero;
                             float roadSpawnHeading = 0f;
                             Vector3 roadOrigin = player.Position + player.ForwardVector * 12.0f;
@@ -1353,36 +1501,19 @@ public class VehicleDelivery : Script
 
                             if (roadSpawnOk)
                             {
-                                try
-                                {
-                                    spawned = World.CreateVehicle(m, roadSpawnPos, roadSpawnHeading);
-                                }
-                                catch
-                                {
-                                    spawned = null;
-                                }
+                                try { spawned = World.CreateVehicle(m, roadSpawnPos, roadSpawnHeading); } catch { spawned = null; }
                             }
 
-                            // fallback về logic cũ nếu spawn trên node không ra
                             if (spawned == null || !SafeExists(spawned))
                             {
                                 Vector3 basePos = player.Position + player.ForwardVector * 3.2f + new Vector3(0f, 0f, 0.5f);
-
                                 for (int attempt = 0; attempt < 6 && (spawned == null || !SafeExists(spawned)); attempt++)
                                 {
                                     float jitter = 1.8f + attempt * 0.6f;
                                     Vector3 tryPos = basePos + new Vector3((float)(_rng.NextDouble() - 0.5f) * jitter, (float)(_rng.NextDouble() - 0.5f) * jitter, 0f);
                                     Vector3 ground = World.GetNextPositionOnStreet(tryPos);
                                     if (ground != Vector3.Zero) tryPos = ground;
-
-                                    try
-                                    {
-                                        spawned = World.CreateVehicle(m, tryPos);
-                                    }
-                                    catch
-                                    {
-                                        spawned = null;
-                                    }
+                                    try { spawned = World.CreateVehicle(m, tryPos); } catch { spawned = null; }
                                 }
                             }
 
@@ -1412,10 +1543,7 @@ public class VehicleDelivery : Script
                                 try { Game.Player.Character.SetIntoVehicle(spawned, VehicleSeat.Driver); }
                                 catch
                                 {
-                                    SafeCall(() =>
-                                    {
-                                        Function.Call(Hash.SET_PED_INTO_VEHICLE, Game.Player.Character.Handle, spawned.Handle, -1);
-                                    });
+                                    SafeCall(() => { Function.Call(Hash.SET_PED_INTO_VEHICLE, Game.Player.Character.Handle, spawned.Handle, -1); });
                                 }
                             }
                             catch { }
@@ -1425,10 +1553,7 @@ public class VehicleDelivery : Script
                             try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
 
                             t.IsActive = false;
-                            lock (_tasks)
-                            {
-                                if (_tasks.Contains(t)) _tasks.Remove(t);
-                            }
+                            lock (_tasks) { if (_tasks.Contains(t)) _tasks.Remove(t); }
                             return;
                         }
                         catch
@@ -1440,17 +1565,15 @@ public class VehicleDelivery : Script
                         }
                     }
 
-                    // ---------- ELSE: registered => ưu tiên node đường lộ, fail thì fallback logic cũ ----------
+                    // NHÁNH: NPC DELIVERY (Logic giao hàng mặc định)
                     bool spawnedOk = false;
                     Vehicle veh = null;
                     Ped driver = null;
-
                     int maxAttempts = Math.Max(1, Math.Min(SPAWN_ATTEMPTS_MAX, _spawnRetryCount));
 
                     for (int attempt = 0; attempt < maxAttempts && !spawnedOk; attempt++)
                     {
                         t.SpawnAttempts = attempt + 1;
-
                         Vector3 spawnPos = Vector3.Zero;
                         float spawnHeading = 0f;
                         bool roadSpawnOk = false;
@@ -1459,48 +1582,28 @@ public class VehicleDelivery : Script
                         {
                             float minDist = Math.Max(30f, t.Distance - 20f);
                             float maxDist = Math.Min(220f, t.Distance + 40f);
-
                             roadSpawnOk = TryFindRoadSpawnPointNear(t.TargetPos, minDist, maxDist, 10, out spawnPos, out spawnHeading);
                         }
-                        catch
-                        {
-                            roadSpawnOk = false;
-                        }
+                        catch { roadSpawnOk = false; }
 
                         if (roadSpawnOk)
                         {
-                            try
-                            {
-                                veh = World.CreateVehicle(m, spawnPos, spawnHeading);
-                            }
-                            catch
-                            {
-                                veh = null;
-                            }
+                            try { veh = World.CreateVehicle(m, spawnPos, spawnHeading); } catch { veh = null; }
                         }
 
-                        // fallback về logic cũ nếu node spawn không thành công
                         if (veh == null || !SafeExists(veh))
                         {
                             double angle = (_rng.NextDouble() * 2.0 * Math.PI);
-                            float attemptRadius = t.Distance;
-                            if (attempt == 0) attemptRadius = Math.Max(t.Distance, SPAWN_RADIUS_MIN);
-                            else attemptRadius = Math.Min(SPAWN_RADIUS_MAX, t.Distance + attempt * 12);
-
+                            float attemptRadius = (attempt == 0) ? Math.Max(t.Distance, SPAWN_RADIUS_MIN) : Math.Min(SPAWN_RADIUS_MAX, t.Distance + attempt * 12);
                             float dx = (float)Math.Cos(angle);
                             float dy = (float)Math.Sin(angle);
                             Vector3 oldSpawnPos = t.TargetPos + new Vector3(dx * attemptRadius, dy * attemptRadius, 3.0f);
                             Vector3 groundPos = World.GetNextPositionOnStreet(oldSpawnPos);
                             if (groundPos != Vector3.Zero) oldSpawnPos = groundPos;
-
                             try { veh = World.CreateVehicle(m, oldSpawnPos); } catch { veh = null; }
                         }
 
-                        if (veh == null || !SafeExists(veh))
-                        {
-                            try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
-                            continue;
-                        }
+                        if (veh == null || !SafeExists(veh)) continue;
 
                         try
                         {
@@ -1512,28 +1615,16 @@ public class VehicleDelivery : Script
                         }
                         catch { }
 
-                        driver = null;
                         var pedCandidates = new uint[] { 0x9CE6AEB5u, 0x705E61F2u, 0xC7C21664u, 0xA10B9F45u };
                         Model pedModel = null;
                         foreach (var pm in pedCandidates)
                         {
-                            try
-                            {
-                                var mm = new Model((int)pm);
-                                if (mm.IsValid)
-                                {
-                                    pedModel = mm;
-                                    break;
-                                }
-                            }
-                            catch { }
+                            try { var mm = new Model((int)pm); if (mm.IsValid) { pedModel = mm; break; } } catch { }
                         }
 
                         if (pedModel == null)
                         {
-                            try { if (veh != null && veh.Exists()) veh.Delete(); } catch { }
-                            try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
-                            try { if (pedModel != null) pedModel.MarkAsNoLongerNeeded(); } catch { }
+                            try { if (veh.Exists()) veh.Delete(); } catch { }
                             continue;
                         }
 
@@ -1543,8 +1634,6 @@ public class VehicleDelivery : Script
                         if (driver == null || !SafeExists(driver))
                         {
                             try { if (veh.Exists()) veh.Delete(); } catch { }
-                            try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
-                            try { if (pedModel != null) pedModel.MarkAsNoLongerNeeded(); } catch { }
                             continue;
                         }
 
@@ -1554,63 +1643,33 @@ public class VehicleDelivery : Script
                             driver.BlockPermanentEvents = true;
                             driver.IsPersistent = true;
                             driver.CanBeTargetted = false;
+                            ApplyOnlineLikeUpgrades(veh);
                         }
                         catch { }
 
-                        try { ApplyOnlineLikeUpgrades(veh); } catch { }
-
-                        float postSpawnDist = veh.Position.DistanceTo(t.TargetPos);
-                        if (postSpawnDist > SPAWN_RADIUS_MAX + 50f)
+                        if (veh.Position.DistanceTo(t.TargetPos) > SPAWN_RADIUS_MAX + 50f)
                         {
-                            try { if (driver.Exists()) driver.Delete(); } catch { }
-                            try { if (veh.Exists()) veh.Delete(); } catch { }
+                            try { if (driver.Exists()) driver.Delete(); if (veh.Exists()) veh.Delete(); } catch { }
                             continue;
                         }
 
                         try
                         {
-                            try
-                            {
-                                Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE,
-                                    driver.Handle, veh.Handle,
-                                    t.TargetPos.X, t.TargetPos.Y, t.TargetPos.Z,
-                                    35.0f, 0, (int)t.ModelHash,
-                                    AGGRESSIVE_DRIVING_STYLE, 4.0f);
-                            }
-                            catch
-                            {
-                                Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD,
-                                    driver.Handle, veh.Handle,
-                                    t.TargetPos.X, t.TargetPos.Y, t.TargetPos.Z,
-                                    35.0f, 0, (int)t.ModelHash,
-                                    AGGRESSIVE_DRIVING_STYLE, 4.0f);
-                            }
-
+                            Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE, driver.Handle, veh.Handle, t.TargetPos.X, t.TargetPos.Y, t.TargetPos.Z, 35.0f, 0, (int)t.ModelHash, AGGRESSIVE_DRIVING_STYLE, 4.0f);
                             Function.Call(Hash.SET_DRIVE_TASK_CRUISE_SPEED, driver.Handle, 35.0f);
-                            try { Function.Call(Hash.SET_DRIVE_TASK_DRIVING_STYLE, driver.Handle, AGGRESSIVE_DRIVING_STYLE); } catch { }
                         }
-                        catch
-                        {
-                            try { driver.Task.CruiseWithVehicle(veh, 35.0f); } catch { }
-                        }
+                        catch { try { driver.Task.CruiseWithVehicle(veh, 35.0f); } catch { } }
 
                         t.SpawnedVehicle = veh;
                         t.DriverPed = driver;
                         t.HasSpawned = true;
                         t.Stage = SpawnStage.Spawned;
-
                         t.LastDistance = Vector3.Distance(veh.Position, t.TargetPos);
                         t.LastMoveTimeMs = Game.GameTime;
-                        t.RecoveryAttempts = 0;
-                        t.IsBraking = false;
-                        t.LastNudgeMs = 0;
                         t.State = BehaviorState.Driving;
                         t.StateStartMs = Game.GameTime;
-                        t.AvoidTarget = Vector3.Zero;
 
-                        try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
-                        try { if (pedModel != null) pedModel.MarkAsNoLongerNeeded(); } catch { }
-
+                        try { t.RequestedModel?.MarkAsNoLongerNeeded(); pedModel.MarkAsNoLongerNeeded(); } catch { }
                         spawnedOk = true;
                         break;
                     }
@@ -1620,7 +1679,6 @@ public class VehicleDelivery : Script
                         try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
                         t.Stage = SpawnStage.Failed;
                         CleanupTask(t, false);
-                        return;
                     }
                     return;
                 }
@@ -1632,7 +1690,6 @@ public class VehicleDelivery : Script
                         try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
                         t.Stage = SpawnStage.Failed;
                         CleanupTask(t, false);
-                        return;
                     }
                     return;
                 }
@@ -1643,7 +1700,6 @@ public class VehicleDelivery : Script
             try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
             t.Stage = SpawnStage.Failed;
             CleanupTask(t, false);
-            return;
         }
     }
 
@@ -1931,6 +1987,7 @@ public class VehicleDelivery : Script
             if (_pegasusConciergeMenu != null)
             {
                 _pegasusConciergeMenu.Visible = true;
+                ApplyMenuMouseState();
                 Interval = 0;
             }
         }
@@ -1949,37 +2006,58 @@ public class VehicleDelivery : Script
 
         _luiPool.Add(_pegasusConciergeMenu);
 
-        _pegasusCurrentLocationItem = new NativeCheckboxItem(
-            Tr("Pegasus_DeliverToLocation", "Giao đến vị trí"),
+        _pegasusNpcItem = new NativeCheckboxItem(
+            Tr("Pegasus_NpcDelivery", "Có nhân viên giao đến"),
             true);
 
         _pegasusExpressItem = new NativeCheckboxItem(
             Tr("Pegasus_ExpressDelivery", "Chuyển phát cấp tốc"),
             false);
 
-        _pegasusCurrentLocationItem.CheckboxChanged += PegasusCurrentLocationItem_CheckboxChanged;
+        _pegasusWaypointItem = new NativeCheckboxItem(
+            Tr("Pegasus_WaypointDelivery", "Giao đến vị trí chỉ định"),
+            false);
+
+        _pegasusNpcItem.CheckboxChanged += PegasusNpcItem_CheckboxChanged;
         _pegasusExpressItem.CheckboxChanged += PegasusExpressItem_CheckboxChanged;
+        _pegasusWaypointItem.CheckboxChanged += PegasusWaypointItem_CheckboxChanged;
+
+        var confirmSelection = new NativeItem(
+            Tr("Pegasus_ConfirmModeSelection", "Xác nhận chọn chế độ này"));
+
+        confirmSelection.Activated += (s, e) => ConfirmPegasusModeSelection();
+
+        var cancelSelection = new NativeItem(
+            Tr("Pegasus_CancelModeSelection", "Hủy chọn chế độ"));
+
+        cancelSelection.Activated += (s, e) => CancelPegasusModeSelection();
 
         var cancel = new NativeItem(
             Tr("Pegasus_CancelService", "Hủy dịch vụ"));
 
         cancel.Activated += (s, e) => ClosePegasusConciergeMenu(false);
 
-        _pegasusConciergeMenu.Add(_pegasusCurrentLocationItem);
+        _pegasusConciergeMenu.Add(_pegasusNpcItem);
         _pegasusConciergeMenu.Add(_pegasusExpressItem);
+        _pegasusConciergeMenu.Add(_pegasusWaypointItem);
+        _pegasusConciergeMenu.Add(confirmSelection);
+        _pegasusConciergeMenu.Add(cancelSelection);
         _pegasusConciergeMenu.Add(cancel);
     }
 
     private void SyncPegasusConciergeMenuState()
     {
-        if (_pegasusCurrentLocationItem == null || _pegasusExpressItem == null)
+        if (_pegasusNpcItem == null || _pegasusExpressItem == null || _pegasusWaypointItem == null)
             return;
 
         _pegasusMenuSyncLock = true;
         try
         {
-            _pegasusCurrentLocationItem.Checked = !_forceSpawnInFrontMode;
-            _pegasusExpressItem.Checked = _forceSpawnInFrontMode;
+            _pendingDeliveryMode = _deliveryMode;
+
+            _pegasusNpcItem.Checked = (_pendingDeliveryMode == DeliveryMode.NpcDelivery);
+            _pegasusExpressItem.Checked = (_pendingDeliveryMode == DeliveryMode.ExpressSpawnFront);
+            _pegasusWaypointItem.Checked = (_pendingDeliveryMode == DeliveryMode.SpawnAtWaypoint);
         }
         finally
         {
@@ -1987,27 +2065,24 @@ public class VehicleDelivery : Script
         }
     }
 
-    private void PegasusCurrentLocationItem_CheckboxChanged(object sender, EventArgs e)
+    private void PegasusNpcItem_CheckboxChanged(object sender, EventArgs e)
     {
-        if (_pegasusMenuSyncLock || _pegasusCurrentLocationItem == null || _pegasusExpressItem == null)
+        if (_pegasusMenuSyncLock || _pegasusNpcItem == null || _pegasusExpressItem == null || _pegasusWaypointItem == null)
             return;
 
         _pegasusMenuSyncLock = true;
         try
         {
-            if (_pegasusCurrentLocationItem.Checked)
+            if (_pegasusNpcItem.Checked)
             {
-                _forceSpawnInFrontMode = false;
-                if (_pegasusExpressItem.Checked)
-                    _pegasusExpressItem.Checked = false;
-
-                ClosePegasusConciergeMenu(false);
+                _pendingDeliveryMode = DeliveryMode.NpcDelivery;
+                _pegasusExpressItem.Checked = false;
+                _pegasusWaypointItem.Checked = false;
             }
             else
             {
-                // Không cho phép cả hai cùng tắt.
-                if (!_pegasusExpressItem.Checked)
-                    _pegasusCurrentLocationItem.Checked = true;
+                if (!_pegasusExpressItem.Checked && !_pegasusWaypointItem.Checked)
+                    _pegasusNpcItem.Checked = true;
             }
         }
         finally
@@ -2018,7 +2093,7 @@ public class VehicleDelivery : Script
 
     private void PegasusExpressItem_CheckboxChanged(object sender, EventArgs e)
     {
-        if (_pegasusMenuSyncLock || _pegasusCurrentLocationItem == null || _pegasusExpressItem == null)
+        if (_pegasusMenuSyncLock || _pegasusNpcItem == null || _pegasusExpressItem == null || _pegasusWaypointItem == null)
             return;
 
         _pegasusMenuSyncLock = true;
@@ -2026,16 +2101,13 @@ public class VehicleDelivery : Script
         {
             if (_pegasusExpressItem.Checked)
             {
-                _forceSpawnInFrontMode = true;
-                if (_pegasusCurrentLocationItem.Checked)
-                    _pegasusCurrentLocationItem.Checked = false;
-
-                ClosePegasusConciergeMenu(false);
+                _pendingDeliveryMode = DeliveryMode.ExpressSpawnFront;
+                _pegasusNpcItem.Checked = false;
+                _pegasusWaypointItem.Checked = false;
             }
             else
             {
-                // Không cho phép cả hai cùng tắt.
-                if (!_pegasusCurrentLocationItem.Checked)
+                if (!_pegasusNpcItem.Checked && !_pegasusWaypointItem.Checked)
                     _pegasusExpressItem.Checked = true;
             }
         }
@@ -2043,6 +2115,54 @@ public class VehicleDelivery : Script
         {
             _pegasusMenuSyncLock = false;
         }
+    }
+
+    private void PegasusWaypointItem_CheckboxChanged(object sender, EventArgs e)
+    {
+        if (_pegasusMenuSyncLock || _pegasusNpcItem == null || _pegasusExpressItem == null || _pegasusWaypointItem == null)
+            return;
+
+        _pegasusMenuSyncLock = true;
+        try
+        {
+            if (_pegasusWaypointItem.Checked)
+            {
+                _pendingDeliveryMode = DeliveryMode.SpawnAtWaypoint;
+                _pegasusNpcItem.Checked = false;
+                _pegasusExpressItem.Checked = false;
+            }
+            else
+            {
+                if (!_pegasusNpcItem.Checked && !_pegasusExpressItem.Checked)
+                    _pegasusWaypointItem.Checked = true;
+            }
+        }
+        finally
+        {
+            _pegasusMenuSyncLock = false;
+        }
+    }
+
+    private void ConfirmPegasusModeSelection()
+    {
+        try
+        {
+            _deliveryMode = _pendingDeliveryMode;
+        }
+        catch { }
+
+        ClosePegasusConciergeMenu(false);
+    }
+
+    private void CancelPegasusModeSelection()
+    {
+        try
+        {
+            SyncPegasusConciergeMenuState();
+        }
+        catch { }
+
+        ClosePegasusConciergeMenu(false);
     }
 
     private void ClosePegasusConciergeMenu(bool countCancel)
@@ -2055,6 +2175,112 @@ public class VehicleDelivery : Script
         catch { }
 
         Interval = 1000;
+    }
+
+    // Ép LemonUI không bắt chuột, để game dùng camera bình thường khi menu đang mở.
+    private void ApplyMenuMouseState()
+    {
+        try
+        {
+            if (_pegasusConciergeMenu == null || !_pegasusConciergeMenu.Visible)
+                return;
+
+            DisableMenuMouse(_pegasusConciergeMenu);
+            DisableMenuMouse(_luiPool);
+        }
+        catch { }
+    }
+
+    private void DisableMenuMouse(object target)
+    {
+        try
+        {
+            if (target == null)
+                return;
+
+            SetBoolPropertyIfExists(target, false,
+                "MouseControlsEnabled", "MouseControls", "EnableMouseControls", "UseMouse",
+                "MouseEdgeEnabled", "MouseEdgesEnabled", "AllowMouseControls");
+
+            // Nếu build LemonUI có hỗ trợ camera movement, cố gắng bật nó lên.
+            SetBoolPropertyIfExists(target, true,
+                "AllowCameraMovement", "CameraMovementEnabled", "EnableCameraMovement",
+                "AllowCameraControl", "CanMoveCamera");
+
+            // Một số build mới có enum điều khiển mouse behavior.
+            SetEnumPropertyIfExists(target,
+                "MouseBehavior", "MouseMode", "CursorBehavior", "CursorState");
+        }
+        catch { }
+    }
+
+    private void SetBoolPropertyIfExists(object target, bool value, params string[] propertyNames)
+    {
+        try
+        {
+            if (target == null || propertyNames == null || propertyNames.Length == 0)
+                return;
+
+            Type t = target.GetType();
+            foreach (string name in propertyNames)
+            {
+                PropertyInfo prop = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (prop == null || !prop.CanWrite || prop.PropertyType != typeof(bool))
+                    continue;
+
+                prop.SetValue(target, value, null);
+                return;
+            }
+        }
+        catch { }
+    }
+
+    private void SetEnumPropertyIfExists(object target, params string[] propertyNames)
+    {
+        try
+        {
+            if (target == null || propertyNames == null || propertyNames.Length == 0)
+                return;
+
+            Type t = target.GetType();
+            foreach (string name in propertyNames)
+            {
+                PropertyInfo prop = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (prop == null || !prop.CanWrite)
+                    continue;
+
+                Type pt = prop.PropertyType;
+                if (!pt.IsEnum)
+                    continue;
+
+                object enumValue = null;
+
+                string[] preferredNames = { "Disabled", "None", "Off", "Inactive" };
+                foreach (string preferred in preferredNames)
+                {
+                    try
+                    {
+                        enumValue = Enum.Parse(pt, preferred, true);
+                        break;
+                    }
+                    catch { }
+                }
+
+                if (enumValue == null)
+                {
+                    Array values = Enum.GetValues(pt);
+                    if (values != null && values.Length > 0)
+                        enumValue = values.GetValue(0);
+                }
+
+                if (enumValue != null)
+                {
+                    prop.SetValue(target, enumValue, null);
+                    return;
+                }
+            }
+        }
+        catch { }
     }
 
     private bool SafeExists(Entity e) { try { return e != null && e.Exists(); } catch { return false; } }
@@ -2128,7 +2354,7 @@ public class VehicleDelivery : Script
             var inst = _singleton;
             if (inst == null) return;
 
-            // normalize now to nearest street (best-effort), so the driver aims for a reachable coordinate near player
+            // 1. Chuẩn hóa vị trí mục tiêu
             Vector3 normalized = targetPosition;
             try
             {
@@ -2137,6 +2363,19 @@ public class VehicleDelivery : Script
             }
             catch { }
 
+            // 2. Nếu đang ở mode waypoint thì phải có waypoint hợp lệ
+            if (inst._deliveryMode == DeliveryMode.SpawnAtWaypoint)
+            {
+                if (!inst.TryGetCurrentWaypoint(out Vector3 wp) || wp == Vector3.Zero)
+                {
+                    GTA.UI.Notification.Show("~r~Hãy đặt điểm đến trên bản đồ trước khi mua xe.~s~");
+                    return;
+                }
+
+                normalized = wp;
+            }
+
+            // 3. Khởi tạo task
             var task = new DeliveryTask
             {
                 ModelHash = modelHash,
@@ -2149,12 +2388,25 @@ public class VehicleDelivery : Script
                 HasSpawned = false,
                 Stage = SpawnStage.NotStarted,
                 SpawnAttempts = 0,
-                TeleportFallbackUsed = false
+                TeleportFallbackUsed = false,
+                Mode = inst._deliveryMode
             };
 
-            lock (inst._tasks) inst._tasks.Add(task);
+            if (task.Mode == DeliveryMode.SpawnAtWaypoint)
+            {
+                task.TargetPos = normalized;
+                task.WaypointSpawnPos = normalized;
+                task.HasWaypointSpawnPos = true;
+            }
+
+            lock (inst._tasks)
+            {
+                inst._tasks.Add(task);
+            }
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     // ---------- Additional helper utilities ----------

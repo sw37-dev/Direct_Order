@@ -2479,9 +2479,9 @@ public partial class InstantRefill : Script
             bool spawnSucceeded = false;
             try
             {
-                if (CompanionCloner.Instance != null)
+                if (Bodyguards.Instance != null)
                 {
-                    spawnSucceeded = CompanionCloner.Instance.TrySpawnClone(
+                    spawnSucceeded = Bodyguards.Instance.TrySpawnClone(
                         offer.UsePlayerClone ? 0u : offer.ModelHash);
                 }
             }

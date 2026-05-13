@@ -214,10 +214,12 @@ public class SubmarineDeliveryContractEvent : Script
 
         CreatePickupBlip();
 
-        Notification.Show(LT(
-            "SubmarineMarkerEventNotification",
-            "~y~~h~Đang có yêu cầu giao tàu thuyền! Bạn có muốn kiếm thêm thu nhập không?"
-        ));
+        Notification.Show(
+            NotificationIcon.DialASub,
+            LT("Submarine_Title", "Dia A Sub"),
+            LT("Submarine_Subject", "Giao tàu thuyền"),
+            LT("SubmarineMarkerEventNotification", "Đang có yêu cầu giao tàu thuyền! Bạn có muốn kiếm thêm thu nhập không?")
+        );
     }
 
     private void UpdateMarkerState()

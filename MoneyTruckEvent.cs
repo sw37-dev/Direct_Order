@@ -10,7 +10,7 @@ using System.IO;
 public class MoneyTruckEvent : Script
 {
     private const int RollIntervalMs = 480000;   //  8 phút roll 1 lần
-    private const int SpawnChancePercent = 15;   // 15% xuất hiện
+    private const int SpawnChancePercent = 10;   // 15% xuất hiện
     private const long RewardPointsMin = 1000000;   // số điểm thưởng ghi file
     private const long RewardPointsMax = 1300000;   // số điểm thưởng ghi file
     private const int CashRewardAmount = 10000;   // số tiền mặt
@@ -930,7 +930,7 @@ public class MoneyTruckEvent : Script
             return;
 
         _alerted = true;
-        SetWantedLevel(WantedStars);
+        AddWantedLevel(WantedStars); // đổi từ SetWantedLevel(...)
         PlaySoundFrontend("5_SEC_WARNING", "HUD_MINI_GAME_SOUNDSET");
 
         UpdateGuardBlips();
@@ -1494,12 +1494,26 @@ public class MoneyTruckEvent : Script
         }
     }
 
-    private void SetWantedLevel(int stars)
+    private void AddWantedLevel(int starsToAdd)
     {
         try
         {
             int playerId = Function.Call<int>(Hash.PLAYER_ID);
-            Function.Call(Hash.SET_PLAYER_WANTED_LEVEL, playerId, stars, false);
+
+            int currentWanted = 0;
+            try
+            {
+                currentWanted = Function.Call<int>(Hash.GET_PLAYER_WANTED_LEVEL, playerId);
+            }
+            catch { }
+
+            int newWanted = currentWanted + starsToAdd;
+            if (newWanted > 5)
+                newWanted = 5;
+            if (newWanted < 0)
+                newWanted = 0;
+
+            Function.Call(Hash.SET_PLAYER_WANTED_LEVEL, playerId, newWanted, false);
             Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, playerId, true);
         }
         catch { }

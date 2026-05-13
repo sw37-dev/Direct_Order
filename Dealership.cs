@@ -9,10 +9,66 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.Linq;
+using System.Reflection;
 using System.Text;
+using System.Reflection;
 
 public partial class PersistentManager
 {
+    private static string GetCollateralLockedDescription()
+    {
+        return "Bạn đang thế chấp chiếc phương tiện này cho hoạt động vay của bạn tại ngân hàng Fleeca nên không thể thanh lý";
+    }
+
+    private static readonly BadgeSet _lockBadge = new BadgeSet
+    {
+        NormalDictionary = "commonmenu",
+        NormalTexture = "shop_lock",
+        HoveredDictionary = "commonmenu",
+        HoveredTexture = "shop_lock_b"
+    };
+
+    private readonly HashSet<NativeItem> _dealershipMainLockedBadgeItems = new HashSet<NativeItem>();
+    private readonly HashSet<NativeItem> _dealershipBulkLockedBadgeItems = new HashSet<NativeItem>();
+    private readonly HashSet<NativeItem> _dealershipDetailLockedBadgeItems = new HashSet<NativeItem>();
+
+    private static void SetRightBadgeSetIfExists(NativeItem item, BadgeSet badge)
+    {
+        try
+        {
+            if (item == null)
+                return;
+
+            Type t = item.GetType();
+
+            string[] propertyNames = { "RightBadgeSet", "BadgeRightSet", "RightBadge" };
+            foreach (string name in propertyNames)
+            {
+                PropertyInfo prop = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (prop != null && prop.CanWrite && prop.PropertyType == typeof(BadgeSet))
+                {
+                    prop.SetValue(item, badge, null);
+                    return;
+                }
+            }
+
+            string[] fieldNames = { "badgeRight", "rightBadge", "_rightBadge", "m_rightBadge" };
+            foreach (string name in fieldNames)
+            {
+                FieldInfo field = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field != null && field.FieldType == typeof(BadgeSet))
+                {
+                    field.SetValue(item, badge);
+                    return;
+                }
+            }
+        }
+        catch
+        {
+            // cố tình bỏ qua
+        }
+    }
+
     private bool _dealershipNeedsFastTick = false;
 
     private const int DEALERSHIP_SIGNAL_DURATION_MS = 8000;
@@ -160,6 +216,40 @@ public partial class PersistentManager
         }
     }
 
+    private void UpdateConditionalLockBadges(NativeMenu menu, HashSet<NativeItem> lockedItems)
+    {
+        try
+        {
+            if (menu == null || lockedItems == null || lockedItems.Count == 0)
+                return;
+
+            int selectedIndex = -1;
+            try { selectedIndex = menu.SelectedIndex; } catch { }
+
+            for (int i = 0; i < menu.Items.Count; i++)
+            {
+                var item = menu.Items[i];
+                if (item == null || !lockedItems.Contains(item))
+                    continue;
+
+                // Đang trỏ vào item khóa -> bỏ ổ khóa
+                // Không trỏ vào -> hiện lại ổ khóa
+                SetRightBadgeSetIfExists(item, i == selectedIndex ? null : _lockBadge);
+            }
+        }
+        catch
+        {
+            // cố tình bỏ qua
+        }
+    }
+
+    private void UpdateAllDealershipLockedBadges()
+    {
+        UpdateConditionalLockBadges(_dealershipMenu, _dealershipMainLockedBadgeItems);
+        UpdateConditionalLockBadges(_dealershipBulkMenu, _dealershipBulkLockedBadgeItems);
+        UpdateConditionalLockBadges(_dealershipDetailMenu, _dealershipDetailLockedBadgeItems);
+    }
+
     private void RefreshDealershipMenu()
     {
         try
@@ -167,6 +257,7 @@ public partial class PersistentManager
             if (_dealershipMenu == null)
                 return;
 
+            _dealershipMainLockedBadgeItems.Clear();
             _dealershipMenu.Clear();
 
             Ped player = Game.Player.Character;
@@ -199,18 +290,27 @@ public partial class PersistentManager
                 int index = 1;
                 foreach (var pv in owned)
                 {
+                    bool locked = pv.IsCollateralLocked;
                     string modelName = GetVehicleDisplayName(pv.ModelHash);
-                    string priceText = FormatMoney(pv.PurchasePrice);
+                    string priceText = locked ? "" : FormatMoney(pv.PurchasePrice);
+                    string desc = locked
+                        ? GetCollateralLockedDescription()
+                        : L("PM_DealershipVehicleItem_Desc", "Nhấn Enter để xem thông tin phương tiện này trước khi thanh lý và sẽ nhận lại một số tiền nhỏ. Bạn vẫn có thể sử dụng tạm thời nhưng sẽ có thể bị mất hoàn toàn.");
 
                     var item = new NativeItem(
                         string.Format(
                             L("PM_DealershipVehicleItem_Title", "{0}. {1}"),
                             index,
                             modelName),
-                        L("PM_DealershipVehicleItem_Desc",
-                            "Nhấn Enter để xem thông tin phương tiện này trước khi thanh lý và sẽ nhận lại một số tiền nhỏ. Bạn vẫn có thể sử dụng tạm thời nhưng sẽ có thể bị mất hoàn toàn."),
+                        desc,
                         priceText
                     );
+
+                    if (locked)
+                    {
+                        _dealershipMainLockedBadgeItems.Add(item);
+                        SetRightBadgeSetIfExists(item, _lockBadge);
+                    }
 
                     var captured = pv;
                     item.Activated += (s, e) =>
@@ -243,6 +343,8 @@ public partial class PersistentManager
             {
                 try { _dealershipMenu.SelectedIndex = 0; } catch { }
             }
+
+            UpdateConditionalLockBadges(_dealershipMenu, _dealershipMainLockedBadgeItems);
         }
         catch (Exception ex)
         {
@@ -377,6 +479,9 @@ public partial class PersistentManager
             if (_dealershipBulkMenu == null)
                 return;
 
+            _dealershipBulkLockedBadgeItems.Clear();
+            _dealershipBulkSelected.RemoveWhere(v => v == null || v.IsCollateralLocked);
+
             int oldIndex = 0;
             try { oldIndex = _dealershipBulkMenu.SelectedIndex; } catch { }
 
@@ -396,39 +501,63 @@ public partial class PersistentManager
                 foreach (var pv in owned)
                 {
                     bool selected = _dealershipBulkSelected.Contains(pv);
-                    int refund = GetVehicleQuickSellRefund(pv);
+                    string modelName = GetVehicleDisplayName(pv.ModelHash);
 
-                    var item = new NativeCheckboxItem(
-                        GetVehicleDisplayName(pv.ModelHash),
-                        string.Format(
+                    if (pv.IsCollateralLocked)
+                    {
+                        var lockedItem = new NativeItem(
+                            modelName,
+                            GetCollateralLockedDescription()
+                        );
+
+                        _dealershipBulkLockedBadgeItems.Add(lockedItem);
+                        SetRightBadgeSetIfExists(lockedItem, _lockBadge);
+
+                        lockedItem.Activated += (s, e) =>
+                        {
+                            GTA.UI.Screen.ShowSubtitle(GetCollateralLockedDescription(), 3000);
+                        };
+
+                        _dealershipBulkMenu.Add(lockedItem);
+                    }
+                    else
+                    {
+                        int refund = GetVehicleQuickSellRefund(pv);
+
+                        string desc = string.Format(
                             L("PM_BulkSell_VehicleDesc",
                               "Lựa chọn chọn hoặc gỡ chiếc xe này.\n" +
                               "Giá thanh lý dự kiến: {0}"),
                             FormatMoney(refund)
-                        ),
-                        selected
-                    );
+                        );
 
-                    var captured = pv;
-                    item.CheckboxChanged += (s, e) =>
-                    {
-                        try
+                        var item = new NativeCheckboxItem(
+                            modelName,
+                            desc,
+                            selected
+                        );
+
+                        var captured = pv;
+                        item.CheckboxChanged += (s, e) =>
                         {
-                            if (item.Checked)
-                                _dealershipBulkSelected.Add(captured);
-                            else
-                                _dealershipBulkSelected.Remove(captured);
+                            try
+                            {
+                                if (item.Checked)
+                                    _dealershipBulkSelected.Add(captured);
+                                else
+                                    _dealershipBulkSelected.Remove(captured);
 
-                            RecalculateBulkSellTotal();
-                            RefreshDealershipBulkSellMenu();
-                        }
-                        catch (Exception ex)
-                        {
-                            Log("Bulk checkbox change failed: " + ex.ToString());
-                        }
-                    };
+                                RecalculateBulkSellTotal();
+                                RefreshDealershipBulkSellMenu();
+                            }
+                            catch (Exception ex)
+                            {
+                                Log("Bulk checkbox change failed: " + ex.ToString());
+                            }
+                        };
 
-                    _dealershipBulkMenu.Add(item);
+                        _dealershipBulkMenu.Add(item);
+                    }
                 }
             }
 
@@ -473,6 +602,8 @@ public partial class PersistentManager
                 _dealershipBulkMenu.SelectedIndex = Math.Min(oldIndex, maxIndex);
             }
             catch { }
+
+            UpdateConditionalLockBadges(_dealershipBulkMenu, _dealershipBulkLockedBadgeItems);
         }
         catch (Exception ex)
         {
@@ -501,6 +632,11 @@ public partial class PersistentManager
             {
                 try
                 {
+                    if (pv.IsCollateralLocked)
+                    {
+                        continue;
+                    }
+
                     int refund = GetVehicleQuickSellRefund(pv);
                     totalRefund += refund;
                     soldCount++;
@@ -515,6 +651,11 @@ public partial class PersistentManager
             {
                 try
                 {
+                    if (pv.IsCollateralLocked)
+                    {
+                        continue;
+                    }
+
                     RemovePersistentVehicleSafe(pv);
                 }
                 catch { }
@@ -609,6 +750,7 @@ public partial class PersistentManager
             if (_dealershipDetailMenu == null)
                 return;
 
+            _dealershipDetailLockedBadgeItems.Clear();
             _dealershipDetailMenu.Clear();
 
             var pv = _selectedDealershipVehicle;
@@ -621,6 +763,7 @@ public partial class PersistentManager
             }
 
             string vehicleName = GetVehicleDisplayName(pv.ModelHash);
+
             string buyPriceText = FormatMoney(pv.PurchasePrice);
             string plateText = string.IsNullOrWhiteSpace(pv.Plate) ? "Chưa có" : pv.Plate.Trim();
             string ownerName = GetCharacterDisplayNameFromHash(pv.OwnerModelHash);
@@ -643,6 +786,12 @@ public partial class PersistentManager
             {
                 Panel = _dealershipVehicleStatsPanel
             };
+
+            if (pv.IsCollateralLocked)
+            {
+                _dealershipDetailLockedBadgeItems.Add(line1);
+                SetRightBadgeSetIfExists(line1, _lockBadge);
+            }
             _dealershipDetailMenu.Add(line1);
 
             string vehicleClassName = GetVehicleClassDisplayName(pv.ModelHash);
@@ -689,9 +838,14 @@ public partial class PersistentManager
             );
             _dealershipDetailMenu.Add(line6);
 
+            string sellDesc = pv.IsCollateralLocked
+                ? GetCollateralLockedDescription()
+                : L("PM_ConfirmSell_Desc", "Nhận số tiền hoàn trả về và phương tiện sẽ được hủy bỏ, nhưng vẫn có thể được sử dụng tạm thời.");
+
             var sellItem = new NativeItem(
                   L("PM_ConfirmSell", "Xác nhận bán phương tiện cho đại lý"),
-                  L("PM_ConfirmSell_Desc", "Nhận số tiền hoàn trả về và phương tiện sẽ được hủy bỏ, nhưng vẫn có thể được sử dụng tạm thời."));
+                  sellDesc);
+
             sellItem.Activated += (s, e) =>
             {
                 QueueUiAction(() =>
@@ -728,6 +882,8 @@ public partial class PersistentManager
                 });
             };
             _dealershipDetailMenu.Add(backItem);
+
+            UpdateConditionalLockBadges(_dealershipDetailMenu, _dealershipDetailLockedBadgeItems);
         }
         catch (Exception ex)
         {
@@ -796,6 +952,12 @@ public partial class PersistentManager
             if (pv == null)
                 return;
 
+            if (pv.IsCollateralLocked)
+            {
+                Notification.Show(L("PM_CollateralLockedSellBlocked", "~r~Xe này đang được thế chấp, không thể thanh lý."));
+                return;
+            }
+
             double damagePct;
             bool hasDamage = TryGetVehicleDamagePercent(pv, out damagePct);
 
@@ -820,10 +982,10 @@ public partial class PersistentManager
                 _currentDealershipAlias,
                 L("PM_Feed_VehicleRefundSubject", "Hoàn tiền phương tiện"),
                 string.Format(
-                L("PM_Feed_VehicleRefundBody",
-                "Hoàn trả ~HUD_COLOUR_DEGEN_YELLOW~{0}~s~ với số tiền ~HUD_COLOUR_DEGEN_GREEN~+${1:N0}~s~. Nếu phương tiện không còn sử dụng hãy đưa đến các đại lý khác nhau trên bản đồ nhé!"),
-                vehicleName,
-                refund)
+                    L("PM_Feed_VehicleRefundBody",
+                    "Hoàn trả ~HUD_COLOUR_DEGEN_YELLOW~{0}~s~ với số tiền ~HUD_COLOUR_DEGEN_GREEN~+${1:N0}~s~. Nếu phương tiện không còn sử dụng hãy đưa đến các đại lý khác nhau trên bản đồ nhé!"),
+                    vehicleName,
+                    refund)
             );
 
             RemovePersistentVehicleSafe(pv);
@@ -930,16 +1092,17 @@ public partial class PersistentManager
 
             _playerInsideDealership = inside;
 
-            // NEW: stop signal nếu đã vào trong phạm vi
             if (inside && _dealershipSignalActive)
                 StopDealershipSignal();
 
-            // UPDATED: thêm điều kiện signal active
-            _dealershipNeedsFastTick = nearEnoughToDraw
+            _dealershipNeedsFastTick =
+                 nearEnoughToDraw
                  || (_dealershipMenu != null && _dealershipMenu.Visible)
                  || (_dealershipDetailMenu != null && _dealershipDetailMenu.Visible)
                  || (_dealershipBulkMenu != null && _dealershipBulkMenu.Visible)
                  || _dealershipSignalActive;
+
+            UpdateAllDealershipLockedBadges();
         }
         catch (Exception ex)
         {

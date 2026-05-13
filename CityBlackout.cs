@@ -1,12 +1,13 @@
+using GTA;
+using GTA.Math;
+using GTA.Native;
+using GTA.UI;
+using iFruitAddon2;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using GTA;
-using GTA.Math;
-using GTA.Native;
 using System.Linq;
-using iFruitAddon2;
 
 public class CityBlackout : Script
 {
@@ -38,6 +39,27 @@ public class CityBlackout : Script
     private int _targetHour = -1;
     private int _targetMinute = -1;
     private bool _rolledThisWindow = false;
+
+    // Thêm gần đầu class, cùng khu vực hằng số
+    private const string PaigeHarrisNotificationBrand = "Paige Harris";
+    private const int PaigeNotificationTimeout = 7000;
+
+    private enum BlackoutSource
+    {
+        None,
+        Auto,
+        Paige
+    }
+
+    private BlackoutSource _blackoutSource = BlackoutSource.None;
+
+    // Paige flow
+    private const int PAIGE_BLACKOUT_DELAY_MS = 5000;
+    private const int PAIGE_WANTED_DELAY_MS = 25000;
+
+    private int _paigeBlackoutStartGameTime = -1;   // sau 5 giây mới cúp điện
+    private int _paigeWantedGrantGameTime = -1;     // sau 25 giây mới gán sao
+    private bool _paigeWantedGranted = false;       // đã gán sao chưa
 
     // --- Blackout state ---
     private bool _blackoutActive = false;
@@ -168,6 +190,30 @@ public class CityBlackout : Script
         }
     }
 
+    // Thêm vào trong class CityBlackout
+    private void ShowPaigeHarrisNotification(string title, string message, int timeout = PaigeNotificationTimeout)
+    {
+        try
+        {
+            Function.Call(Hash.BEGIN_TEXT_COMMAND_THEFEED_POST, "STRING");
+            Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, message);
+
+            Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_MESSAGETEXT,
+                "CHAR_PAIGE",
+                "CHAR_PAIGE",
+                false,
+                0,
+                PaigeHarrisNotificationBrand,
+                title);
+
+            Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_TICKER, false, true);
+        }
+        catch
+        {
+            GTA.UI.Screen.ShowSubtitle(message, timeout);
+        }
+    }
+
     private void ParseConfigFallback()
     {
         try
@@ -250,6 +296,8 @@ public class CityBlackout : Script
                 _rolledThisWindow = false;
             }
 
+            HandlePaigeDeferredActions();
+
             // Nếu đang blackout: xử lý smoothing / kết thúc
             if (_blackoutActive)
             {
@@ -320,6 +368,29 @@ public class CityBlackout : Script
         }
     }
 
+    private void HandlePaigeDeferredActions()
+    {
+        int now = Game.GameTime;
+
+        // 3 giây sau khi gọi Paige mới bắt đầu blackout
+        if (_paigeBlackoutStartGameTime > 0 && now >= _paigeBlackoutStartGameTime)
+        {
+            _paigeBlackoutStartGameTime = -1;
+            StartBlackout(BlackoutSource.Paige);
+        }
+
+        // 10 giây sau khi blackout bắt đầu mới gán sao
+        if (_blackoutActive &&
+            _blackoutSource == BlackoutSource.Paige &&
+            !_paigeWantedGranted &&
+            _paigeWantedGrantGameTime > 0 &&
+            now >= _paigeWantedGrantGameTime)
+        {
+            _paigeWantedGranted = true;
+            TryGivePlayerWantedIncrement();
+        }
+    }
+
     private bool IsWithinWindow(int hour, int minute)
     {
         int total = hour * 60 + minute;
@@ -334,31 +405,46 @@ public class CityBlackout : Script
         }
     }
 
-    private void StartBlackout()
+    private void StartBlackout(BlackoutSource source)
     {
         try
         {
+            _blackoutSource = source;
             _blackoutActive = true;
             _blackoutEndGameTime = Game.GameTime + _cfgBlackoutDurationMs;
             _usedAffectsNative = false;
             _forcedVehicleHandles.Clear();
+            _smoothingActive = false;
 
-            TryGivePlayerWantedIncrement();
+            // Chỉ blackout từ Paige mới được phép gán sao, nhưng gán sau 10 giây
+            if (source == BlackoutSource.Paige)
+            {
+                _paigeWantedGranted = false;
+                _paigeWantedGrantGameTime = Game.GameTime + PAIGE_WANTED_DELAY_MS;
+            }
+            else
+            {
+                _paigeWantedGranted = true;
+                _paigeWantedGrantGameTime = -1;
+            }
 
-            // play sound (non-blocking) nếu bật
+            // play sound nếu bật
             if (_cfgPlayExplosion)
             {
                 TriggerExplosionSound();
             }
 
-            // Thử dùng native affect vehicles (ưu tiên) - bọc 1 lần
             try
             {
                 Function.Call(HASH_SET_ARTIFICIAL_VEHICLE_LIGHTS_STATE, false);
                 Function.Call(HASH_SET_ARTIFICIAL_LIGHTS_STATE, true);
                 _usedAffectsNative = true;
-                GTA.UI.Screen.ShowSubtitle(T("CityBlackout_BlackoutStarted", "~HUD_COLOUR_DEGEN_RED~Thành phố đã bị cúp điện"), 5000);
-                // Đặt interval thấp để xử lý smoothing/kết thúc đúng lúc
+
+                GTA.UI.Screen.ShowSubtitle(
+                    T("CityBlackout_BlackoutStarted", "~HUD_COLOUR_DEGEN_RED~Thành phố đã bị cúp điện"),
+                    5000
+                );
+
                 Interval = IDLE_INTERVAL_MS;
                 return;
             }
@@ -367,7 +453,6 @@ public class CityBlackout : Script
                 _usedAffectsNative = false;
             }
 
-            // Fallback: không có native -> set artificial lights + bật đèn cho các xe "gần" player
             try
             {
                 Function.Call(HASH_SET_ARTIFICIAL_LIGHTS_STATE, true);
@@ -376,15 +461,13 @@ public class CityBlackout : Script
                 Vector3 playerPos = Vector3.Zero;
                 if (playerPed != null && playerPed.Exists()) playerPos = playerPed.Position;
 
-                // Lấy tất cả xe nhưng chỉ tác động lên xe gần (giảm tải)
                 var vehicles = World.GetAllVehicles();
-                // Bọc toàn bộ loop trong 1 try để tránh overhead try/catch từng xe
                 try
                 {
                     foreach (Vehicle v in vehicles)
                     {
                         if (v == null || !v.Exists()) continue;
-                        // kiểm tra khoảng cách vuông — giảm số xe cần gọi native rất nhiều ở maps lớn
+
                         float dx = v.Position.X - playerPos.X;
                         float dy = v.Position.Y - playerPos.Y;
                         float dz = v.Position.Z - playerPos.Z;
@@ -395,9 +478,12 @@ public class CityBlackout : Script
                         _forcedVehicleHandles.Add(v.Handle);
                     }
                 }
-                catch { /* nếu 1 vehicle native lỗi thì bỏ qua toàn bộ fallback loop */ }
+                catch { }
 
-                GTA.UI.Screen.ShowSubtitle(T("CityBlackout_BlackoutStartedAlt", "~HUD_COLOUR_DEGEN_RED~~h~Cúp điện toàn thành phố"), 5000);
+                GTA.UI.Screen.ShowSubtitle(
+                    T("CityBlackout_BlackoutStartedAlt", "~HUD_COLOUR_DEGEN_RED~~h~Cúp điện toàn thành phố"),
+                    5000
+                );
             }
             catch (Exception ex)
             {
@@ -405,7 +491,6 @@ public class CityBlackout : Script
                 _blackoutActive = false;
             }
 
-            // Hạ interval khi đang blackout (smoothing sẽ đổi khi cần)
             Interval = SMOOTH_INTERVAL_MS;
         }
         catch (Exception ex)
@@ -425,7 +510,29 @@ public class CityBlackout : Script
             return;
 
         _blackoutLockedDayKey = dayKey;
-        StartBlackout();
+        StartBlackout(BlackoutSource.Auto);
+    }
+
+    private void StartPaigeBlackoutSequence()
+    {
+        int dayKey = GetCurrentGameDayKey();
+        if (dayKey == -1)
+            dayKey = _lastObservedDayKey;
+
+        if (IsBlackoutLockedToday(dayKey))
+            return;
+
+        // khóa ngày ngay khi bấm gọi Paige để không có blackout tự động chen vào
+        _blackoutLockedDayKey = dayKey;
+
+        _paigeBlackoutStartGameTime = Game.GameTime + PAIGE_BLACKOUT_DELAY_MS;
+        _paigeWantedGranted = false;
+        _paigeWantedGrantGameTime = -1;
+
+        ShowPaigeHarrisNotification(
+            T("CityBlackout_Title", "Cúp điện"),
+            T("CityBlackout_Message", "Tôi sẽ truy cập hệ thống điện thành phố và cắt điện nhưng cảnh sát sẽ truy ra anh rất nhanh đấy!")
+        );
     }
 
     private bool IsBlackoutLockedToday(int dayKey)
@@ -495,7 +602,20 @@ public class CityBlackout : Script
     {
         try
         {
-            StartBlackoutAndLock();
+            // Nếu blackout hiện tại là do Paige tạo ra thì gọi lại Paige = bật điện lại
+            if (_blackoutActive && _blackoutSource == BlackoutSource.Paige)
+            {
+                _paigeBlackoutStartGameTime = -1;
+                _paigeWantedGrantGameTime = -1;
+                _paigeWantedGranted = true;
+
+                StartSmoothingSequence();
+            }
+            else
+            {
+                // Còn lại: gọi Paige để chuẩn bị cúp điện sau 3 giây
+                StartPaigeBlackoutSequence();
+            }
         }
         finally
         {
@@ -567,6 +687,9 @@ public class CityBlackout : Script
     {
         try
         {
+            _paigeWantedGranted = true;
+            _paigeWantedGrantGameTime = -1;
+
             _smoothingActive = true;
             _smoothingStartTime = Game.GameTime;
             _lastSmoothingToggleTime = Game.GameTime;
@@ -665,6 +788,10 @@ public class CityBlackout : Script
 
             _blackoutActive = false;
             _smoothingActive = false;
+            _blackoutSource = BlackoutSource.None;
+            _paigeBlackoutStartGameTime = -1;
+            _paigeWantedGrantGameTime = -1;
+            _paigeWantedGranted = true;
             Interval = IDLE_INTERVAL_MS;
             GTA.UI.Screen.ShowSubtitle(T("CityBlackout_PowerRestored", "~HUD_COLOUR_CONTROLLER_MICHAEL~~h~Đã có điện trở lại."), 3000);
             TriggerPowerOnSound();
@@ -703,6 +830,10 @@ public class CityBlackout : Script
 
                 _blackoutActive = false;
                 _smoothingActive = false;
+                _blackoutSource = BlackoutSource.None;
+                _paigeBlackoutStartGameTime = -1;
+                _paigeWantedGrantGameTime = -1;
+                _paigeWantedGranted = true;
             }
             catch { }
         }

@@ -17,7 +17,7 @@ public partial class InstantRefill : Script
     private readonly Queue<uint> _weaponHashesToProcess = new Queue<uint>();
     private bool _isProcessingAmmo = false;
 
-        // ===================== LEMONUI: WEAPON DETAIL MENU =====================
+    // ===================== LEMONUI: WEAPON DETAIL MENU =====================
     private NativeMenu _luiWeaponDetailMenu;
     private NativeStatsPanel _luiWeaponStatsPanel;
     private NativeStatsInfo _luiWeaponStatDamage;

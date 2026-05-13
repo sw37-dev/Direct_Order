@@ -274,10 +274,28 @@ public class PlaneDeliveryContractEvent : Script
 
         CreatePickupBlip();
 
-        Notification.Show(LT(
-            "PlaneMarkerEventNotification",
-            "~o~~h~Đang có yêu cầu giao máy bay! Bạn có muốn kiếm thêm thu nhập không?"
-        ));
+        ShowPlaneOfferMessage();
+    }
+
+    private void ShowPlaneOfferMessage()
+    {
+        try
+        {
+            Notification.Show(
+                NotificationIcon.Planesite,
+                LT("PlaneOffer_Title", "Plane Site"),
+                LT("PlaneOffer_Subject", "Giao máy bay"),
+                LT("PlaneOffer_Body", "Đang có yêu cầu giao máy bay! Bạn có muốn kiếm thêm thu nhập không?")
+            );
+        }
+        catch
+        {
+            try
+            {
+                GTA.UI.Notification.Show("Đang có yêu cầu giao máy bay! Bạn có muốn kiếm thêm thu nhập không?");
+            }
+            catch { }
+        }
     }
 
     private void UpdateMarkerState()

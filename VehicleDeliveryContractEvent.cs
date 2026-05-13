@@ -479,10 +479,31 @@ public class VehicleDeliveryContractEvent : Script
 
         CreatePickupBlip();
 
-        Notification.Show(LT(
-            "MarkerEventNotification",
-            "~y~~h~Đang có yêu cầu giao hàng này! Bạn có muốn kiếm thêm thu nhập không?"
-        ));
+        ShowFeedMessage(
+            NotificationIcon.PegasusDelivery,
+            LT("Vehicle_MissionName", "Premium Deluxe Motorsport"),
+            LT("Vehicle_MissionTitle", "Giao xe"),
+            LT("Vehicle_MissionContent", "Đang có yêu cầu giao hàng này! Bạn có muốn kiếm thêm thu nhập không?")
+        );
+    }
+
+    private void ShowFeedMessage(NotificationIcon icon, string sender, string subject, string body)
+    {
+        try
+        {
+            Notification.Show(icon, sender, subject, body);
+        }
+        catch
+        {
+            try
+            {
+                GTA.UI.Notification.Show(body);
+            }
+            catch
+            {
+                // Xử lý ngoại lệ nếu cần thiết
+            }
+        }
     }
 
     private void UpdateMarkerState()

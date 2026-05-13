@@ -1666,6 +1666,9 @@ public partial class PersistentManager : Script
                         existing.NeonColor = pv.NeonColor;
                         existing.DashboardColor = pv.DashboardColor;
 
+                        // 1.5. Bảo toàn cờ khóa khi cập nhật entry hiện có
+                        existing.IsCollateralLocked = pv.IsCollateralLocked;
+
                         try
                         {
                             if (explicitMeta != null && explicitMeta.PurchasePrice > 0)
@@ -1679,13 +1682,14 @@ public partial class PersistentManager : Script
                     }
                     else
                     {
-                        // ===== 1) PER-CHAR FIFO TRIM =====
+                        // ===== 1.4) PER-CHAR FIFO TRIM: CHỈ TRIM XE KHÔNG KHÓA =====
                         int ownerCount = _persistVehicles.Count(x => x.OwnerModelHash == ownerHash);
 
                         if (ownerCount >= MAX_VEHICLES_PER_CHAR)
                         {
                             var oldestForOwner = _persistVehicles
-                                .FirstOrDefault(x => x.OwnerModelHash == ownerHash);
+                                .FirstOrDefault(x => x.OwnerModelHash == ownerHash && !x.IsCollateralLocked);
+
                             if (oldestForOwner != null)
                             {
                                 try
@@ -1729,12 +1733,16 @@ public partial class PersistentManager : Script
                                     }
 
                                     RemovePersistentVehicleSafe(oldestForOwner);
-                                    Log($"RegisterVehicle: evicted oldest vehicle for owner 0x{ownerHash:X} (per-char cap) refund={refund}, model=0x{oldestForOwner.ModelHash:X}");
+                                    Log($"RegisterVehicle: evicted oldest UNLOCKED vehicle for owner 0x{ownerHash:X} (per-char cap) refund={refund}, model=0x{oldestForOwner.ModelHash:X}");
                                 }
                                 catch (Exception ex)
                                 {
                                     Log("RegisterVehicle: per-char eviction failed: " + ex);
                                 }
+                            }
+                            else
+                            {
+                                Log($"RegisterVehicle: per-char cap reached for owner 0x{ownerHash:X}, but no UNLOCKED vehicle found to trim. Skipping trim to preserve collateral-locked vehicles.");
                             }
                         }
 
@@ -2404,7 +2412,8 @@ public partial class PersistentManager : Script
                         tyreRgb,
                         extrasSerialized,
                         neonRgb,
-                        dashStr
+                        dashStr,
+                        v.IsCollateralLocked ? 1 : 0
                     );
                 }).ToArray();
             }
@@ -2416,6 +2425,11 @@ public partial class PersistentManager : Script
         {
             Log("SaveVehiclesFileInternal failed: " + ex.ToString());
         }
+    }
+
+    public static string GetVehicleDisplayNamePublic(uint modelHash)
+    {
+        return GetVehicleDisplayName(modelHash);
     }
 
     private void TryLoadAll()
@@ -2476,23 +2490,20 @@ public partial class PersistentManager : Script
                     if (p.Length > 6) int.TryParse(p[6], out ownerH);
 
                     // --- modelHash parsing: chấp nhận "0xHEX" hoặc "Tên" hoặc "Tên (0xHEX)" ---
-                    uint modelHash = 0; // <-- khởi tạo để tránh "use of unassigned local variable"
+                    uint modelHash = 0;
                     string modelField = p[0].Trim();
 
                     bool parsed = false;
                     try
                     {
-                        // Nếu field chứa "0x" anywhere -> try extract phần sau "0x"
                         int idx = modelField.IndexOf("0x", StringComparison.OrdinalIgnoreCase);
                         if (idx >= 0)
                         {
-                            // Lấy phần sau "0x" (bỏ prefix) — tránh dùng Replace với StringComparison
                             string hexPart = modelField.Substring(idx + 2).Trim();
                             if (uint.TryParse(hexPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out modelHash))
                                 parsed = true;
                         }
 
-                        // Nếu chưa parse được, thử parse toàn bộ field như hex (không có prefix)
                         if (!parsed)
                         {
                             if (uint.TryParse(modelField, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out modelHash))
@@ -2503,7 +2514,6 @@ public partial class PersistentManager : Script
 
                     if (!parsed)
                     {
-                        // fallback: try lookup bằng tên qua helper (cần đảm bảo TryGetModelHashFromName có tồn tại)
                         if (!TryGetModelHashFromName(modelField, out modelHash))
                         {
                             Log($"TryLoadAll: unable to parse model field '{modelField}' into a modelHash; skipping line.");
@@ -2547,6 +2557,7 @@ public partial class PersistentManager : Script
 
                     int turbo = 0;
                     if (p.Length > 9) int.TryParse(p[9], out turbo);
+
                     int purchasePrice = 0;
                     if (p.Length > 10) int.TryParse(p[10], out purchasePrice);
 
@@ -2561,6 +2572,7 @@ public partial class PersistentManager : Script
                     List<int> extrasExist = new List<int>();
                     int[] neonRgb = null;
                     int? dashColor = null;
+                    bool collateralLocked = false;
 
                     try
                     {
@@ -2606,7 +2618,15 @@ public partial class PersistentManager : Script
 
                         if (p.Length > 20 && !string.IsNullOrEmpty(p[20]))
                         {
-                            int tmp; if (int.TryParse(p[20], out tmp)) dashColor = tmp;
+                            int tmp;
+                            if (int.TryParse(p[20], out tmp)) dashColor = tmp;
+                        }
+
+                        if (p.Length > 21)
+                        {
+                            int tmp;
+                            if (int.TryParse(p[21], out tmp))
+                                collateralLocked = tmp != 0;
                         }
                     }
                     catch { /* tolerate parse errors */ }
@@ -2636,54 +2656,69 @@ public partial class PersistentManager : Script
                             TyreSmokeColor = tyreRgb ?? new int[3] { 0, 0, 0 },
                             ExtrasExist = extrasExist ?? new List<int>(),
                             NeonColor = neonRgb,
-                            DashboardColor = dashColor
+                            DashboardColor = dashColor,
+                            IsCollateralLocked = collateralLocked
                         });
                     }
                 }
                 catch (Exception ex) { Log("TryLoadAll(vehicles-line) failed: " + ex.ToString()); }
             }
 
-            // --- SAU KHI LOAD: TRIM PER-CHARACTER (Giới hạn xe mỗi nhân vật) ---
+            // --- SAU KHI LOAD: TRIM PER-CHARACTER (Giới hạn xe mỗi nhân vật)
+            // Chỉ trim xe KHÔNG khóa; nếu không còn xe không khóa thì bỏ qua và log.
             try
             {
                 lock (_persistVehicles)
                 {
-                    // Lấy danh sách các chủ xe hiện có
                     var owners = _persistVehicles.Select(x => x.OwnerModelHash).Distinct().ToList();
                     foreach (var owner in owners)
                     {
-                        // Đếm số lượng xe của owner này
-                        var ownedList = _persistVehicles.Where(x => x.OwnerModelHash == owner).ToList();
-
-                        while (ownedList.Count > MAX_VEHICLES_PER_CHAR)
+                        while (_persistVehicles.Count(x => x.OwnerModelHash == owner) > MAX_VEHICLES_PER_CHAR)
                         {
-                            // Tìm xe cũ nhất (vị trí đầu tiên trong list) của owner này
-                            var oldest = _persistVehicles.FirstOrDefault(x => x.OwnerModelHash == owner);
-                            if (oldest == null) break;
+                            var oldestUnlocked = _persistVehicles
+                                .FirstOrDefault(x => x.OwnerModelHash == owner && !x.IsCollateralLocked);
 
-                            // Xóa xe cũ nhất
-                            RemovePersistentVehicleSafe(oldest);
+                            if (oldestUnlocked == null)
+                            {
+                                Log($"TryLoadAll: owner 0x{owner:X} vượt MAX_VEHICLES_PER_CHAR nhưng không còn xe UNLOCKED để trim. Giữ nguyên xe thế chấp.");
+                                break;
+                            }
+
+                            RemovePersistentVehicleSafe(oldestUnlocked);
                             _vehiclesDirty = true;
 
-                            // Cập nhật lại danh sách tạm để kiểm tra điều kiện lặp
-                            ownedList = _persistVehicles.Where(x => x.OwnerModelHash == owner).ToList();
-                            Log($"TryLoadAll: trimmed oldest for owner 0x{owner:X} to respect MAX_VEHICLES_PER_CHAR");
+                            Log($"TryLoadAll: trimmed oldest UNLOCKED vehicle for owner 0x{owner:X} to respect MAX_VEHICLES_PER_CHAR");
                         }
                     }
                 }
             }
             catch (Exception ex) { Log("TryLoadAll per-character trim failed: " + ex.ToString()); }
 
-            // --- KIỂM TRA GIỚI HẠN SAU KHI LOAD XONG (Global cap) ---
-            lock (_persistVehicles)
+            // --- KIỂM TRA GIỚI HẠN SAU KHI LOAD XONG (Global cap)
+            // Chỉ trim xe KHÔNG khóa; nếu không còn xe không khóa thì log và giữ nguyên.
+            try
             {
-                if (_persistVehicles.Count > MAX_PERSIST_VEHICLES)
+                lock (_persistVehicles)
                 {
-                    int removeCount = _persistVehicles.Count - MAX_PERSIST_VEHICLES;
-                    _persistVehicles.RemoveRange(0, removeCount);
-                    _vehiclesDirty = true;
-                    Log($"TryLoadAll: trimmed {removeCount} persisted vehicles to respect MAX_PERSIST_VEHICLES");
+                    while (_persistVehicles.Count > MAX_PERSIST_VEHICLES)
+                    {
+                        var oldestUnlocked = _persistVehicles.FirstOrDefault(x => !x.IsCollateralLocked);
+                        if (oldestUnlocked == null)
+                        {
+                            Log("TryLoadAll: reached MAX_PERSIST_VEHICLES but no UNLOCKED vehicle remains to trim. Preserving collateral-locked vehicles.");
+                            break;
+                        }
+
+                        RemovePersistentVehicleSafe(oldestUnlocked);
+                        _vehiclesDirty = true;
+
+                        Log($"TryLoadAll: trimmed oldest UNLOCKED persisted vehicle to respect MAX_PERSIST_VEHICLES");
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Log("TryLoadAll global cap trim failed: " + ex.ToString());
             }
 
             // --- ĐĂNG KÝ VŨ KHÍ HIỆN TẠI ---
@@ -2832,6 +2867,7 @@ public partial class PersistentManager : Script
         public Dictionary<int, int> Mods;
         public bool TurboOn;
         public int PurchasePrice;
+        public bool IsCollateralLocked;
 
         // Visual / extra state
         public int? SavedLivery;
@@ -2861,6 +2897,7 @@ public partial class PersistentManager : Script
             ExtrasExist = new List<int>();
             NeonColor = null;
             PurchasePrice = 0;
+            IsCollateralLocked = false;
         }
     }
 

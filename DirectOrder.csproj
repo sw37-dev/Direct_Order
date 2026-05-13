@@ -74,13 +74,15 @@
   <ItemGroup>
     <Compile Include="AuctionHouse.cs" />
     <Compile Include="AutoDrive.cs" />
+    <Compile Include="Banker.cs" />
     <Compile Include="CityBlackout.cs" />
-    <Compile Include="CompanionCloner.cs" />
+    <Compile Include="Bodyguards.cs" />
     <Compile Include="Dealership.cs" />
     <Compile Include="Helper.cs" />
     <Compile Include="InstantRefill.cs" />
     <Compile Include="LanguageManager.cs" />
-    <Compile Include="Credit.cs" />
+    <Compile Include="FleecaBank.cs" />
+    <Compile Include="LomBank.cs" />
     <Compile Include="MoneyTruckEvent.cs" />
     <Compile Include="PersistentManager.cs" />
     <Compile Include="PlaneDeliveryContractEvent.cs" />

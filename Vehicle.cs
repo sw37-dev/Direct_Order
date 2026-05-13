@@ -1712,6 +1712,7 @@ public partial class InstantRefill : Script
 
             int finalCost = totalCost;
 
+            // Khối 1: Kiểm tra thẻ giảm giá
             if (_luiUseDiscountTicket)
             {
                 LoadVehicleDiscountTicketState();
@@ -1724,6 +1725,17 @@ public partial class InstantRefill : Script
                 }
             }
 
+            // --- ĐOẠN CHÈN MỚI: Kiểm tra Waypoint ---
+            string waypointReason;
+            if (!VehicleDelivery.CanUseWaypointDelivery(out waypointReason))
+            {
+                Notification.Show(waypointReason);
+                PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                return;
+            }
+            // ---------------------------------------
+
+            // Khối 2: Kiểm tra tiền tệ
             if (Game.Player.Money < finalCost)
             {
                 Notification.Show(LT(
@@ -1735,6 +1747,7 @@ public partial class InstantRefill : Script
                 return;
             }
 
+            // Thực hiện trừ tiền và xử lý logic mua hàng
             Game.Player.Money -= finalCost;
             AddToSpendingAccumulator(finalCost);
 
@@ -1746,6 +1759,7 @@ public partial class InstantRefill : Script
             int purchasePriceForRegister = finalCost;
             string plateSnapshot = plateText;
 
+            // Yêu cầu giao xe
             VehicleDelivery.RequestDelivery(chosen.Hash, player.Position, (veh) =>
             {
                 try
@@ -1905,6 +1919,17 @@ public partial class InstantRefill : Script
             return;
         }
 
+        // --- CHÈN MỚI: Kiểm tra Waypoint ---
+        string waypointReason;
+        if (!VehicleDelivery.CanUseWaypointDelivery(out waypointReason))
+        {
+            Notification.Show(waypointReason);
+            PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+            ClearPending(false, false);
+            return;
+        }
+        // ------------------------------------
+
         int totalCost = _pendingVehiclePrice;
 
         // 2. Kiểm tra tài chính
@@ -1915,8 +1940,9 @@ public partial class InstantRefill : Script
             return;
         }
 
+        // 3. Thực hiện giao dịch
         Game.Player.Money -= totalCost;
-        AddToSpendingAccumulator(totalCost); // <<< ADDED: tích lũy chi tiêu
+        AddToSpendingAccumulator(totalCost); // tích lũy chi tiêu
         var chosen = _pendingVehicleEntry;
 
         // 4. GỌI DỊCH VỤ GIAO XE (Thay thế toàn bộ đoạn spawn cũ)
