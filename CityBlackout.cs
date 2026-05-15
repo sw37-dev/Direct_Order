@@ -54,12 +54,21 @@ public class CityBlackout : Script
     private BlackoutSource _blackoutSource = BlackoutSource.None;
 
     // Paige flow
+    private const int PAIGE_CONFIRMATION_PROMPT_DELAY_MS = 5000;
     private const int PAIGE_BLACKOUT_DELAY_MS = 5000;
     private const int PAIGE_WANTED_DELAY_MS = 25000;
 
-    private int _paigeBlackoutStartGameTime = -1;   // sau 5 giây mới cúp điện
-    private int _paigeWantedGrantGameTime = -1;     // sau 25 giây mới gán sao
-    private bool _paigeWantedGranted = false;       // đã gán sao chưa
+    // Trạng thái xác nhận của Paige:
+    // - gọi Paige xong -> chờ 5 giây mới hiện help-box
+    // - help-box hiện -> giữ nguyên cho đến khi Enter hoặc Back
+    // - Enter -> chờ thêm 5 giây rồi mới cúp điện
+    // - Back -> hủy hoàn toàn, không khóa ngày
+    private bool _paigeSequenceActive = false;
+    private bool _paigeHelpBoxVisible = false;
+    private int _paigeConfirmationPromptGameTime = -1; // thời điểm bắt đầu hiện help-box
+    private int _paigeBlackoutStartGameTime = -1;       // sau khi đồng ý, chờ thêm 5 giây mới cúp điện
+    private int _paigeWantedGrantGameTime = -1;         // sau khi blackout bắt đầu mới gán sao
+    private bool _paigeWantedGranted = false;           // đã gán sao chưa
 
     // --- Blackout state ---
     private bool _blackoutActive = false;
@@ -190,23 +199,19 @@ public class CityBlackout : Script
         }
     }
 
-    // Thêm vào trong class CityBlackout
-    private void ShowPaigeHarrisNotification(string title, string message, int timeout = PaigeNotificationTimeout)
+    private void ShowPaigeHarrisNotification(
+        string title,
+        string message,
+        int timeout = PaigeNotificationTimeout)
     {
         try
         {
-            Function.Call(Hash.BEGIN_TEXT_COMMAND_THEFEED_POST, "STRING");
-            Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, message);
-
-            Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_MESSAGETEXT,
-                "CHAR_PAIGE",
-                "CHAR_PAIGE",
-                false,
-                0,
+            Notification.Show(
+                NotificationIcon.HumanDefault,
                 PaigeHarrisNotificationBrand,
-                title);
-
-            Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_TICKER, false, true);
+                title,
+                message
+            );
         }
         catch
         {
@@ -361,6 +366,13 @@ public class CityBlackout : Script
                 }
                 Interval = IDLE_INTERVAL_MS;
             }
+
+            // Khi Paige đang chờ hiện help-box / chờ người chơi đồng ý / chờ blackout sau khi đồng ý,
+            // ép tick = 0ms để help-box không bị nhấp nháy và timing luôn chính xác.
+            if (_paigeSequenceActive && !_blackoutActive)
+            {
+                Interval = 0;
+            }
         }
         catch (Exception ex)
         {
@@ -372,11 +384,64 @@ public class CityBlackout : Script
     {
         int now = Game.GameTime;
 
-        // 3 giây sau khi gọi Paige mới bắt đầu blackout
-        if (_paigeBlackoutStartGameTime > 0 && now >= _paigeBlackoutStartGameTime)
+        if (_paigeSequenceActive)
         {
-            _paigeBlackoutStartGameTime = -1;
-            StartBlackout(BlackoutSource.Paige);
+            // Nếu vì lý do nào đó blackout khác đã bắt đầu trong lúc chờ Paige,
+            // thì hủy toàn bộ lớp xác nhận để tránh logic treo.
+            if (_blackoutActive && _blackoutSource != BlackoutSource.Paige)
+            {
+                ResetPaigeSequenceState(true);
+            }
+            else
+            {
+                // 5 giây sau khi Paige gửi tin nhắn mới hiện help-box
+                if (!_paigeHelpBoxVisible &&
+                    _paigeConfirmationPromptGameTime > 0 &&
+                    now >= _paigeConfirmationPromptGameTime)
+                {
+                    _paigeHelpBoxVisible = true;
+                }
+
+                // Help-box phải được vẽ mỗi frame cho tới khi người chơi chọn đồng ý / từ chối
+                if (_paigeHelpBoxVisible)
+                {
+                    ShowPaigeConfirmationHelpBox();
+
+                    if (Function.Call<bool>(Hash.IS_CONTROL_JUST_PRESSED, 0, (int)Control.FrontendAccept))
+                    {
+                        // Đồng ý: tắt help-box, chờ thêm 5 giây rồi mới bắt đầu blackout
+                        _paigeHelpBoxVisible = false;
+                        _paigeConfirmationPromptGameTime = -1;
+                        _paigeBlackoutStartGameTime = now + PAIGE_BLACKOUT_DELAY_MS;
+                    }
+                    else if (Function.Call<bool>(Hash.IS_CONTROL_JUST_PRESSED, 0, (int)Control.FrontendCancel))
+                    {
+                        // Từ chối: hủy hoàn toàn, không khóa ngày
+                        ResetPaigeSequenceState(true);
+                        return;
+                    }
+                }
+
+                // Sau khi đồng ý, chờ thêm 5 giây rồi mới thực sự kích hoạt blackout
+                if (!_paigeHelpBoxVisible &&
+                    _paigeBlackoutStartGameTime > 0 &&
+                    now >= _paigeBlackoutStartGameTime)
+                {
+                    _paigeBlackoutStartGameTime = -1;
+
+                    // Chỉ khóa ngày khi blackout kích hoạt thành công
+                    if (!StartBlackout(BlackoutSource.Paige))
+                    {
+                        ResetPaigeSequenceState(true);
+                    }
+                    else
+                    {
+                        _paigeSequenceActive = false;
+                        _paigeHelpBoxVisible = false;
+                        _paigeConfirmationPromptGameTime = -1;
+                    }
+                }
+            }
         }
 
         // 10 giây sau khi blackout bắt đầu mới gán sao
@@ -388,6 +453,29 @@ public class CityBlackout : Script
         {
             _paigeWantedGranted = true;
             TryGivePlayerWantedIncrement();
+        }
+    }
+
+    private void ShowPaigeConfirmationHelpBox()
+    {
+        const string helpText =
+            "Anh có chắc muốn tôi hack lưới điện thành phố chứ, nhưng anh sẽ bị truy nã đấy?\n~INPUT_FRONTEND_ACCEPT~ để đồng ý\n~INPUT_FRONTEND_LEFT~ để hủy";
+
+        try
+        {
+            GTA.UI.Screen.ShowHelpTextThisFrame(helpText);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.BEGIN_TEXT_COMMAND_DISPLAY_HELP, "STRING");
+                Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, helpText);
+                Function.Call(Hash.END_TEXT_COMMAND_DISPLAY_HELP, 0, false, true, -1);
+            }
+            catch
+            {
+            }
         }
     }
 
@@ -405,10 +493,24 @@ public class CityBlackout : Script
         }
     }
 
-    private void StartBlackout(BlackoutSource source)
+    private bool StartBlackout(BlackoutSource source)
     {
         try
         {
+            if (_blackoutActive || _smoothingActive)
+                return false;
+
+            int dayKey = GetCurrentGameDayKey();
+            if (dayKey == -1)
+                dayKey = _lastObservedDayKey;
+
+            // Với Paige: chỉ được khóa ngày khi blackout thực sự bắt đầu thành công.
+            if (source == BlackoutSource.Paige && IsBlackoutLockedToday(dayKey))
+            {
+                ResetPaigeSequenceState(true);
+                return false;
+            }
+
             _blackoutSource = source;
             _blackoutActive = true;
             _blackoutEndGameTime = Game.GameTime + _cfgBlackoutDurationMs;
@@ -416,7 +518,7 @@ public class CityBlackout : Script
             _forcedVehicleHandles.Clear();
             _smoothingActive = false;
 
-            // Chỉ blackout từ Paige mới được phép gán sao, nhưng gán sau 10 giây
+            // Chỉ blackout từ Paige mới được phép gán sao, nhưng gán sau khi blackout đã chạy xong phần khởi tạo
             if (source == BlackoutSource.Paige)
             {
                 _paigeWantedGranted = false;
@@ -445,8 +547,15 @@ public class CityBlackout : Script
                     5000
                 );
 
+                // Blackout của Paige chỉ được khóa ngày sau khi đã khởi tạo thành công
+                if (source == BlackoutSource.Paige)
+                {
+                    _blackoutLockedDayKey = dayKey;
+                    ResetPaigeSequenceState(false);
+                }
+
                 Interval = IDLE_INTERVAL_MS;
-                return;
+                return true;
             }
             catch
             {
@@ -484,19 +593,42 @@ public class CityBlackout : Script
                     T("CityBlackout_BlackoutStartedAlt", "~HUD_COLOUR_DEGEN_RED~~h~Cúp điện toàn thành phố"),
                     5000
                 );
+
+                if (source == BlackoutSource.Paige)
+                {
+                    _blackoutLockedDayKey = dayKey;
+                    ResetPaigeSequenceState(false);
+                }
+
+                Interval = SMOOTH_INTERVAL_MS;
+                return true;
             }
             catch (Exception ex)
             {
                 GTA.UI.Notification.Show(T("CityBlackout_StartBlackoutFailed", "StartBlackout failed: ") + ex.Message);
                 _blackoutActive = false;
-            }
+                _blackoutSource = BlackoutSource.None;
 
-            Interval = SMOOTH_INTERVAL_MS;
+                if (source == BlackoutSource.Paige)
+                {
+                    ResetPaigeSequenceState(true);
+                }
+
+                return false;
+            }
         }
         catch (Exception ex)
         {
             GTA.UI.Notification.Show(T("CityBlackout_StartBlackoutFailed", "StartBlackout failed: ") + ex.Message);
             _blackoutActive = false;
+            _blackoutSource = BlackoutSource.None;
+
+            if (source == BlackoutSource.Paige)
+            {
+                ResetPaigeSequenceState(true);
+            }
+
+            return false;
         }
     }
 
@@ -509,8 +641,17 @@ public class CityBlackout : Script
         if (IsBlackoutLockedToday(dayKey))
             return;
 
-        _blackoutLockedDayKey = dayKey;
-        StartBlackout(BlackoutSource.Auto);
+        if (StartBlackout(BlackoutSource.Auto))
+        {
+            _blackoutLockedDayKey = dayKey;
+
+            // Nếu đang có một lớp xác nhận Paige chờ sẵn thì phải hủy nó,
+            // vì blackout tự động đã chạy rồi.
+            if (_paigeSequenceActive)
+            {
+                ResetPaigeSequenceState(true);
+            }
+        }
     }
 
     private void StartPaigeBlackoutSequence()
@@ -522,10 +663,16 @@ public class CityBlackout : Script
         if (IsBlackoutLockedToday(dayKey))
             return;
 
-        // khóa ngày ngay khi bấm gọi Paige để không có blackout tự động chen vào
-        _blackoutLockedDayKey = dayKey;
+        // Không tạo chồng nhiều lớp xác nhận
+        if (_paigeSequenceActive)
+            return;
 
-        _paigeBlackoutStartGameTime = Game.GameTime + PAIGE_BLACKOUT_DELAY_MS;
+        _paigeSequenceActive = true;
+        _paigeHelpBoxVisible = false;
+        _paigeConfirmationPromptGameTime = Game.GameTime + PAIGE_CONFIRMATION_PROMPT_DELAY_MS;
+        _paigeBlackoutStartGameTime = -1;
+
+        // reset wanted state cho an toàn
         _paigeWantedGranted = false;
         _paigeWantedGrantGameTime = -1;
 
@@ -533,6 +680,9 @@ public class CityBlackout : Script
             T("CityBlackout_Title", "Cúp điện"),
             T("CityBlackout_Message", "Tôi sẽ truy cập hệ thống điện thành phố và cắt điện nhưng cảnh sát sẽ truy ra anh rất nhanh đấy!")
         );
+
+        // tick nhanh để help-box không bị nhấp nháy và thời điểm 5 giây luôn chính xác
+        Interval = 0;
     }
 
     private bool IsBlackoutLockedToday(int dayKey)
@@ -613,8 +763,11 @@ public class CityBlackout : Script
             }
             else
             {
-                // Còn lại: gọi Paige để chuẩn bị cúp điện sau 3 giây
-                StartPaigeBlackoutSequence();
+                // Còn lại: chỉ bắt đầu chuỗi xác nhận khi không có blackout đang chạy
+                if (!_blackoutActive && !_smoothingActive && !_paigeSequenceActive)
+                {
+                    StartPaigeBlackoutSequence();
+                }
             }
         }
         finally
@@ -792,6 +945,10 @@ public class CityBlackout : Script
             _paigeBlackoutStartGameTime = -1;
             _paigeWantedGrantGameTime = -1;
             _paigeWantedGranted = true;
+
+            // an toàn: xóa luôn bất kỳ lớp xác nhận Paige nào còn sót
+            ResetPaigeSequenceState(true);
+
             Interval = IDLE_INTERVAL_MS;
             GTA.UI.Screen.ShowSubtitle(T("CityBlackout_PowerRestored", "~HUD_COLOUR_CONTROLLER_MICHAEL~~h~Đã có điện trở lại."), 3000);
             TriggerPowerOnSound();
@@ -834,8 +991,28 @@ public class CityBlackout : Script
                 _paigeBlackoutStartGameTime = -1;
                 _paigeWantedGrantGameTime = -1;
                 _paigeWantedGranted = true;
+
+                ResetPaigeSequenceState(true);
             }
             catch { }
+        }
+        else
+        {
+            ResetPaigeSequenceState(true);
+        }
+    }
+
+    private void ResetPaigeSequenceState(bool clearWantedTimers)
+    {
+        _paigeSequenceActive = false;
+        _paigeHelpBoxVisible = false;
+        _paigeConfirmationPromptGameTime = -1;
+        _paigeBlackoutStartGameTime = -1;
+
+        if (clearWantedTimers)
+        {
+            _paigeWantedGranted = false;
+            _paigeWantedGrantGameTime = -1;
         }
     }
 

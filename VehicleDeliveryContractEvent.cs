@@ -1350,9 +1350,7 @@ public class VehicleDeliveryContractEvent : Script
                 new Vector3(0.85f, 0.85f, 0.85f),
                 Color.FromArgb(200, 180, 0, 255));
         }
-        catch
-        {
-        }
+        catch { }
     }
 
     private void DrawDestinationMarker()

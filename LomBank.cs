@@ -25,6 +25,9 @@ public partial class LombankScript : Script
     private static readonly TimeSpan LOAN_TERM = TimeSpan.FromDays(7);
     private static readonly TimeSpan OVERDUE_NOTICE_WINDOW = TimeSpan.FromHours(2);
 
+    private static readonly TimeSpan LOAN_REPAY_UNLOCK_DELAY = TimeSpan.FromDays(2);
+    private static readonly TimeSpan LOAN_REPAY_UNLOCK_NOTICE_WINDOW = TimeSpan.FromHours(2);
+
     private static string TerminalBusyMessage =>
         L("Lombank_TerminalBusyMessage",
             "Hãy hoàn tất giao dịch hiện tại trước khi giao dịch mới! Xin cảm ơn quý khách!");
@@ -37,10 +40,16 @@ public partial class LombankScript : Script
     private static readonly Vector3 TerminalPosition = new Vector3(-1566.704f, -588.7851f, 33.4065f);
     private const float TerminalHeading = 35.1283f;
 
+    // Vị trí marker hiển thị khi đã xác nhận giao dịch
+    private static readonly Vector3 TerminalMarkerPosition = new Vector3(-1566.221f, -589.4427f, 33.96097f);
+    private const float TerminalMarkerScaleX = 0.75f;
+    private const float TerminalMarkerScaleY = 0.75f;
+    private const float TerminalMarkerScaleZ = 0.75f;
+
     private const float TerminalRadius = 1.9f;
 
     private const int InputCooldownMs = 1000;
-    private const int LoanStateCheckIntervalMs = 60_000;
+    private const int LoanStateCheckIntervalMs = 75_000;
 
     private readonly ObjectPool _uiPool = new ObjectPool();
     private NativeMenu _mainMenu;
@@ -54,12 +63,20 @@ public partial class LombankScript : Script
     private NativeItem _withdrawConfirmItem;
     private NativeItem _cancelItem;
 
+    // Các item mới trong menu
+    private NativeItem _transactionDateItem;
+    private NativeItem _transactionTimeItem;
+
+    // Lưu thời điểm rút tiền đầu tiên thành công trong chu kỳ hiện tại
+    private DateTime? _firstWithdrawAt = null;
+
     private const int HASH_MICHAEL = 225514697;
     private const int HASH_FRANKLIN = -1692214353;
     private const int HASH_TREVOR = -1686040670;
 
     private bool _menuOpen = false;
     private bool _awaitTerminalAction = false;
+    private bool _terminalMarkerVisible = false;
     private int _lastInputGameTime = 0;
 
     private int _lastLoanStateCheckGameTime = -LoanStateCheckIntervalMs;
@@ -77,6 +94,7 @@ public partial class LombankScript : Script
     private DateTime? _loanOpenedAt = null;
     private DateTime? _lastPenaltyAppliedAt = null;
     private bool _overdueNoticeShown = false;
+    private bool _repayUnlockNoticeShown = false;
 
     private readonly string _stateRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -168,6 +186,11 @@ public partial class LombankScript : Script
                 ShowTerminalHelpText();
             }
 
+            if (_terminalMarkerVisible)
+            {
+                DrawTerminalMarker();
+            }
+
             UpdateLemonUiMouseState();
 
             if (_uiPool.AreAnyVisible)
@@ -185,6 +208,37 @@ public partial class LombankScript : Script
         {
             Log("OnTick failed: " + ex);
         }
+    }
+
+    private void DrawTerminalMarker()
+    {
+        try
+        {
+            if (!_terminalMarkerVisible)
+                return;
+
+            Vector3 markerPos = TerminalMarkerPosition + new Vector3(0.0f, 0.0f, -1.42f);
+
+            Function.Call(Hash.DRAW_MARKER,
+                1, // cylindrical marker
+                markerPos.X,
+                markerPos.Y,
+                markerPos.Z,
+                0f, 0f, 0f,
+                0f, 0f, 0f,
+                TerminalMarkerScaleX,
+                TerminalMarkerScaleY,
+                TerminalMarkerScaleZ,
+                235, 242, 255, 210,
+                false,
+                true,
+                2,
+                false,
+                null,
+                null,
+                false);
+        }
+        catch { }
     }
 
     private void OnKeyDown(object sender, KeyEventArgs e)
@@ -388,6 +442,8 @@ public partial class LombankScript : Script
             _loanOpenedAt = null;
             _lastPenaltyAppliedAt = null;
             _overdueNoticeShown = false;
+            _repayUnlockNoticeShown = false;
+            _firstWithdrawAt = null;
 
             string file = GetStateFileForOwner(_activeCharacterHash);
             if (!File.Exists(file))
@@ -411,6 +467,7 @@ public partial class LombankScript : Script
                         _loanOpenedAt = now;
                         _lastPenaltyAppliedAt = now.AddDays(7);
                         _overdueNoticeShown = false;
+                        _repayUnlockNoticeShown = false;
                     }
                 }
 
@@ -458,11 +515,18 @@ public partial class LombankScript : Script
             // 6. Đọc các thông tin thời gian và thông báo
             _loanOpenedAt = ParseNullableDateTime(data, "loanOpenedAt");
             _lastPenaltyAppliedAt = ParseNullableDateTime(data, "lastPenaltyAppliedAt");
+            _firstWithdrawAt = ParseNullableDateTime(data, "firstWithdrawAt");
 
             if (data.TryGetValue("overdueNoticeShown", out string shownText))
             {
                 _overdueNoticeShown = shownText == "1" ||
                                       shownText.Equals("true", StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (data.TryGetValue("repayUnlockNoticeShown", out string repayShownText))
+            {
+                _repayUnlockNoticeShown = repayShownText == "1" ||
+                                          repayShownText.Equals("true", StringComparison.OrdinalIgnoreCase);
             }
 
             // 7. Logic kiểm tra tính toàn vẹn dữ liệu
@@ -487,6 +551,7 @@ public partial class LombankScript : Script
             _loanOpenedAt = null;
             _lastPenaltyAppliedAt = null;
             _overdueNoticeShown = false;
+            _repayUnlockNoticeShown = false;
         }
     }
 
@@ -502,13 +567,15 @@ public partial class LombankScript : Script
             string file = GetStateFileForOwner(_activeCharacterHash);
 
             var sb = new StringBuilder();
-            sb.AppendLine("version=3");
+            sb.AppendLine("version=5");
             sb.AppendLine("debt=" + _currentDebt.ToString(CultureInfo.InvariantCulture));
             sb.AppendLine("limit=" + _totalLimit.ToString(CultureInfo.InvariantCulture));
             sb.AppendLine("withdrawnThisCycle=" + _cycleWithdrawnAmount.ToString(CultureInfo.InvariantCulture));
             sb.AppendLine("loanOpenedAt=" + (_loanOpenedAt.HasValue ? _loanOpenedAt.Value.ToString("o", CultureInfo.InvariantCulture) : ""));
             sb.AppendLine("lastPenaltyAppliedAt=" + (_lastPenaltyAppliedAt.HasValue ? _lastPenaltyAppliedAt.Value.ToString("o", CultureInfo.InvariantCulture) : ""));
+            sb.AppendLine("firstWithdrawAt=" + (_firstWithdrawAt.HasValue ? _firstWithdrawAt.Value.ToString("o", CultureInfo.InvariantCulture) : ""));
             sb.AppendLine("overdueNoticeShown=" + (_overdueNoticeShown ? "1" : "0"));
+            sb.AppendLine("repayUnlockNoticeShown=" + (_repayUnlockNoticeShown ? "1" : "0"));
 
             File.WriteAllText(file, sb.ToString());
         }
@@ -553,7 +620,40 @@ public partial class LombankScript : Script
         _loanOpenedAt = null;
         _lastPenaltyAppliedAt = null;
         _overdueNoticeShown = false;
+        _repayUnlockNoticeShown = false;
         _cycleWithdrawnAmount = 0;
+        _firstWithdrawAt = null; // thêm dòng này
+    }
+
+    private void ApplyOnTimeRepaymentLimitIncrease(DateTime repayAt)
+    {
+        try
+        {
+            if (!_loanOpenedAt.HasValue)
+                return;
+
+            DateTime dueAt = _loanOpenedAt.Value.Add(LOAN_TERM);
+
+            // Chỉ thưởng khi trả hết nợ trước hoặc đúng thời điểm đáo hạn
+            if (repayAt > dueAt)
+                return;
+
+            long oldLimit = _totalLimit;
+            _totalLimit = Math.Min(MAX_TOTAL_LIMIT, _totalLimit + LIMIT_INCREMENT);
+
+            if (_totalLimit > oldLimit)
+            {
+                ShowLombankNotification(
+                    L("Lombank_LimitIncreasedTitle", "Hạn mức"),
+                    string.Format(
+                        L("Lombank_LimitIncreasedNotice", "Trả nợ đúng hạn, hạn mức của quý khách đã tăng thêm {0}."),
+                        FormatMoney(_totalLimit - oldLimit)));
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("ApplyOnTimeRepaymentLimitIncrease failed: " + ex);
+        }
     }
 
     private void StartNewLoanCycle()
@@ -562,13 +662,48 @@ public partial class LombankScript : Script
         _loanOpenedAt = now;
         _lastPenaltyAppliedAt = now.AddDays(7);
         _overdueNoticeShown = false;
+        _repayUnlockNoticeShown = false;
         _cycleWithdrawnAmount = 0;
+        _firstWithdrawAt = null; // thêm dòng này
+    }
+
+    private string FormatTransactionDate()
+    {
+        if (!_firstWithdrawAt.HasValue)
+            return "--/--/----";
+
+        DateTime dt = _firstWithdrawAt.Value;
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0}, {1}",
+            GetVietnameseDayName(dt.DayOfWeek),
+            dt.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
+    }
+
+    private string FormatTransactionTime()
+    {
+        if (!_firstWithdrawAt.HasValue)
+            return "--:--";
+
+        DateTime dt = _firstWithdrawAt.Value;
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} - {1}",
+            GetVietnameseTimePeriodLabel(dt),
+            dt.ToString("HH:mm", CultureInfo.InvariantCulture));
     }
 
     private static bool IsInOverdueNoticeWindow(DateTime now, DateTime dueAt)
     {
         DateTime windowStart = new DateTime(dueAt.Year, dueAt.Month, dueAt.Day, dueAt.Hour, 0, 0, dueAt.Kind);
         DateTime windowEnd = windowStart.Add(OVERDUE_NOTICE_WINDOW);
+        return now >= windowStart && now < windowEnd;
+    }
+
+    private static bool IsInRepayUnlockNoticeWindow(DateTime now, DateTime unlockAt)
+    {
+        DateTime windowStart = new DateTime(unlockAt.Year, unlockAt.Month, unlockAt.Day, unlockAt.Hour, 0, 0, unlockAt.Kind);
+        DateTime windowEnd = windowStart.Add(LOAN_REPAY_UNLOCK_NOTICE_WINDOW);
         return now >= windowStart && now < windowEnd;
     }
 
@@ -588,6 +723,17 @@ public partial class LombankScript : Script
             bool changed = false;
             DateTime now = GetCurrentInGameDateTime();
             DateTime dueAt = _loanOpenedAt.Value.Add(LOAN_TERM);
+            DateTime repayUnlockAt = _loanOpenedAt.Value.Add(LOAN_REPAY_UNLOCK_DELAY);
+
+            if (showNotice && !_repayUnlockNoticeShown && now >= repayUnlockAt && IsInRepayUnlockNoticeWindow(now, repayUnlockAt))
+            {
+                ShowLombankNotification(
+                    L("Lombank_RepayUnlockedTitle", "Thông báo"),
+                    L("Lombank_RepayUnlockedNotice", "Ngân hàng đã mở khóa kỳ trả nợ của quý khách rồi nhé!"));
+
+                _repayUnlockNoticeShown = true;
+                changed = true;
+            }
 
             if (now >= dueAt)
             {
@@ -595,7 +741,7 @@ public partial class LombankScript : Script
                 {
                     ShowLombankNotification(
                         L("Lombank_OverdueTitle", "Quá hạn"),
-                        L("Lombank_OverdueNotice", "Đến kỳ trả nợ rồi mà vẫn chưa trả xong, ngân hàng sẽ tăng phí phạt quá hạn đấy!"));
+                        L("Lombank_OverdueNotice", "Lom Bank sẽ tăng phí do quá hạn trả nợ tín dụng!"));
 
                     _overdueNoticeShown = true;
                     changed = true;
@@ -652,6 +798,47 @@ public partial class LombankScript : Script
         return string.Format(CultureInfo.InvariantCulture, "${0:N0}", value);
     }
 
+    private static string FormatDebtMoney(long value)
+    {
+        if (value <= 0)
+            return "$0";
+
+        return "-" + FormatMoney(value);
+    }
+
+    private static string GetVietnameseDayName(DayOfWeek dayOfWeek)
+    {
+        switch (dayOfWeek)
+        {
+            case DayOfWeek.Monday: return "Thứ Hai";
+            case DayOfWeek.Tuesday: return "Thứ Ba";
+            case DayOfWeek.Wednesday: return "Thứ Tư";
+            case DayOfWeek.Thursday: return "Thứ Năm";
+            case DayOfWeek.Friday: return "Thứ Sáu";
+            case DayOfWeek.Saturday: return "Thứ Bảy";
+            default: return "Chủ Nhật";
+        }
+    }
+
+    private static string GetVietnameseTimePeriodLabel(DateTime time)
+    {
+        int minutes = time.Hour * 60 + time.Minute;
+
+        if (minutes >= 0 && minutes <= 59)
+            return "Nửa đêm";
+        if (minutes >= 60 && minutes <= 299)
+            return "Rạng sáng";
+        if (minutes >= 300 && minutes <= 659)
+            return "Sáng";
+        if (minutes >= 660 && minutes <= 779)
+            return "Trưa";
+        if (minutes >= 780 && minutes <= 1079)
+            return "Chiều";
+        if (minutes >= 1080 && minutes <= 1259)
+            return "Tối";
+        return "Đêm";
+    }
+
     private void EnsureLombankContactRegistered()
     {
         try
@@ -676,7 +863,7 @@ public partial class LombankScript : Script
                 return;
             }
 
-            var contact = new iFruitContact("Lombank")
+            var contact = new iFruitContact("Lom Bank")
             {
                 Active = true,
                 DialTimeout = 2500,
@@ -719,17 +906,23 @@ public partial class LombankScript : Script
                 L("Lombank_MenuTitle", "LomBank"),
                 L("Lombank_MenuSubtitle", "CÁC DANH MỤC NGÂN HÀNG"));
 
+            // Khởi tạo các item cũ
             _customerItem = new NativeItem("");
             _totalLimitItem = new NativeItem("");
+            _remainingLimitItem = new NativeItem("");
             _currentDebtItem = new NativeItem("");
             _totalDueItem = new NativeItem("");
-            _remainingLimitItem = new NativeItem("");
+
+            // Khởi tạo 2 item mới theo hướng dẫn
+            _transactionDateItem = new NativeItem("");
+            _transactionTimeItem = new NativeItem("");
 
             _withdrawConfirmItem = new NativeItem(
                 L("Lombank_MenuWithdrawConfirm", "Xác nhận giao dịch"));
             _cancelItem = new NativeItem(
                 L("Lombank_MenuCancel", "Hủy dịch vụ"));
 
+            // Xử lý sự kiện khi nhấn Xác nhận giao dịch
             _withdrawConfirmItem.Activated += (s, e) =>
             {
                 if (_awaitTerminalAction)
@@ -742,22 +935,30 @@ public partial class LombankScript : Script
                 }
 
                 _awaitTerminalAction = true;
+                _terminalMarkerVisible = true;
                 CloseMainMenu();
                 ShowLombankNotification(
                     L("Lombank_TerminalTitle", "Giao dịch"),
                     L("Lombank_TerminalGoToAtm", "Đến ATM của LomBank để thực hiện giao dịch."));
             };
 
+            // Xử lý sự kiện khi nhấn Hủy dịch vụ
             _cancelItem.Activated += (s, e) =>
             {
                 CloseMainMenu();
             };
 
+            // Thêm các item vào Menu theo thứ tự yêu cầu
             _mainMenu.Add(_customerItem);
             _mainMenu.Add(_totalLimitItem);
+            _mainMenu.Add(_remainingLimitItem);
             _mainMenu.Add(_currentDebtItem);
             _mainMenu.Add(_totalDueItem);
-            _mainMenu.Add(_remainingLimitItem);
+
+            // Chèn 2 item mới sau remainingLimitItem
+            _mainMenu.Add(_transactionDateItem); // Mới
+            _mainMenu.Add(_transactionTimeItem); // Mới
+
             _mainMenu.Add(_withdrawConfirmItem);
             _mainMenu.Add(_cancelItem);
 
@@ -780,24 +981,32 @@ public partial class LombankScript : Script
                 return;
 
             _customerItem.Title = string.Format(
-                L("Lombank_CustomerLabel", "Khách hàng: {0}"),
+                L("Lombank_CustomerLabel", "Tên khách hàng: {0}"),
                 _customerName);
 
             _totalLimitItem.Title = string.Format(
                 L("Lombank_TotalLimitLabel", "Tổng hạn mức: {0}"),
                 FormatMoney(_totalLimit));
 
-            _currentDebtItem.Title = string.Format(
-                L("Lombank_CurrentDebtLabel", "Dư nợ hiện tại: {0}"),
-                FormatMoney(_currentDebt));
-
-            _totalDueItem.Title = string.Format(
-                L("Lombank_TotalDueLabel", "Tổng số tiền cần trả: {0}"),
-                FormatMoney(GetTotalAmountDue()));
-
             _remainingLimitItem.Title = string.Format(
                 L("Lombank_RemainingLimitLabel", "Hạn mức còn lại: {0}"),
                 FormatMoney(GetRemainingLimit()));
+
+            _currentDebtItem.Title = string.Format(
+                L("Lombank_CurrentDebtLabel", "Dư nợ hiện tại: {0}"),
+                FormatDebtMoney(_currentDebt));
+
+            _totalDueItem.Title = string.Format(
+                L("Lombank_TotalDueLabel", "Số tiền cần nạp: {0}"),
+                FormatMoney(GetTotalAmountDue()));
+
+            _transactionDateItem.Title = string.Format(
+                L("Lombank_TransactionDateLabel", "Ngày giao dịch: {0}"),
+                FormatTransactionDate());
+
+            _transactionTimeItem.Title = string.Format(
+                L("Lombank_TransactionTimeLabel", "Thời gian giao dịch: {0}"),
+                FormatTransactionTime());
 
             _withdrawConfirmItem.Title = L("Lombank_MenuWithdrawConfirm", "Xác nhận giao dịch");
             _cancelItem.Title = L("Lombank_MenuCancel", "Hủy dịch vụ");
@@ -876,6 +1085,7 @@ public partial class LombankScript : Script
         try
         {
             _awaitTerminalAction = false;
+            _terminalMarkerVisible = false;
 
             if (!string.IsNullOrWhiteSpace(subtitle))
                 ShowLombankNotification(L("Lombank_TerminalTitle", "Giao dịch"), subtitle);
@@ -1023,16 +1233,22 @@ public partial class LombankScript : Script
                 amount = int.MaxValue;
 
             bool isNewLoanCycle = (_currentDebt <= 0);
-
             if (isNewLoanCycle)
             {
                 StartNewLoanCycle();
+            }
+
+            // NEW: chỉ ghi nhận thời điểm ở lần rút đầu tiên thành công
+            if (!_firstWithdrawAt.HasValue && _cycleWithdrawnAmount <= 0)
+            {
+                _firstWithdrawAt = GetCurrentInGameDateTime();
             }
 
             Game.Player.Money += (int)amount;
 
             _currentDebt += amount;
             _cycleWithdrawnAmount += amount;
+
             SaveStateForCurrentCharacter();
             RefreshMainMenu();
 
@@ -1095,6 +1311,27 @@ public partial class LombankScript : Script
                 return;
             }
 
+            if (!_loanOpenedAt.HasValue)
+            {
+                ShowLombankNotification(
+                    L("Lombank_RepayFailTitle", "Giao dịch"),
+                    L("Lombank_RepayLocked",
+                        "Lom Bank chưa mở khóa kỳ trả nợ. Hãy quay lại đây sau 2 ngày."));
+                return;
+            }
+
+            DateTime now = GetCurrentInGameDateTime();
+            DateTime repayUnlockAt = _loanOpenedAt.Value.Add(LOAN_REPAY_UNLOCK_DELAY);
+
+            if (now < repayUnlockAt)
+            {
+                ShowLombankNotification(
+                    L("Lombank_RepayFailTitle", "Giao dịch"),
+                    L("Lombank_RepayLocked",
+                        "Lom Bank chưa mở khóa kỳ trả nợ. Hãy quay lại đây sau 2 ngày."));
+                return;
+            }
+
             if (amount > _currentDebt)
                 amount = _currentDebt;
 
@@ -1114,28 +1351,9 @@ public partial class LombankScript : Script
 
             if (_currentDebt <= 0)
             {
-                bool paidOffOnTime = false;
-
-                if (_loanOpenedAt.HasValue)
-                {
-                    DateTime now = GetCurrentInGameDateTime();
-                    DateTime dueAt = _loanOpenedAt.Value.Add(LOAN_TERM);
-
-                    // "Đúng hạn" = không quá hạn
-                    paidOffOnTime = now <= dueAt;
-                }
-
-                if (paidOffOnTime)
-                {
-                    long requiredWithdraw = GetRequiredWithdrawAmountForLimitIncrease(_totalLimit);
-
-                    if (_cycleWithdrawnAmount >= requiredWithdraw)
-                    {
-                        _totalLimit = Math.Min(MAX_TOTAL_LIMIT, _totalLimit + LIMIT_INCREMENT);
-                    }
-                }
-
                 _currentDebt = 0;
+                DateTime repayAt = GetCurrentInGameDateTime();
+                ApplyOnTimeRepaymentLimitIncrease(repayAt);
                 ResetLoanCycleState();
             }
 
