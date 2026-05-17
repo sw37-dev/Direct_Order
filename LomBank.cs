@@ -17,7 +17,7 @@ using System.Windows.Forms;
 public partial class LombankScript : Script
 {
     private const long INITIAL_TOTAL_LIMIT = 1_000_000L;
-    private const long MAX_TOTAL_LIMIT = 10_000_000L;
+    private const long MAX_TOTAL_LIMIT = 15_000_000L;
     private const long LIMIT_INCREMENT = 200_000L;
     private const decimal LIMIT_INCREASE_WITHDRAW_RATIO = 0.30m; // 30%
 
@@ -50,6 +50,10 @@ public partial class LombankScript : Script
 
     private const int InputCooldownMs = 1000;
     private const int LoanStateCheckIntervalMs = 75_000;
+
+    private CustomiFruit _lombankPhoneInstance = null;
+    private iFruitContact _lombankContact = null;
+    private bool _lombankContactAnsweredBound = false;
 
     private readonly ObjectPool _uiPool = new ObjectPool();
     private NativeMenu _mainMenu;
@@ -248,6 +252,10 @@ public partial class LombankScript : Script
             if (Game.IsLoading || Game.IsCutsceneActive)
                 return;
 
+            // Chặn tương tác khi menu hacker đang mở
+            if (_uiPool != null && _uiPool.AreAnyVisible)
+                return;
+
             if (_mainMenu != null && _mainMenu.Visible)
             {
                 if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Escape)
@@ -330,6 +338,42 @@ public partial class LombankScript : Script
             // fallback an toàn, nhưng vẫn ưu tiên in-game
             return new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
         }
+    }
+
+    private static string FormatLockRemaining(TimeSpan ts)
+    {
+        if (ts <= TimeSpan.Zero)
+            return "0 phút";
+
+        int totalMinutes = (int)Math.Ceiling(ts.TotalMinutes);
+        int days = totalMinutes / (24 * 60);
+        int hours = (totalMinutes % (24 * 60)) / 60;
+        int minutes = totalMinutes % 60;
+
+        if (days > 0)
+            return string.Format(CultureInfo.InvariantCulture, "{0} ngày {1} giờ", days, hours);
+
+        if (hours > 0)
+            return string.Format(CultureInfo.InvariantCulture, "{0} giờ {1} phút", hours, minutes);
+
+        return string.Format(CultureInfo.InvariantCulture, "{0} phút", Math.Max(1, minutes));
+    }
+
+    private bool EnsureAtmTransactionsAllowed()
+    {
+        if (!CityBlackoutHackerState.IsAtmTransactionLockedForCurrentCharacter())
+            return true;
+
+        TimeSpan remain = CityBlackoutHackerState.GetAtmTransactionLockRemainingForCurrentCharacter();
+
+        ShowLombankNotification(
+            L("Lombank_RepayFailTitle", "Giao dịch thất bại"),
+            string.Format(
+                L("Lombank_AtmLockedNotice",
+                    "Lom Bank đã khóa toàn bộ giao dịch ATM của quý khách. Vui lòng quay lại sau {0}."),
+                FormatLockRemaining(remain)));
+
+        return false;
     }
 
     private void SyncCharacterState()
@@ -670,14 +714,14 @@ public partial class LombankScript : Script
     private string FormatTransactionDate()
     {
         if (!_firstWithdrawAt.HasValue)
-            return "--/--/----";
+            return "----/--/--";
 
         DateTime dt = _firstWithdrawAt.Value;
         return string.Format(
             CultureInfo.InvariantCulture,
             "{0}, {1}",
             GetVietnameseDayName(dt.DayOfWeek),
-            dt.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
+            dt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
     }
 
     private string FormatTransactionTime()
@@ -847,34 +891,58 @@ public partial class LombankScript : Script
             if (phone == null || phone.Contacts == null)
                 return;
 
-            if (!ReferenceEquals(_phoneInstance, phone))
+            if (!ReferenceEquals(_lombankPhoneInstance, phone))
             {
-                _phoneInstance = phone;
-                _contactAdded = false;
+                _lombankPhoneInstance = phone;
+                _lombankContact = null;
+                _lombankContactAnsweredBound = false;
             }
 
-            if (_contactAdded)
-                return;
+            bool contactEnabled = CityBlackoutHackerState.IsAtmTransactionContactEnabledForCurrentCharacter();
 
-            if (phone.Contacts.Any(c =>
-                string.Equals(c.Name, "Lombank", StringComparison.OrdinalIgnoreCase)))
+            // Tìm contact hiện có
+            if (_lombankContact == null)
             {
-                _contactAdded = true;
+                _lombankContact = phone.Contacts.FirstOrDefault(c =>
+                    string.Equals(c.Name, "Lom Bank", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(c.Name, "Lombank", StringComparison.OrdinalIgnoreCase));
+            }
+
+            // Nếu đang khóa ATM: contact phải bị tắt, không gắn Answered
+            if (!contactEnabled)
+            {
+                if (_lombankContact != null)
+                {
+                    _lombankContact.Active = false;
+                }
+
                 return;
             }
 
-            var contact = new iFruitContact("Lom Bank")
+            // Nếu chưa có contact thì tạo mới
+            if (_lombankContact == null)
             {
-                Active = true,
-                DialTimeout = 2500,
-                Bold = false,
-                Icon = new ContactIcon("WEB_LOMBANK")
-            };
+                _lombankContact = new iFruitContact("Lom Bank")
+                {
+                    Active = true,
+                    DialTimeout = 2500,
+                    Bold = false,
+                    Icon = new ContactIcon("WEB_LOMBANK")
+                };
 
-            contact.Answered += OnLombankAnswered;
-            phone.Contacts.Add(contact);
+                phone.Contacts.Add(_lombankContact);
+            }
+            else
+            {
+                _lombankContact.Active = true;
+            }
 
-            _contactAdded = true;
+            // Chỉ gắn event khi contact thật sự đang bật
+            if (!_lombankContactAnsweredBound)
+            {
+                _lombankContact.Answered += OnLombankAnswered;
+                _lombankContactAnsweredBound = true;
+            }
         }
         catch (Exception ex)
         {
@@ -886,6 +954,14 @@ public partial class LombankScript : Script
     {
         try
         {
+            if (!CityBlackoutHackerState.IsAtmTransactionContactEnabledForCurrentCharacter())
+            {
+                ShowLombankNotification(
+                    L("Lombank_TerminalTitle", "Giao dịch"),
+                    L("Lombank_AtmLockedNotice", "Lom Bank đang tạm khóa giao dịch ATM của quý khách."));
+                return;
+            }
+
             OpenMainMenu();
             TryClosePhone();
         }
@@ -1179,6 +1255,9 @@ public partial class LombankScript : Script
             if (Game.GameTime - _lastInputGameTime < InputCooldownMs)
                 return;
 
+            if (!EnsureAtmTransactionsAllowed())
+                return;
+
             ProcessLoanTimeEffects(force: true, showNotice: false);
 
             long remaining = GetRemainingLimit();
@@ -1246,6 +1325,8 @@ public partial class LombankScript : Script
 
             Game.Player.Money += (int)amount;
 
+            CityBlackoutHackerState.RecordAtmHackWithdrawalForCurrentCharacter(amount);
+
             _currentDebt += amount;
             _cycleWithdrawnAmount += amount;
 
@@ -1270,6 +1351,9 @@ public partial class LombankScript : Script
         try
         {
             if (Game.GameTime - _lastInputGameTime < InputCooldownMs)
+                return;
+
+            if (!EnsureAtmTransactionsAllowed())
                 return;
 
             ProcessLoanTimeEffects(force: true, showNotice: false);
@@ -1328,7 +1412,7 @@ public partial class LombankScript : Script
                 ShowLombankNotification(
                     L("Lombank_RepayFailTitle", "Giao dịch"),
                     L("Lombank_RepayLocked",
-                        "Lom Bank chưa mở khóa kỳ trả nợ. Hãy quay lại đây sau 2 ngày."));
+                        "Lom Bank chưa mở khóa kỳ trả nợ. Hãy quay lại sau 2 ngày."));
                 return;
             }
 

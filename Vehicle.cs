@@ -9,6 +9,7 @@ using System.Drawing;
 using System.Xml.Linq;
 using LemonUI;
 using LemonUI.Menus;
+using System.Reflection;
 
 public partial class InstantRefill : Script
 {
@@ -53,6 +54,86 @@ public partial class InstantRefill : Script
     // 1) THÊM FIELD MỚI (đặt gần nhóm LemonUI fields)
     private Vehicle _luiPreviewVehicle = null;
     private uint _luiPreviewVehicleHash = 0;
+
+    private static readonly BadgeSet _lockBadge = new BadgeSet
+    {
+        NormalDictionary = "commonmenu",
+        NormalTexture = "shop_lock",
+        HoveredDictionary = "commonmenu",
+        HoveredTexture = "shop_lock_b"
+    };
+
+    private bool _luiDetailDirtyOnlyVehicle = false;
+
+    private sealed class RightBadgeMenuItem : NativeItem
+    {
+        private readonly BadgeSet _rightBadge;
+        private readonly Func<bool> _shouldShowBadge;
+
+        public RightBadgeMenuItem(string title, string description, BadgeSet rightBadge, Func<bool> shouldShowBadge = null)
+            : base(title, description)
+        {
+            _rightBadge = rightBadge;
+            _shouldShowBadge = shouldShowBadge ?? (() => true);
+        }
+
+        public override void Recalculate(System.Drawing.PointF pos, System.Drawing.SizeF size, bool selected)
+        {
+            base.Recalculate(pos, size, selected);
+
+            SetRightBadgeSetIfExists(this, (!selected && _shouldShowBadge()) ? _rightBadge : null);
+            UpdateColors();
+        }
+    }
+
+    private static void SetRightBadgeSetIfExists(NativeItem item, BadgeSet badge)
+    {
+        try
+        {
+            if (item == null)
+                return;
+
+            Type t = item.GetType();
+
+            string[] propertyNames = { "RightBadgeSet", "BadgeRightSet", "RightBadge" };
+            foreach (string name in propertyNames)
+            {
+                PropertyInfo prop = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (prop != null && prop.CanWrite && prop.PropertyType == typeof(BadgeSet))
+                {
+                    prop.SetValue(item, badge, null);
+                    return;
+                }
+            }
+
+            string[] fieldNames = { "badgeRight", "rightBadge", "_rightBadge", "m_rightBadge" };
+            foreach (string name in fieldNames)
+            {
+                FieldInfo field = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field != null && field.FieldType == typeof(BadgeSet))
+                {
+                    field.SetValue(item, badge);
+                    return;
+                }
+            }
+        }
+        catch { }
+    }
+
+    private bool IsDirtyOnlyVehicle(VehicleEntry chosen)
+    {
+        try
+        {
+            if (chosen == null)
+                return false;
+
+            return CityBlackoutHackerState.IsDirtyOnlyVehicle(chosen.Hash, chosen.Name, chosen.Class);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     // 2) Thêm vào vùng fields UI
     private NativeStatsPanel _luiVehicleStatsPanel;
@@ -1407,10 +1488,25 @@ public partial class InstantRefill : Script
         foreach (var vehicle in source)
         {
             var captured = vehicle;
+            bool dirtyOnly = CityBlackoutHackerState.IsDirtyOnlyVehicle(captured.Hash, captured.Name, captured.Class);
 
-            var item = new NativeItem($"{index}. {captured.Name}");
-            item.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
-            item.Description = LT("VehicleMenu_OpenDetailHint", "Chọn một chiếc phương tiện để xem chi tiết phương tiện đó.");
+            NativeItem item = dirtyOnly
+                ? new RightBadgeMenuItem(
+                    $"{index}. {captured.Name}",
+                    L("VehicleMenu_DirtyOnlyDesc", "Phương tiện này chỉ có thể thanh toán bằng tiền bẩn."),
+                    _lockBadge)
+                : new NativeItem($"{index}. {captured.Name}");
+
+            if (dirtyOnly)
+            {
+                item.AltTitle = "";
+                item.Description = L("VehicleMenu_DirtyOnlyDesc", "Phương tiện này chỉ có thể thanh toán bằng tiền bẩn.");
+            }
+            else
+            {
+                item.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+                item.Description = LT("VehicleMenu_OpenDetailHint", "Chọn một chiếc phương tiện để xem chi tiết phương tiện đó.");
+            }
 
             item.Activated += (s, e) => OpenVehicleDetailMenu(captured, _luiVehicleListMenu);
             _luiVehicleListMenu.Add(item);
@@ -1509,6 +1605,10 @@ public partial class InstantRefill : Script
         _luiDetailVehicle = chosen;
         _luiDetailForceFixedSalePrice = forceFixedSalePrice;
 
+        // Thêm biến kiểm tra xe chỉ mua bằng tiền bẩn theo hướng dẫn
+        bool dirtyOnly = CityBlackoutHackerState.IsDirtyOnlyVehicle(chosen.Hash, chosen.Name, chosen.Class);
+        _luiDetailDirtyOnlyVehicle = dirtyOnly; // Cập nhật vào biến toàn cục nếu cần sử dụng ở nơi khác
+
         _luiBaseVehiclePrice = chosen.GetRandomPrice(_rng, false, 0);
         _luiUseDiscountTicket = false;
 
@@ -1528,7 +1628,8 @@ public partial class InstantRefill : Script
 
         UpdateVehicleStatsPanel(topSpeed, acceleration, braking, traction);
 
-        BuildVehicleDetailMenu(chosen, _luiReturnMenu, _luiDetailPrice, _luiDetailPlate);
+        // Truyền thêm biến dirtyOnly vào hàm BuildVehicleDetailMenu
+        BuildVehicleDetailMenu(chosen, _luiReturnMenu, _luiDetailPrice, _luiDetailPlate, dirtyOnly);
 
         if (_luiVehicleListMenu != null)
             _luiVehicleListMenu.Visible = false;
@@ -1542,8 +1643,7 @@ public partial class InstantRefill : Script
         Interval = 0;
     }
 
-    // 3) THÊM HÀM BUILD MENU CHI TIẾT
-    private void BuildVehicleDetailMenu(VehicleEntry chosen, NativeMenu returnMenu, int price, string plate)
+    private void BuildVehicleDetailMenu(VehicleEntry chosen, NativeMenu returnMenu, int price, string plate, bool dirtyOnly)
     {
         if (_luiVehicleDetailMenu == null || chosen == null)
             return;
@@ -1602,8 +1702,8 @@ public partial class InstantRefill : Script
             _luiPlateEdited = true;
             _luiDetailPlate = normalized;
 
-            // rebuild ngay để title + chú thích cập nhật liền
-            BuildVehicleDetailMenu(chosen, returnMenu, price, _luiDetailPlate);
+            // Rebuild lại và truyền tiếp giá trị dirtyOnly
+            BuildVehicleDetailMenu(chosen, returnMenu, price, _luiDetailPlate, dirtyOnly);
             ConfigureKeyboardOnlyVehicleMenu(_luiVehicleDetailMenu);
             _luiVehicleDetailMenu.Visible = true;
             SpawnVehiclePreview(chosen);
@@ -1629,8 +1729,6 @@ public partial class InstantRefill : Script
             ticketItem.Description = DiscountTicketHelpText;
         };
 
-        // nếu bản LemonUI của bạn có event đổi trạng thái checkbox,
-        // dùng event đó để cập nhật logic
         ticketItem.CheckboxChanged += (s, e) =>
         {
             LoadVehicleDiscountTicketState();
@@ -1651,7 +1749,8 @@ public partial class InstantRefill : Script
             _luiUseDiscountTicket = ticketItem.Checked;
             _luiDetailPrice = ComputeVehicleMenuPrice(chosen, _luiDetailForceFixedSalePrice, _luiUseDiscountTicket);
 
-            BuildVehicleDetailMenu(chosen, returnMenu, _luiDetailPrice, _luiDetailPlate);
+            // Rebuild lại và truyền tiếp giá trị dirtyOnly khi đổi trạng thái giảm giá
+            BuildVehicleDetailMenu(chosen, returnMenu, _luiDetailPrice, _luiDetailPlate, dirtyOnly);
             ConfigureKeyboardOnlyVehicleMenu(_luiVehicleDetailMenu);
             _luiVehicleDetailMenu.Visible = true;
 
@@ -1662,7 +1761,19 @@ public partial class InstantRefill : Script
         _luiVehicleDetailMenu.Add(ticketItem);
 
         // item 5: xác nhận mua
-        var confirm = new NativeItem(L("VehicleDetail_ConfirmBuy", "Xác nhận mua phương tiện"));
+        var confirm = _luiDetailDirtyOnlyVehicle
+            ? new RightBadgeMenuItem(
+            L("VehicleDetail_ConfirmBuy", "Xác nhận mua phương tiện"),
+            L("Vehicle_DirtyMoneyOnly", "Xe này chỉ có thể thanh toán bằng tiền bẩn."),
+            _lockBadge,
+            () => true)
+            : new NativeItem(L("VehicleDetail_ConfirmBuy", "Xác nhận mua phương tiện"));
+
+        // Thay đổi description của nút xác nhận dựa trên biến dirtyOnly theo yêu cầu
+        confirm.Description = dirtyOnly
+            ? L("VehicleDetail_DirtyOnlyConfirmDesc", "Xe này chỉ thanh toán bằng tiền bẩn.")
+            : L("VehicleDetail_ConfirmHint", "Nhấn Enter để xác nhận mua.");
+
         confirm.Selected += (s, e) =>
         {
             SpawnVehiclePreview(chosen);
@@ -1711,6 +1822,7 @@ public partial class InstantRefill : Script
             }
 
             int finalCost = totalCost;
+            bool dirtyOnly = CityBlackoutHackerState.IsDirtyOnlyVehicle(chosen.Hash, chosen.Name, chosen.Class);
 
             // Khối 1: Kiểm tra thẻ giảm giá
             if (_luiUseDiscountTicket)
@@ -1725,30 +1837,57 @@ public partial class InstantRefill : Script
                 }
             }
 
-            // --- ĐOẠN CHÈN MỚI: Kiểm tra Waypoint ---
-            string waypointReason;
-            if (!VehicleDelivery.CanUseWaypointDelivery(out waypointReason))
+            // Kiểm tra tiền theo loại xe
+            if (dirtyOnly)
             {
-                Notification.Show(waypointReason);
-                PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-                return;
-            }
-            // ---------------------------------------
+                long dirtyBalance = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
 
-            // Khối 2: Kiểm tra tiền tệ
-            if (Game.Player.Money < finalCost)
+                if (dirtyBalance < finalCost)
+                {
+                    Notification.Show(
+                        LT("Vehicle_NoDirtyMoney", "Bạn không đủ tiền bẩn để mua phương tiện này. Giá: {price}", "{price}", finalCost.ToString("N0")));
+                    PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                    return;
+                }
+            }
+            else
             {
-                Notification.Show(LT(
-                    "Vehicle_NoMoney",
-                    "Bạn không đủ tiền để mua phương tiện này. Giá: ${price}",
-                    "{price}", finalCost.ToString("N0")
-                ));
-                PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-                return;
+                string waypointReason;
+                if (!VehicleDelivery.CanUseWaypointDelivery(out waypointReason))
+                {
+                    Notification.Show(waypointReason);
+                    PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                    return;
+                }
+
+                if (Game.Player.Money < finalCost)
+                {
+                    Notification.Show(LT(
+                        "Vehicle_NoMoney",
+                        "Bạn không đủ tiền để mua phương tiện này. Giá: ${price}",
+                        "{price}", finalCost.ToString("N0")
+                    ));
+                    PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                    return;
+                }
             }
 
-            // Thực hiện trừ tiền và xử lý logic mua hàng
-            Game.Player.Money -= finalCost;
+            // Trừ tiền
+            if (dirtyOnly)
+            {
+                if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(finalCost))
+                {
+                    Notification.Show(
+                        LT("Vehicle_NoDirtyMoney", "Bạn không đủ tiền bẩn để mua phương tiện này. Giá: {price}", "{price}", finalCost.ToString("N0")));
+                    PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                    return;
+                }
+            }
+            else
+            {
+                Game.Player.Money -= finalCost;
+            }
+
             AddToSpendingAccumulator(finalCost);
 
             if (_luiUseDiscountTicket)
@@ -1757,9 +1896,8 @@ public partial class InstantRefill : Script
             ClearVehiclePreview();
 
             int purchasePriceForRegister = finalCost;
-            string plateSnapshot = plateText;
+            string plateSnapshot = dirtyOnly ? "" : plateText;
 
-            // Yêu cầu giao xe
             VehicleDelivery.RequestDelivery(chosen.Hash, player.Position, (veh) =>
             {
                 try
@@ -1930,19 +2068,46 @@ public partial class InstantRefill : Script
         }
         // ------------------------------------
 
+        // 2. Logic kiểm tra tài chính và thanh toán (Hỗ trợ Tiền bẩn / Tiền sạch)
         int totalCost = _pendingVehiclePrice;
+        bool dirtyOnly = IsDirtyOnlyVehicle(_pendingVehicleEntry);
+        bool paidWithDirtyMoney = false;
 
-        // 2. Kiểm tra tài chính
-        if (Game.Player.Money < totalCost)
+        if (dirtyOnly)
         {
-            ClearPending(true, false);
-            // Có thể thêm thông báo "Không đủ tiền" ở đây nếu muốn
-            return;
+            if (CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter() < totalCost)
+            {
+                Notification.Show(LT("Vehicle_DirtyMoneyOnly", "~r~Xe này chỉ có thể thanh toán bằng tiền bẩn."));
+                PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                ClearPending(false, false);
+                return;
+            }
+
+            if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(totalCost))
+            {
+                Notification.Show(LT("Vehicle_DirtyMoneyOnly", "~r~Xe này chỉ có thể thanh toán bằng tiền bẩn."));
+                PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                ClearPending(false, false);
+                return;
+            }
+
+            paidWithDirtyMoney = true;
+        }
+        else
+        {
+            if (Game.Player.Money < totalCost)
+            {
+                ClearPending(true, false);
+                return;
+            }
+
+            Game.Player.Money -= totalCost;
         }
 
-        // 3. Thực hiện giao dịch
-        Game.Player.Money -= totalCost;
-        AddToSpendingAccumulator(totalCost); // tích lũy chi tiêu
+        // Tích lũy chi tiêu sau khi trừ tiền thành công
+        AddToSpendingAccumulator(totalCost);
+
+        // 3. Thực hiện giao dịch và xác định xe được chọn
         var chosen = _pendingVehicleEntry;
 
         // 4. GỌI DỊCH VỤ GIAO XE (Thay thế toàn bộ đoạn spawn cũ)

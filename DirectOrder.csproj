@@ -75,7 +75,7 @@
     <Compile Include="AuctionHouse.cs" />
     <Compile Include="AutoDrive.cs" />
     <Compile Include="Banker.cs" />
-    <Compile Include="CityBlackout.cs" />
+    <Compile Include="Hacker.cs" />
     <Compile Include="Bodyguards.cs" />
     <Compile Include="Dealership.cs" />
     <Compile Include="Helper.cs" />

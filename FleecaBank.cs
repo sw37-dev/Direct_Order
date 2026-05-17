@@ -145,6 +145,9 @@ public partial class FleecaBankLoanScript : Script
     private CustomiFruit _phoneInstance = null;
     private bool _contactAdded = false;
 
+    private iFruitContact _fleecaContact = null;
+    private bool _fleecaContactAnsweredBound = false;
+
     private bool _stateLoaded = false;
     private bool _loanActive = false;
     private long _loanPrincipal = 0;
@@ -322,6 +325,24 @@ public partial class FleecaBankLoanScript : Script
     private bool HasActiveDebt()
     {
         return _loanActive && _loanRemainingDebt > 0;
+    }
+
+    private bool IsFleecaBankLockedForCurrentCharacter()
+    {
+        return CityBlackoutHackerState.IsFleecaBankLockedForCurrentCharacter();
+    }
+
+    private bool EnsureFleecaBankAccessAllowed()
+    {
+        if (!CityBlackoutHackerState.IsFleecaBankLockedForCurrentCharacter())
+            return true;
+
+        ShowFleecaNotification(
+            L("Credit_NotificationTitle", "Thông báo"),
+            "Ngân hàng đã khóa giao dịch, hãy quay lại sau.");
+
+        TryClosePhone();
+        return false;
     }
 
     private void RefreshLoanMenuQuickPayText()
@@ -675,7 +696,7 @@ public partial class FleecaBankLoanScript : Script
     private string GetDueWindowText()
     {
         if (_dueWindowStartHour < 0 || _dueWindowEndHour < 0)
-            return "chưa xác định";
+            return "N/A";
 
         return string.Format("{0:00}:00~{1:00}:00", _dueWindowStartHour, _dueWindowEndHour);
     }
@@ -691,28 +712,57 @@ public partial class FleecaBankLoanScript : Script
             if (!ReferenceEquals(_phoneInstance, phone))
             {
                 _phoneInstance = phone;
+                _fleecaContact = null;
+                _fleecaContactAnsweredBound = false;
                 _contactAdded = false;
             }
 
-            if (_contactAdded)
-                return;
-
-            if (phone.Contacts.Any(c => string.Equals(c.Name, ContactName, StringComparison.OrdinalIgnoreCase)))
+            // Đang bị khóa thì tắt contact, không cho gọi
+            if (IsFleecaBankLockedForCurrentCharacter())
             {
+                if (_fleecaContact == null)
+                {
+                    _fleecaContact = phone.Contacts.FirstOrDefault(c =>
+                        string.Equals(c.Name, ContactName, StringComparison.OrdinalIgnoreCase));
+                }
+
+                if (_fleecaContact != null)
+                    _fleecaContact.Active = false;
+
                 _contactAdded = true;
                 return;
             }
 
-            var contact = new iFruitContact(ContactName)
+            if (_fleecaContact == null)
             {
-                Active = true,
-                DialTimeout = ContactDialTimeoutMs,
-                Bold = false,
-                Icon = ContactIcon.FleecaBank
-            };
+                _fleecaContact = phone.Contacts.FirstOrDefault(c =>
+                    string.Equals(c.Name, ContactName, StringComparison.OrdinalIgnoreCase));
+            }
 
-            contact.Answered += OnFleecabankAnswered;
-            phone.Contacts.Add(contact);
+            if (_fleecaContact == null)
+            {
+                _fleecaContact = new iFruitContact(ContactName)
+                {
+                    Active = true,
+                    DialTimeout = ContactDialTimeoutMs,
+                    Bold = false,
+                    Icon = ContactIcon.FleecaBank
+                };
+
+                _fleecaContact.Answered += OnFleecabankAnswered;
+                _fleecaContactAnsweredBound = true;
+                phone.Contacts.Add(_fleecaContact);
+            }
+            else
+            {
+                _fleecaContact.Active = true;
+
+                if (!_fleecaContactAnsweredBound)
+                {
+                    _fleecaContact.Answered += OnFleecabankAnswered;
+                    _fleecaContactAnsweredBound = true;
+                }
+            }
 
             _contactAdded = true;
         }
@@ -726,6 +776,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
             OpenLoanMenu();
             TryClosePhone();
         }
@@ -906,6 +959,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
             EnsureLoanTypeMenuCreated();
 
             if (_loanMenu != null) _loanMenu.Visible = false;
@@ -937,16 +993,31 @@ public partial class FleecaBankLoanScript : Script
 
             long[] packages = new long[]
             {
+                165000L,
+                300000L,
                 500000L,
+                850000L,
                 1000000L,
+                1500000L,
+                2000000L,
                 3000000L,
                 5000000L,
                 8000000L,
+                10000000L,
                 12000000L,
+                20000000L,
                 30000000L,
-                50000000L,
+                45000000L,
+                60000000L,
+                80000000L,
                 100000000L,
-                200000000L
+                120000000L,
+                150000000L,
+                180000000L,
+                200000000L,
+                220000000L,
+                245000000L,
+                260000000L
             };
 
             _loanPackageOptions.Clear();
@@ -1076,6 +1147,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
             EnsureLoanPackageMenuCreated();
             RefreshLoanPackageMenu();
 
@@ -1265,6 +1339,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
             // Thêm hàm đồng bộ trạng thái từ file cho nhân vật hiện tại
             SyncCollateralStateFromFileForCurrentCharacter();
 
@@ -1290,6 +1367,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
             if (!_loanActive || _loanRemainingDebt <= 0)
             {
                 ShowFleecaNotification(
@@ -1363,6 +1443,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
             EnsureLoanMenuCreated();
             SyncCollateralStateFromFileForCurrentCharacter();
 
@@ -1434,6 +1517,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return false;
+
             int currentHash = GetCurrentCharacterHash();
             if (currentHash == 0)
             {
@@ -1465,7 +1551,7 @@ public partial class FleecaBankLoanScript : Script
         catch (Exception ex)
         {
             Log("RequestLoanSpawn failed: " + ex);
-            return true;
+            return false;
         }
     }
 
@@ -1489,6 +1575,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
             int currentHash = GetCurrentCharacterHash();
             if (currentHash == 0)
             {
@@ -1951,6 +2040,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
             if (_loanDialogActive)
                 return;
 
@@ -2045,6 +2137,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
             amount = Math.Min(amount, 200_000_000L);
             if (amount <= 0)
                 return;
@@ -2365,22 +2460,106 @@ public partial class FleecaBankLoanScript : Script
         if (points < 2_500_000L)
             return 0L; // Không đủ điều kiện vay
 
-        if (points <= 5_000_000L)
-            return 3_000_000L;
+        if (points <= 3_000_000L)
+            return 2_750_000L;
+
+        if (points <= 4_000_000L)
+            return 3_500_000L;
+
+        if (points <= 5_500_000L)
+            return 4_750_000L;
+
+        if (points <= 6_300_000L)
+            return 5_650_000L;
+
+        if (points <= 7_100_000L)
+            return 6_700_000L;
+
+        if (points <= 8_000_000L)
+            return 7_550_000L;
 
         if (points <= 10_000_000L)
-            return 8_000_000L;
+            return 9_000_000L;
 
-        if (points <= 20_000_000L)
-            return 15_000_000L;
+        if (points <= 15_200_000L)
+            return 12_600_000L;
 
-        if (points <= 50_000_000L)
-            return 45_000_000L;
+        if (points <= 20_800_000L)
+            return 18_000_000L;
 
-        if (points <= 100_000_000L)
-            return 90_000_000L;
+        if (points <= 25_300_000L)
+            return 23_050_000L;
 
-        return 200_000_000L;
+        if (points <= 30_300_000L)
+            return 27_800_000L;
+
+        if (points <= 40_300_000L)
+            return 35_300_000L;
+
+        if (points <= 50_200_000L)
+            return 45_250_000L;
+
+        if (points <= 60_800_000L)
+            return 55_500_000L;
+
+        if (points <= 70_300_000L)
+            return 65_550_000L;
+
+        if (points <= 80_600_000L)
+            return 75_450_000L;
+
+        if (points <= 90_600_000L)
+            return 85_600_000L;
+
+        if (points <= 100_900_000L)
+            return 95_750_000L;
+
+        if (points <= 110_700_000L)
+            return 105_800_000L;
+
+        if (points <= 120_800_000L)
+            return 115_750_000L;
+
+        if (points <= 130_800_000L)
+            return 125_800_000L;
+
+        if (points <= 140_300_000L)
+            return 135_550_000L;
+
+        if (points <= 150_100_000L)
+            return 145_200_000L;
+
+        if (points <= 160_400_000L)
+            return 155_250_000L;
+
+        if (points <= 170_800_000L)
+            return 165_600_000L;
+
+        if (points <= 180_800_000L)
+            return 175_800_000L;
+
+        if (points <= 190_200_000L)
+            return 185_500_000L;
+
+        if (points <= 200_700_000L)
+            return 195_450_000L;
+
+        if (points <= 210_000_000L)
+            return 205_350_000L;
+
+        if (points <= 220_500_000L)
+            return 215_250_000L;
+
+        if (points <= 230_100_000L)
+            return 225_300_000L;
+
+        if (points <= 240_500_000L)
+            return 235_300_000L;
+
+        if (points <= 250_700_000L)
+            return 245_600_000L;
+
+        return 260_000_000L; // Từ 250.7M trở lên
     }
 
     private long TryReadLongFromKnownSpendFile()
