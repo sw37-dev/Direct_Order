@@ -1,5 +1,5 @@
 README: Direct Order Script  (v1.5.1)
-Author: SW37
+Author: Sw37
 
 ------------------------------------------
 
@@ -153,7 +153,7 @@ If you already own 10 vehicles and decide to purchase another one, the mod will 
 XIV. LOYALTY POINTS AND REWARDS
 You can receive a free "masterpiece" from the list (including the custom vehicles you have added).
 + Each time you spend money (funds are deducted), every $1 equals 1 point.
-+ Call Privilege Credits via your phone to access the rewards menu.
++ Call Maze Bank via your phone to access the rewards menu.
 
 
 ------------------------------------------
