@@ -1,5 +1,5 @@
-README: Direct Order Script  (v1.5.1)
-Author: Sw37
+README: Direct Order Script  (v1.6)
+Author: SW37
 
 ------------------------------------------
 
@@ -10,6 +10,7 @@ Copy all of these folders into your game directory to complete the installation.
 ------------------------------------------
 
 
+                                              ======   FIX   =====
 I + II. GENERAL CONTROLS
 
 + Press Numpad 1 to open the Item Menu.
@@ -303,13 +304,7 @@ XXXI. BANK LOAN SYSTEM
 - Call Fleeca Bank to choose between “Take a Loan” or “Repay Debt” depending on your current situation.
 - The loan system has been simplified to better fit gameplay while still remaining fully functional.
 - Meet the bank representative at the designated café (marked location) or at bank branches on the map.
-- Loan requirements and limits (you can borrow within your current tier limit): Minimum requirement: Must have at least 2.5 million Loyalty Points (simulated credit score).
-  + 2.5M - 5M points: Borrow up to $3,000,000
-  + 5M - 10M Points: Borrow up to $8,000,000
-  + 10M - 20M Points: Borrow up to $15,000,000
-  + 20M - 50M Points: Borrow up to $45,000,000
-  + 50M - 100M Points: Borrow up to $90,000,000
-  + Over 100M Points: Borrow up to $200,000,000
+- Loan requirements and limits (you can borrow within your current tier limit): Minimum requirement: Must have at least 2.5 million Loyalty Points (simulated credit score). (maximum is 260M)
 - Fleeca Bank will now check whether you have vehicles available for collateral, then charge daily payments based on the number of collateralized vehicles at different rates.
 - The more vehicles you have, the lower the collected amount:
   + 3 collateralized vehicles: 0.75%
@@ -326,8 +321,7 @@ XXXI. BANK LOAN SYSTEM
   + Following days: 1.67%
 - The additional fee rate may fluctuate within a ±0.5% range.
 - Allows viewing detailed "Collateral Assets" information to see the number of collateral vehicles, the daily payment amount, and detailed names of vehicles currently under seal. (Note: Sealed vehicles can still be used normally, but if destroyed/exploded, etc., the vehicle is considered lost and the penalty rate increases.)
-- Fleeca allows you to choose between “Preset Loan Packages” provided by the bank or “Custom Loan Amount” (manually enter the exact amount):
-  + Packages: $500,000, 1M, 3M, 5M, 8M, 12M, 30M, 50M, 100M, and 200M.
+- Fleeca allows you to choose between “Preset Loan Packages” provided by the bank or “Custom Loan Amount” (manually enter the exact amount).
 - Collateral vehicles (sealed by Fleeca) cannot be sold/liquidated at dealerships.
 
 
@@ -341,11 +335,12 @@ XXXII. HACKER & TECHNOLOGY SYSTEM
 - If you manually request a blackout, you can call Paige Harris again to restore the power (including the built-in electrical surge effect).
 - If the blackout is system-triggered, Paige Harris cannot manually restore the power.
 - Call Lifeinvader Enterprise to activate the Auto Drive feature.
+- When a blackout is caused by the system, vehicle and weapon prices are reduced by 20%. In contrast, a blackout caused by Paige Harris increases vehicle and weapon prices by an additional 30%.
 
 
 ------------------------------------------
 
-                                              ======   NEW   =====
+
 XXXIII. LOMBANK SYSTEM
 - LomBank provides you with a personal LomBank credit account with an initial credit limit of $1 million.
 - Call LomBank to view your character details and current credit limits.
@@ -355,3 +350,17 @@ XXXIII. LOMBANK SYSTEM
 - Your credit limit will increase slightly if you repay LomBank on time (easier than Fleeca Bank).
 - The maximum total credit limit is $10 million.
 - All 3 characters have separate accounts.
+
+
+------------------------------------------
+
+                                              ======   NEW   =====
+XXXIV. ILLEGAL MONEY SYSTEM
+- Paige Harris now has a new feature — hacking Lom Bank ATMs to obtain a new type of resource: Illegal Money.
+- The cost of hiring Paige Harris depends on your current “Total Credit Limit” (the higher your limit, the riskier the hack becomes, and the more expensive the hacking fee is).
+- Illegal Money can be exchanged at Maze Bank or through Smugglers (this process is one-way only).
+- Illegal Money can be used to purchase specialized vehicles at Legendary Motorsport, including military vehicles, police vehicles, fighter jets, heavily armed assault vehicles, and more.
+- If the ATM hack fails (meaning Lom Bank detects the intrusion), you will instantly receive a wanted level and the Illegal Money you just withdrew will be confiscated. In addition, Lom Bank will freeze your account for 4 days to recover its financial losses.
+- At the same time, you will be placed on Lom Bank’s blacklist, and Lom Bank will forward your information to Fleeca Bank so that Fleeca Bank can freeze your transaction status for 2 days as a financial security measure.
+- When exchanging Illegal Money at Maze Bank with their 1:18 conversion rate, there is a 30% chance that you will instantly gain a wanted level.
+- When exchanging Illegal Money through Smugglers at a 1:100 conversion rate, you are guaranteed to be safe (no wanted level).
