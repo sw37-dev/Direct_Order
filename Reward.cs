@@ -1,10 +1,15 @@
 using GTA;
+using GTA.Math;
 using GTA.Native;
 using GTA.UI;
+using iFruitAddon2;
 using LemonUI;
 using LemonUI.Menus;
 using System;
+using System.Drawing;
+using System.Globalization;
 using System.IO;
+using System.Reflection;
 
 public partial class InstantRefill : Script
 {
@@ -33,12 +38,102 @@ public partial class InstantRefill : Script
     private NativeItem _luiRewardBribeLevelItem = null;
     private NativeItem _luiRewardBribeConfirmItem = null;
 
+    private static readonly BadgeSet _smugglerLockBadge = new BadgeSet
+    {
+        NormalDictionary = "commonmenu",
+        NormalTexture = "shop_lock",
+        HoveredDictionary = "commonmenu",
+        HoveredTexture = "shop_lock_b"
+    };
+
+    private sealed class RewardRightBadgeItem : NativeItem
+    {
+        private readonly BadgeSet _badge;
+        private readonly Func<bool> _shouldShowBadge;
+
+        public RewardRightBadgeItem(string title, string description, BadgeSet badge)
+            : this(title, description, badge, null)
+        {
+        }
+
+        public RewardRightBadgeItem(string title, string description, BadgeSet badge, Func<bool> shouldShowBadge)
+            : base(title, description)
+        {
+            _badge = badge;
+            _shouldShowBadge = shouldShowBadge ?? (() => true);
+        }
+
+        public override void Recalculate(PointF pos, SizeF size, bool selected)
+        {
+            base.Recalculate(pos, size, selected);
+
+            SetRightBadgeSetIfExists(this, (!selected && _shouldShowBadge()) ? _badge : null);
+
+            UpdateColors();
+        }
+    }
+
     // Reward state
     private bool _rewardInsuranceChecked = false;
     private bool _rewardBribeLevelFocused = false;
     private int _rewardBribeStars = 0;
 
     private int _rewardMenuInputBlockUntil = 0;
+
+    // --- Maze Bank ATM (illegal money conversion) ---
+    private const int MazeBankAtmSpawnDelayMs = 5000;
+    private static readonly Vector3 MazeBankAtmPosition = new Vector3(-243.7571f, -1968.992f, 29.5528f);
+    private const float MazeBankAtmHeading = 110.3329f;
+    private const float MazeBankAtmRadius = 2.0f;
+
+    private int _mazeBankAtmSpawnReadyTime = 0;
+    private bool _mazeBankAtmSpawned = false;
+
+    private NativeMenu _luiIllegalMoneyDetailMenu = null;
+    private NativeMenu _luiIllegalMoneyTradeMenu = null;
+
+    private NativeItem _illegalMoneyOwnerItem = null;
+    private NativeItem _illegalMoneyBalanceItem = null;
+    private NativeItem _illegalMoneyRatioItem = null;
+    private NativeItem _illegalMoneyAmountItem = null;
+    private NativeItem _illegalMoneyReceiveItem = null;
+    private NativeItem _illegalMoneyConfirmItem = null;
+
+    private bool _illegalMoneyRedeemArmed = false;
+    private long _illegalMoneyConvertAmount = -1;
+    private long _illegalMoneyExpectedCash = -1;
+
+    // --- Smuggler branch (illegal money conversion 1:100) ---
+    private NativeMenu _luiIllegalMoneyMethodMenu = null;
+    private NativeMenu _luiSmugglerDetailMenu = null;
+    private NativeMenu _luiSmugglerTradeMenu = null;
+
+    private NativeItem _smugglerOwnerItem = null;
+    private NativeItem _smugglerBalanceItem = null;
+    private NativeItem _smugglerRatioItem = null;
+    private NativeItem _smugglerAmountItem = null;
+    private NativeItem _smugglerReceiveItem = null;
+
+    private bool _smugglerRedeemArmed = false;
+    private long _smugglerConvertAmount = -1;
+    private long _smugglerExpectedCash = -1;
+    private bool _smugglerContactAdded = false;
+
+    private Ped _smugglerNpc = null;
+    private Blip _smugglerBlip = null;
+
+    private static readonly Vector3 SmugglerNpcPosition = new Vector3(1558.424000f, -2152.824000f, 77.502410f);
+    private const float SmugglerNpcRadius = 2.5f;
+    private const int SmugglerContactDialTimeoutMs = 2000;
+    private const long MazeBankConversionRate = 18L;
+    private const long SmugglerConversionRate = 100L;
+
+    private int _illegalMoneyWantedTriggerGameTime = -1;
+    private bool _illegalMoneyWantedConsumed = false;
+
+    private const int HASH_MICHAEL = 225514697;
+    private const int HASH_FRANKLIN = -1692214353;
+    private const int HASH_TREVOR = -1686040670;
 
     // Reward costs
     private const long RewardInsuranceCost = 25000000L;
@@ -163,6 +258,39 @@ public partial class InstantRefill : Script
         }
     }
 
+    private bool ShouldRunPerFrameTick()
+    {
+        try
+        {
+            return _searchActive
+                || _pendingType != PendingType.None
+                || (_luiPool != null && SafeCall(() => _luiPool.AreAnyVisible, false))
+                || (_illegalMoneyRedeemArmed && IsNearMazeBankAtm())
+                || (_smugglerRedeemArmed && IsNearSmugglerNpc())
+                || _isProcessingAmmo;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void CloseIllegalMoneyMethodMenu(bool setCooldown)
+    {
+        try
+        {
+            if (_luiIllegalMoneyMethodMenu != null)
+            {
+                _luiIllegalMoneyMethodMenu.Visible = false;
+                _luiIllegalMoneyMethodMenu.Clear();
+            }
+        }
+        catch { }
+
+        if (setCooldown)
+            EnsureHelpBoxCooldownSet();
+    }
+
     private void EnsureRewardInsuranceMenu()
     {
         try
@@ -213,6 +341,14 @@ public partial class InstantRefill : Script
             if (_luiRewardInsuranceMenu != null) _luiRewardInsuranceMenu.Visible = false;
             if (_luiRewardBribeMenu != null) _luiRewardBribeMenu.Visible = false;
             if (_luiRewardDetailMenu != null) _luiRewardDetailMenu.Visible = false;
+
+            // Thêm 2 dòng hide menu mới tại đây
+            if (_luiIllegalMoneyDetailMenu != null) _luiIllegalMoneyDetailMenu.Visible = false;
+            if (_luiIllegalMoneyTradeMenu != null) _luiIllegalMoneyTradeMenu.Visible = false;
+
+            if (_luiIllegalMoneyMethodMenu != null) _luiIllegalMoneyMethodMenu.Visible = false;
+            if (_luiSmugglerDetailMenu != null) _luiSmugglerDetailMenu.Visible = false;
+            if (_luiSmugglerTradeMenu != null) _luiSmugglerTradeMenu.Visible = false;
         }
         catch
         {
@@ -233,8 +369,13 @@ public partial class InstantRefill : Script
         try
         {
             EnsureRewardRootMenu();
-
             BuildRewardRootMenu();
+
+            if (_luiIllegalMoneyMethodMenu != null) _luiIllegalMoneyMethodMenu.Visible = false;
+            if (_luiIllegalMoneyDetailMenu != null) _luiIllegalMoneyDetailMenu.Visible = false;
+            if (_luiIllegalMoneyTradeMenu != null) _luiIllegalMoneyTradeMenu.Visible = false;
+            if (_luiSmugglerDetailMenu != null) _luiSmugglerDetailMenu.Visible = false;
+            if (_luiSmugglerTradeMenu != null) _luiSmugglerTradeMenu.Visible = false;
 
             if (_luiRewardInsuranceMenu != null) _luiRewardInsuranceMenu.Visible = false;
             if (_luiRewardBribeMenu != null) _luiRewardBribeMenu.Visible = false;
@@ -290,6 +431,15 @@ public partial class InstantRefill : Script
         };
         _luiRewardRootMenu.Add(bribeItem);
 
+        var illegalMoneyItem = new NativeItem(T("RewardIllegalMoneyMenuLabel", "4. Quy đổi tiền bất hợp pháp"));
+        illegalMoneyItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+        illegalMoneyItem.Description = T("RewardIllegalMoneyMenuDescription", "Đổi tiền bất hợp pháp sang tiền mặt qua Maze Bank hoặc Smuggler.");
+        illegalMoneyItem.Activated += (s, e) =>
+        {
+            OpenIllegalMoneyMethodMenu();
+        };
+        _luiRewardRootMenu.Add(illegalMoneyItem);
+
         var decline = new NativeItem(T("RewardDeclineServiceLabel", "Từ chối sử dụng dịch vụ"));
         decline.Description = T("RewardDeclineServiceDescription", "Đóng menu.");
         decline.Activated += (s, e) =>
@@ -320,6 +470,1258 @@ public partial class InstantRefill : Script
             ShowRewardRootMenu();
         }
         catch { }
+    }
+
+    private static string FormatCash(long value)
+    {
+        if (value < 0) value = 0;
+        return string.Format(CultureInfo.InvariantCulture, "${0:N0}", value);
+    }
+
+    private string GetCurrentCharacterDisplayName()
+    {
+        try
+        {
+            Ped p = Game.Player.Character;
+            if (p == null || !p.Exists())
+                return "Không xác định";
+
+            int hash = p.Model.Hash;
+
+            if (hash == HASH_MICHAEL) return "Michael De Santa";
+            if (hash == HASH_FRANKLIN) return "Franklin Clinton";
+            if (hash == HASH_TREVOR) return "Trevor Philips";
+
+            return "Không xác định";
+        }
+        catch
+        {
+            return "Không xác định";
+        }
+    }
+
+    private bool IsNearMazeBankAtm()
+    {
+        try
+        {
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists() || player.IsDead)
+                return false;
+
+            return player.Position.DistanceTo(MazeBankAtmPosition) <= MazeBankAtmRadius;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void EnsureMazeBankAtmSpawned()
+    {
+        try
+        {
+            if (_mazeBankAtmSpawned)
+                return;
+
+            if (Game.GameTime < _mazeBankAtmSpawnReadyTime)
+                return;
+
+            int modelHash = Function.Call<int>(Hash.GET_HASH_KEY, "prop_atm_02");
+
+            int existing = Function.Call<int>(
+                Hash.GET_CLOSEST_OBJECT_OF_TYPE,
+                MazeBankAtmPosition.X,
+                MazeBankAtmPosition.Y,
+                MazeBankAtmPosition.Z,
+                1.5f,
+                modelHash,
+                false,
+                false,
+                false);
+
+            if (existing != 0 && Function.Call<bool>(Hash.DOES_ENTITY_EXIST, existing))
+            {
+                _mazeBankAtmSpawned = true;
+                return;
+            }
+
+            Model model = new Model(modelHash);
+            model.Request(1000);
+
+            if (!model.IsLoaded)
+                return;
+
+            int handle = Function.Call<int>(
+                Hash.CREATE_OBJECT_NO_OFFSET,
+                modelHash,
+                MazeBankAtmPosition.X,
+                MazeBankAtmPosition.Y,
+                MazeBankAtmPosition.Z,
+                true,
+                true,
+                false);
+
+            if (handle != 0)
+            {
+                Function.Call(Hash.SET_ENTITY_HEADING, handle, MazeBankAtmHeading);
+                Function.Call(Hash.FREEZE_ENTITY_POSITION, handle, true);
+                Function.Call(Hash.SET_ENTITY_INVINCIBLE, handle, true);
+                Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, handle, true, true);
+                _mazeBankAtmSpawned = true;
+            }
+
+            model.MarkAsNoLongerNeeded();
+        }
+        catch
+        {
+        }
+    }
+
+    private void ProcessIllegalMoneyWantedRisk()
+    {
+        try
+        {
+            if (_illegalMoneyWantedConsumed || _illegalMoneyWantedTriggerGameTime <= 0)
+                return;
+
+            if (Game.GameTime < _illegalMoneyWantedTriggerGameTime)
+                return;
+
+            _illegalMoneyWantedConsumed = true;
+            _illegalMoneyWantedTriggerGameTime = -1;
+
+            if (_rng.NextDouble() > 0.30)
+                return;
+
+            int currentWanted = GetCurrentWantedLevel();
+            int nextWanted = Math.Min(5, currentWanted + 3);
+
+            if (nextWanted != currentWanted)
+                SetWantedLevel(nextWanted);
+
+            GTA.UI.Screen.ShowSubtitle(
+                T("RewardIllegalMoneyWantedHit", "~r~~h~Giao dịch bị phát hiện! Cảnh sát đã tăng mức truy nã."),
+                3500);
+        }
+        catch
+        {
+        }
+    }
+
+    private void ShowMazeBankAtmHelpText()
+    {
+        try
+        {
+            if (!_illegalMoneyRedeemArmed)
+                return;
+
+            if (_pendingType != PendingType.None)
+                return;
+
+            if (_luiPool != null && SafeCall(() => _luiPool.AreAnyVisible, false))
+                return;
+
+            if (!IsNearMazeBankAtm())
+                return;
+
+            GTA.UI.Screen.ShowHelpTextThisFrame(
+                T("RewardIllegalMoneyAtmHelp",
+                  "~b~~h~ATM MAZE BANK~h~~s~\nNhấn ~INPUT_FRONTEND_ACCEPT~ để kích hoạt ATM của Maze Bank."));
+        }
+        catch
+        {
+        }
+    }
+
+    private void EnsureIllegalMoneyDetailMenu()
+    {
+        try
+        {
+            if (_luiIllegalMoneyDetailMenu != null)
+                return;
+
+            _luiIllegalMoneyDetailMenu = new NativeMenu(
+                T("RewardMenuMoneyBrandTitle", "Maze Bank"),
+                T("RewardIllegalMoneyDetailTitle", "Quy đổi tiền bất hợp pháp"));
+
+            _luiPool.Add(_luiIllegalMoneyDetailMenu);
+            ConfigureKeyboardOnlyVehicleMenu(_luiIllegalMoneyDetailMenu);
+            _luiIllegalMoneyDetailMenu.Visible = false;
+        }
+        catch
+        {
+        }
+    }
+
+    private void EnsureIllegalMoneyMethodMenu()
+    {
+        try
+        {
+            if (_luiIllegalMoneyMethodMenu != null)
+                return;
+
+            _luiIllegalMoneyMethodMenu = new NativeMenu(
+                T("RewardMenu_BrandTitle", "Maze Bank"),
+                T("RewardIllegalMoneyMethodTitle", "Chọn phương thức quy đổi"));
+
+            _luiPool.Add(_luiIllegalMoneyMethodMenu);
+            ConfigureKeyboardOnlyVehicleMenu(_luiIllegalMoneyMethodMenu);
+            _luiIllegalMoneyMethodMenu.Visible = false;
+        }
+        catch
+        {
+        }
+    }
+
+    private void BuildIllegalMoneyMethodMenu()
+    {
+        if (_luiIllegalMoneyMethodMenu == null)
+            return;
+
+        _luiIllegalMoneyMethodMenu.Clear();
+
+        var mazeBank = new NativeItem(T("RewardIllegalMoneyMethodMazeBank", "1. Maze Bank"));
+        mazeBank.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+        mazeBank.Description = T("RewardIllegalMoneyMethodMazeBankDesc", "Khả năng quy đổi là 1:18.");
+        mazeBank.Activated += (s, e) => OpenIllegalMoneyDetailMenu();
+        _luiIllegalMoneyMethodMenu.Add(mazeBank);
+
+        var smuggler = new RewardRightBadgeItem(
+            T("RewardIllegalMoneyMethodSmuggler", "2. Smuggler"),
+            T("RewardIllegalMoneyMethodSmugglerDesc", "Liên hệ Smuggler để xử lý giao dịch."),
+            _smugglerLockBadge);
+
+        smuggler.AltTitle = "";
+        smuggler.Activated += (s, e) =>
+        {
+            Notification.Show(
+                NotificationIcon.BankMaze,
+                "Maze Bank",
+                T("RewardMazeBankNoticeTitle", "Thông báo"),
+                T("RewardMazeBankNoticeBody", "Bạn cần liên hệ cho Smuggler chứ không giao dịch tại Maze Bank."));
+        };
+        _luiIllegalMoneyMethodMenu.Add(smuggler);
+
+        var back = new NativeItem(T("RewardIllegalMoneyMethodBack", "Quay lại"));
+        back.Activated += (s, e) =>
+        {
+            CloseIllegalMoneyMethodMenu(false);
+            ShowRewardRootMenu();
+        };
+        _luiIllegalMoneyMethodMenu.Add(back);
+    }
+
+    private void OpenIllegalMoneyMethodMenu()
+    {
+        try
+        {
+            if (IsHelpBoxCooldownActive())
+            {
+                ShowHelpCooldownMessage();
+                return;
+            }
+
+            if (_pendingType != PendingType.None)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardAnotherMenuOpen", "~HUD_COLOUR_DEGEN_YELLOW~Hiện có menu khác đang mở. Hãy đóng nó trước."),
+                    3000);
+                return;
+            }
+
+            EnsureIllegalMoneyMethodMenu();
+            BuildIllegalMoneyMethodMenu();
+
+            if (_luiRewardRootMenu != null) _luiRewardRootMenu.Visible = false;
+            if (_luiRewardInsuranceMenu != null) _luiRewardInsuranceMenu.Visible = false;
+            if (_luiRewardBribeMenu != null) _luiRewardBribeMenu.Visible = false;
+            if (_luiRewardDetailMenu != null) _luiRewardDetailMenu.Visible = false;
+            if (_luiIllegalMoneyDetailMenu != null) _luiIllegalMoneyDetailMenu.Visible = false;
+            if (_luiIllegalMoneyTradeMenu != null) _luiIllegalMoneyTradeMenu.Visible = false;
+            if (_luiSmugglerDetailMenu != null) _luiSmugglerDetailMenu.Visible = false;
+            if (_luiSmugglerTradeMenu != null) _luiSmugglerTradeMenu.Visible = false;
+
+            _luiIllegalMoneyMethodMenu.Visible = true;
+            Interval = 0;
+            PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+        }
+        catch
+        {
+        }
+    }
+
+    private void EnsureIllegalMoneyTradeMenu()
+    {
+        try
+        {
+            if (_luiIllegalMoneyTradeMenu != null)
+                return;
+
+            _luiIllegalMoneyTradeMenu = new NativeMenu(
+                T("RewardMenuBrand_Title", "Maze Bank"),
+                T("RewardIllegalMoneyTradeTitle", "Giao dịch quy đổi"));
+
+            _luiPool.Add(_luiIllegalMoneyTradeMenu);
+            ConfigureKeyboardOnlyVehicleMenu(_luiIllegalMoneyTradeMenu);
+            _luiIllegalMoneyTradeMenu.Visible = false;
+        }
+        catch
+        {
+        }
+    }
+
+    private void BuildIllegalMoneyDetailMenu()
+    {
+        if (_luiIllegalMoneyDetailMenu == null)
+            return;
+
+        _luiIllegalMoneyDetailMenu.Clear();
+
+        long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+
+        _illegalMoneyOwnerItem = new NativeItem(
+            string.Format(T("RewardIllegalMoneyOwnerLabel", "Tên người sở hữu: {0}"), GetCurrentCharacterDisplayName()));
+        _illegalMoneyBalanceItem = new NativeItem(
+            string.Format(T("RewardIllegalMoneyBalanceLabel", "Số tiền bất hợp pháp: {0}"), FormatCash(dirty)));
+        _illegalMoneyRatioItem = new NativeItem(
+            T("RewardIllegalMoneyRatioLabel", "Tỷ lệ quy đổi: 1:18"));
+
+        _illegalMoneyOwnerItem.Description = T("RewardIllegalMoneyOwnerDesc", "Nhân vật hiện tại.");
+        _illegalMoneyBalanceItem.Description = T("RewardIllegalMoneyBalanceDesc", "Số tiền bất hợp pháp mà bạn đang sở hữu.");
+        _illegalMoneyRatioItem.Description = T("RewardIllegalMoneyRatioDesc", "$18 tiền bất hợp pháp sẽ đổi được $1 tiền mặt.");
+
+        _luiIllegalMoneyDetailMenu.Add(_illegalMoneyOwnerItem);
+        _luiIllegalMoneyDetailMenu.Add(_illegalMoneyBalanceItem);
+        _luiIllegalMoneyDetailMenu.Add(_illegalMoneyRatioItem);
+
+        var confirm = new NativeItem(T("RewardIllegalMoneyDetailConfirm", "Xác nhận quy đổi phạm pháp"));
+        confirm.Activated += (s, e) =>
+        {
+            _illegalMoneyRedeemArmed = true;
+            CloseRewardMenus(false);
+
+            if (_luiIllegalMoneyDetailMenu != null)
+                _luiIllegalMoneyDetailMenu.Visible = false;
+
+            Notification.Show(
+                    NotificationIcon.BankMaze,
+                    "Maze Bank",
+                    T("ATMMazeBank_Title", "Yêu cầu"),
+                    T("ATMMazeBank_Transaction", "Maze Bank đã duyệt yêu cầu của quý khách rồi! Anh hãy đến ATM của Maze Bank để kích hoạt giao dịch nhé.")
+                );
+        };
+        _luiIllegalMoneyDetailMenu.Add(confirm);
+
+        var cancel = new NativeItem(T("RewardIllegalMoneyDetailCancel", "Hủy bỏ giao dịch"));
+        cancel.Activated += (s, e) =>
+        {
+            if (_luiIllegalMoneyDetailMenu != null)
+                _luiIllegalMoneyDetailMenu.Visible = false;
+
+            OpenIllegalMoneyMethodMenu();
+        };
+        _luiIllegalMoneyDetailMenu.Add(cancel);
+    }
+
+    private void OpenIllegalMoneyDetailMenu()
+    {
+        try
+        {
+            if (IsHelpBoxCooldownActive())
+            {
+                ShowHelpCooldownMessage();
+                return;
+            }
+
+            if (_pendingType != PendingType.None)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardAnotherMenuOpen", "~HUD_COLOUR_DEGEN_YELLOW~Hiện có menu khác đang mở. Hãy đóng nó trước."),
+                    3000);
+                return;
+            }
+
+            EnsureIllegalMoneyDetailMenu();
+            BuildIllegalMoneyDetailMenu();
+
+            if (_luiIllegalMoneyMethodMenu != null) _luiIllegalMoneyMethodMenu.Visible = false;
+            if (_luiRewardRootMenu != null) _luiRewardRootMenu.Visible = false;
+            if (_luiRewardInsuranceMenu != null) _luiRewardInsuranceMenu.Visible = false;
+            if (_luiRewardBribeMenu != null) _luiRewardBribeMenu.Visible = false;
+            if (_luiRewardDetailMenu != null) _luiRewardDetailMenu.Visible = false;
+            if (_luiIllegalMoneyTradeMenu != null) _luiIllegalMoneyTradeMenu.Visible = false;
+            if (_luiSmugglerDetailMenu != null) _luiSmugglerDetailMenu.Visible = false;
+            if (_luiSmugglerTradeMenu != null) _luiSmugglerTradeMenu.Visible = false;
+
+            _luiIllegalMoneyDetailMenu.Visible = true;
+            Interval = 0;
+            PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+        }
+        catch
+        {
+        }
+    }
+
+    // ----------------------- Smuggler branch -----------------------
+    private void EnsureSmugglerDetailMenu()
+    {
+        try
+        {
+            if (_luiSmugglerDetailMenu != null)
+                return;
+
+            _luiSmugglerDetailMenu = new NativeMenu(
+                T("RewardMenuSmugglerBrandTitle", "Smuggler"),
+                T("RewardSmugglerDetailTitle", "Quy đổi tiền bất hợp pháp"));
+
+            _luiPool.Add(_luiSmugglerDetailMenu);
+            ConfigureKeyboardOnlyVehicleMenu(_luiSmugglerDetailMenu);
+            _luiSmugglerDetailMenu.Visible = false;
+        }
+        catch
+        {
+        }
+    }
+
+    private void EnsureSmugglerTradeMenu()
+    {
+        try
+        {
+            if (_luiSmugglerTradeMenu != null)
+                return;
+
+            _luiSmugglerTradeMenu = new NativeMenu(
+                T("RewardMenu_SmugglerBrandTitle", "Smuggler"),
+                T("RewardSmugglerTradeTitle", "Giao dịch quy đổi"));
+
+            _luiPool.Add(_luiSmugglerTradeMenu);
+            ConfigureKeyboardOnlyVehicleMenu(_luiSmugglerTradeMenu);
+            _luiSmugglerTradeMenu.Visible = false;
+        }
+        catch
+        {
+        }
+    }
+
+    private void BuildSmugglerDetailMenu()
+    {
+        if (_luiSmugglerDetailMenu == null)
+            return;
+
+        _luiSmugglerDetailMenu.Clear();
+
+        long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+
+        _smugglerOwnerItem = new NativeItem(
+            string.Format(T("RewardSmugglerOwnerLabel", "Tên người giao dịch: {0}"), GetCurrentCharacterDisplayName()));
+        _smugglerBalanceItem = new NativeItem(
+            string.Format(T("RewardSmugglerBalanceLabel", "Số tiền bất hợp pháp: {0}"), FormatCash(dirty)));
+        _smugglerRatioItem = new NativeItem(
+            T("RewardSmugglerRatioLabel", "Tỷ lệ quy đổi: 1:100"));
+
+        _smugglerOwnerItem.Description = T("RewardSmugglerOwnerDesc", "Nhân vật hiện tại.");
+        _smugglerBalanceItem.Description = T("RewardSmugglerBalanceDesc", "Số tiền bất hợp pháp mà bạn đang sở hữu.");
+        _smugglerRatioItem.Description = T("RewardSmugglerRatioDesc", "$100 tiền bất hợp pháp sẽ đổi được $1 tiền mặt.");
+
+        _luiSmugglerDetailMenu.Add(_smugglerOwnerItem);
+        _luiSmugglerDetailMenu.Add(_smugglerBalanceItem);
+        _luiSmugglerDetailMenu.Add(_smugglerRatioItem);
+
+        var confirm = new NativeItem(T("RewardSmugglerDetailConfirm", "Xác nhận với Smuggler"));
+        confirm.Activated += (s, e) =>
+        {
+            _smugglerRedeemArmed = true;
+            SpawnSmugglerNpc();
+
+            CloseRewardMenus(false);
+
+            if (_luiSmugglerDetailMenu != null)
+                _luiSmugglerDetailMenu.Visible = false;
+
+            Notification.Show(
+                NotificationIcon.Milsite,
+                "Notorious Smuggler",
+                T("RewardSmuggler_Name", "Smuggler"),
+                T("RewardSmugglerGoToNpc", "Tao chấp nhận cuộc giao dịch của mày! Đến đây mà lấy tiền đi!!")
+            );
+        };
+        _luiSmugglerDetailMenu.Add(confirm);
+
+        var cancel = new NativeItem(T("RewardSmugglerDetailCancel", "Hủy bỏ giao dịch"));
+        cancel.Activated += (s, e) =>
+        {
+            if (_luiSmugglerDetailMenu != null)
+                _luiSmugglerDetailMenu.Visible = false;
+
+            OpenIllegalMoneyMethodMenu();
+        };
+        _luiSmugglerDetailMenu.Add(cancel);
+    }
+
+    private void OpenSmugglerDetailMenu()
+    {
+        try
+        {
+            if (IsHelpBoxCooldownActive())
+            {
+                ShowHelpCooldownMessage();
+                return;
+            }
+
+            if (_pendingType != PendingType.None)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardAnotherMenuOpen", "~HUD_COLOUR_DEGEN_YELLOW~Hiện có menu khác đang mở. Hãy đóng nó trước."),
+                    3000);
+                return;
+            }
+
+            EnsureSmugglerDetailMenu();
+            BuildSmugglerDetailMenu();
+
+            if (_luiIllegalMoneyMethodMenu != null) _luiIllegalMoneyMethodMenu.Visible = false;
+            if (_luiRewardRootMenu != null) _luiRewardRootMenu.Visible = false;
+            if (_luiRewardInsuranceMenu != null) _luiRewardInsuranceMenu.Visible = false;
+            if (_luiRewardBribeMenu != null) _luiRewardBribeMenu.Visible = false;
+            if (_luiRewardDetailMenu != null) _luiRewardDetailMenu.Visible = false;
+            if (_luiIllegalMoneyMethodMenu != null) _luiIllegalMoneyMethodMenu.Visible = false;
+            if (_luiIllegalMoneyDetailMenu != null) _luiIllegalMoneyDetailMenu.Visible = false;
+            if (_luiIllegalMoneyTradeMenu != null) _luiIllegalMoneyTradeMenu.Visible = false;
+            if (_luiSmugglerTradeMenu != null) _luiSmugglerTradeMenu.Visible = false;
+
+            _luiSmugglerDetailMenu.Visible = true;
+            Interval = 0;
+            PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+        }
+        catch
+        {
+        }
+    }
+
+    private void BuildSmugglerTradeMenu()
+    {
+        if (_luiSmugglerTradeMenu == null)
+            return;
+
+        _luiSmugglerTradeMenu.Clear();
+
+        long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+
+        _smugglerOwnerItem = new NativeItem(
+            string.Format(T("RewardSmugglerOwnerLabel", "Tên người giao dịch: {0}"), GetCurrentCharacterDisplayName()));
+        _smugglerBalanceItem = new NativeItem(
+            string.Format(T("RewardSmugglerBalanceLabel", "Số tiền bất hợp pháp: {0}"), FormatCash(dirty)));
+        _smugglerRatioItem = new NativeItem(
+            T("RewardSmugglerRatioLabel", "Tỷ lệ quy đổi: 1:100"));
+
+        _smugglerAmountItem = new NativeItem(
+            string.Format(T("RewardSmugglerAmountLabel", "Số tiền cần đổi: {0}"),
+                _smugglerConvertAmount > 0 ? FormatCash(_smugglerConvertAmount) : "N/A"));
+
+        _smugglerReceiveItem = new NativeItem(
+            string.Format(T("RewardSmugglerReceiveLabel", "Số tiền nhận được: {0}"),
+                _smugglerExpectedCash > 0 ? FormatCash(_smugglerExpectedCash) : "N/A"));
+
+        _smugglerOwnerItem.Description = T("RewardSmugglerOwnerDesc", "Nhân vật hiện tại.");
+        _smugglerBalanceItem.Description = T("RewardSmugglerBalanceDesc", "Số tiền bất hợp pháp mà bạn đang sở hữu.");
+        _smugglerRatioItem.Description = T("RewardSmugglerRatioDesc", "$100 tiền bất hợp pháp sẽ đổi được $1 tiền mặt.");
+        _smugglerAmountItem.Description = T("RewardSmugglerAmountDesc", "Hãy nhập số tiền cần đổi vào đây.");
+        _smugglerReceiveItem.Description = T("RewardSmugglerReceiveDesc", "Số tiền đã được quyết định.");
+
+        _smugglerAmountItem.Activated += (s, e) => PromptSmugglerAmount();
+
+        _luiSmugglerTradeMenu.Add(_smugglerOwnerItem);
+        _luiSmugglerTradeMenu.Add(_smugglerBalanceItem);
+        _luiSmugglerTradeMenu.Add(_smugglerRatioItem);
+        _luiSmugglerTradeMenu.Add(_smugglerAmountItem);
+        _luiSmugglerTradeMenu.Add(_smugglerReceiveItem);
+
+        var confirm = new NativeItem(T("RewardSmugglerTradeConfirm", "Xác nhận quy đổi"));
+        confirm.Activated += (s, e) => ConfirmSmugglerConversion();
+        _luiSmugglerTradeMenu.Add(confirm);
+
+        var cancel = new NativeItem(T("RewardSmugglerTradeCancel", "Hủy giao dịch"));
+        cancel.Activated += (s, e) =>
+        {
+            OpenSmugglerDetailMenu();
+        };
+        _luiSmugglerTradeMenu.Add(cancel);
+    }
+
+    private void UpdateSmugglerTradeMenuVisuals()
+    {
+        try
+        {
+            if (_luiSmugglerTradeMenu == null)
+                return;
+
+            BuildSmugglerTradeMenu();
+        }
+        catch
+        {
+        }
+    }
+
+    private bool IsNearSmugglerNpc()
+    {
+        try
+        {
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists() || player.IsDead)
+                return false;
+
+            if (_smugglerNpc == null || !_smugglerNpc.Exists())
+                return false;
+
+            return player.Position.DistanceTo(_smugglerNpc.Position) <= SmugglerNpcRadius;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void SpawnSmugglerNpc()
+    {
+        try
+        {
+            if (_smugglerNpc != null && _smugglerNpc.Exists())
+            {
+                if (_smugglerBlip == null || !_smugglerBlip.Exists())
+                {
+                    _smugglerBlip = _smugglerNpc.AddBlip();
+                    if (_smugglerBlip != null && _smugglerBlip.Exists())
+                    {
+                        _smugglerBlip.IsShortRange = false;
+                        _smugglerBlip.Sprite = BlipSprite.Standard;
+                        _smugglerBlip.Color = BlipColor.Red;
+                        Function.Call(Hash.SET_BLIP_COLOUR, _smugglerBlip.Handle, (int)BlipColor.Red);
+                        SetBlipName(_smugglerBlip, T("RewardSmugglerBlipName", "Smuggler"));
+                    }
+                }
+                return;
+            }
+
+            DespawnSmugglerNpc();
+
+            Ped npc = TryCreatePed("s_m_m_dockwork_01", SmugglerNpcPosition);
+            if (npc == null || !npc.Exists())
+                return;
+
+            _smugglerNpc = npc;
+            try { npc.Task.ClearAllImmediately(); } catch { }
+            try { npc.Task.StandStill(-1); } catch { }
+
+            _smugglerBlip = npc.AddBlip();
+            if (_smugglerBlip != null && _smugglerBlip.Exists())
+            {
+                _smugglerBlip.IsShortRange = false;
+                _smugglerBlip.Sprite = BlipSprite.Standard;
+                _smugglerBlip.Color = BlipColor.Red;
+                Function.Call(Hash.SET_BLIP_COLOUR, _smugglerBlip.Handle, (int)BlipColor.Red);
+                SetBlipName(_smugglerBlip, T("RewardSmugglerBlipName", "Smuggler"));
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private Ped TryCreatePed(string modelName, Vector3 position)
+    {
+        try
+        {
+            Model model = new Model(Game.GenerateHash(modelName));
+            if (!model.IsValid || !model.IsInCdImage)
+                return null;
+
+            if (!model.IsLoaded)
+                model.Request(2000);
+
+            int waited = 0;
+            while (!model.IsLoaded && waited < 3000)
+            {
+                Script.Wait(50);
+                waited += 50;
+            }
+
+            if (!model.IsLoaded)
+            {
+                model.MarkAsNoLongerNeeded();
+                return null;
+            }
+
+            Ped npc = World.CreatePed(model, position);
+            if (npc == null || !npc.Exists())
+            {
+                model.MarkAsNoLongerNeeded();
+                return null;
+            }
+
+            try { npc.IsPersistent = true; } catch { }
+            try { Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, npc.Handle, true, true); } catch { }
+            try { Function.Call(Hash.SET_ENTITY_INVINCIBLE, npc.Handle, true); } catch { }
+            try { Function.Call(Hash.SET_BLOCKING_OF_NON_TEMPORARY_EVENTS, npc.Handle, true); } catch { }
+            try { Function.Call(Hash.SET_PED_FLEE_ATTRIBUTES, npc.Handle, 0, false); } catch { }
+            try { Function.Call(Hash.SET_PED_CAN_RAGDOLL, npc.Handle, false); } catch { }
+            try { Function.Call(Hash.SET_PED_CAN_BE_TARGETTED, npc.Handle, false); } catch { }
+            try { Function.Call(Hash.SET_PED_DIES_WHEN_INJURED, npc.Handle, false); } catch { }
+            try { Function.Call(Hash.SET_PED_KEEP_TASK, npc.Handle, true); } catch { }
+            try { npc.Task.ClearAllImmediately(); } catch { }
+
+            model.MarkAsNoLongerNeeded();
+            return npc;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void SetBlipName(Blip blip, string displayName)
+    {
+        try
+        {
+            if (blip == null || !blip.Exists())
+                return;
+
+            Function.Call(Hash.BEGIN_TEXT_COMMAND_SET_BLIP_NAME, "STRING");
+            Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, displayName);
+            Function.Call(Hash.END_TEXT_COMMAND_SET_BLIP_NAME, blip.Handle);
+        }
+        catch
+        {
+        }
+    }
+
+    private void DespawnSmugglerNpc()
+    {
+        try
+        {
+            if (_smugglerBlip != null)
+            {
+                try { if (_smugglerBlip.Exists()) _smugglerBlip.Delete(); } catch { }
+                _smugglerBlip = null;
+            }
+        }
+        catch { }
+
+        try
+        {
+            if (_smugglerNpc != null)
+            {
+                try { if (_smugglerNpc.Exists()) _smugglerNpc.Delete(); } catch { }
+                _smugglerNpc = null;
+            }
+        }
+        catch { }
+    }
+
+    private void UpdateSmugglerPrompt()
+    {
+        try
+        {
+            if (!_smugglerRedeemArmed)
+                return;
+
+            if (_pendingType != PendingType.None)
+                return;
+
+            if (_luiPool != null && SafeCall(() => _luiPool.AreAnyVisible, false))
+                return;
+
+            if (!IsNearSmugglerNpc())
+                return;
+
+            GTA.UI.Screen.ShowHelpTextThisFrame(
+                T("RewardSmugglerHelp",
+                  "~b~~h~SMUGGLER~h~~s~\nNhấn ~INPUT_FRONTEND_ACCEPT~ để kích hoạt giao dịch đổi tiền."));
+        }
+        catch { }
+    }
+
+    private void OpenSmugglerTradeMenu()
+    {
+        try
+        {
+            if (!_smugglerRedeemArmed)
+                return;
+
+            if (!IsNearSmugglerNpc())
+                return;
+
+            if (IsHelpBoxCooldownActive())
+            {
+                ShowHelpCooldownMessage();
+                return;
+            }
+
+            EnsureSmugglerTradeMenu();
+            BuildSmugglerTradeMenu();
+
+            if (_luiIllegalMoneyMethodMenu != null) _luiIllegalMoneyMethodMenu.Visible = false;
+            if (_luiRewardRootMenu != null) _luiRewardRootMenu.Visible = false;
+            if (_luiRewardInsuranceMenu != null) _luiRewardInsuranceMenu.Visible = false;
+            if (_luiRewardBribeMenu != null) _luiRewardBribeMenu.Visible = false;
+            if (_luiRewardDetailMenu != null) _luiRewardDetailMenu.Visible = false;
+            if (_luiIllegalMoneyMethodMenu != null) _luiIllegalMoneyMethodMenu.Visible = false;
+            if (_luiIllegalMoneyDetailMenu != null) _luiIllegalMoneyDetailMenu.Visible = false;
+            if (_luiIllegalMoneyTradeMenu != null) _luiIllegalMoneyTradeMenu.Visible = false;
+            if (_luiSmugglerDetailMenu != null) _luiSmugglerDetailMenu.Visible = false;
+
+            _luiSmugglerTradeMenu.Visible = true;
+            Interval = 0;
+            PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+        }
+        catch
+        {
+        }
+    }
+
+    private void CloseSmugglerTradeMenu(bool setCooldown)
+    {
+        try
+        {
+            if (_luiSmugglerTradeMenu != null)
+                _luiSmugglerTradeMenu.Visible = false;
+        }
+        catch
+        {
+        }
+
+        if (setCooldown)
+            EnsureHelpBoxCooldownSet();
+
+        Interval = 1000;
+    }
+
+    private void PromptSmugglerAmount()
+    {
+        try
+        {
+            BlockRewardMenuInput(400);
+
+            string input = Game.GetUserInput(string.Empty);
+            if (string.IsNullOrWhiteSpace(input))
+                return;
+
+            var sb = new System.Text.StringBuilder();
+            foreach (char ch in input)
+            {
+                if (char.IsDigit(ch))
+                    sb.Append(ch);
+            }
+
+            if (sb.Length == 0)
+            {
+                GTA.UI.Screen.ShowSubtitle(T("RewardSmugglerInvalidAmount", "Số tiền ~HUD_COLOUR_DEGEN_YELLOW~không hợp lệ.~s~"), 2500);
+                return;
+            }
+
+            if (!long.TryParse(sb.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long amount))
+            {
+                GTA.UI.Screen.ShowSubtitle(T("RewardSmugglerInvalidAmount", "Số tiền ~HUD_COLOUR_DEGEN_YELLOW~không hợp lệ.~s~"), 2500);
+                return;
+            }
+
+            if (amount < 100)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardSmugglerMinimumAmount", "Số tiền quy đổi ~HUD_COLOUR_DEGEN_YELLOW~tối thiểu~s~ là ~HUD_COLOUR_DEGEN_GREEN~$100.~s~"),
+                    2500);
+                return;
+            }
+
+            long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+            if (amount > dirty)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    string.Format(T("RewardSmugglerExceedBalance", "Bạn chỉ có thể đổi ~HUD_COLOUR_DEGEN_RED~tối đa~s~ {0}."),
+                    FormatCash(dirty)),
+                    3000);
+                return;
+            }
+
+            _smugglerConvertAmount = amount;
+            _smugglerExpectedCash = Math.Max(1, amount / 100);
+
+            UpdateSmugglerTradeMenuVisuals();
+            PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+        }
+        catch
+        {
+        }
+        finally
+        {
+            BlockRewardMenuInput(350);
+        }
+    }
+
+    private void ConfirmSmugglerConversion()
+    {
+        try
+        {
+            long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+
+            if (_smugglerConvertAmount < 100)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardSmugglerNeedAmount", "~HUD_COLOUR_DEGEN_YELLOW~Hãy nhập số tiền cần đổi trước.~s~"),
+                    2500);
+                return;
+            }
+
+            if (_smugglerConvertAmount > dirty)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    string.Format(T("RewardSmugglerExceedBalance", "Bạn chỉ có thể đổi ~HUD_COLOUR_DEGEN_RED~tối đa~s~ {0}."),
+                    FormatCash(dirty)),
+                    3000);
+                return;
+            }
+
+            long receive = Math.Max(1, _smugglerConvertAmount / 100);
+            if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(_smugglerConvertAmount))
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardSmugglerSpendFail", "~r~Không thể trừ tiền bất hợp pháp."),
+                    2500);
+                return;
+            }
+
+            if (receive > int.MaxValue)
+                receive = int.MaxValue;
+
+            Game.Player.Money += (int)receive;
+
+            PlayFrontendSound("PURCHASE", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+
+            _smugglerRedeemArmed = false;
+            _smugglerConvertAmount = -1;
+            _smugglerExpectedCash = -1;
+
+            DespawnSmugglerNpc();
+            CloseSmugglerTradeMenu(false);
+        }
+        catch
+        {
+            CloseSmugglerTradeMenu(false);
+        }
+    }
+
+    private void EnsureSmugglerContactRegistered()
+    {
+        try
+        {
+            var phone = CustomiFruit.GetCurrentInstance();
+            if (phone == null || phone.Contacts == null)
+                return;
+
+            if (_smugglerContactAdded)
+                return;
+
+            foreach (var c in phone.Contacts)
+            {
+                if (c != null && string.Equals(c.Name, "Smuggler", StringComparison.OrdinalIgnoreCase))
+                {
+                    _smugglerContactAdded = true;
+                    return;
+                }
+            }
+
+            var contact = new iFruitContact("Smuggler")
+            {
+                Active = true,
+                DialTimeout = SmugglerContactDialTimeoutMs,
+                Bold = false,
+                Icon = new ContactIcon("CHAR_LJT")
+            };
+
+            contact.Answered += OnSmugglerContactAnswered;
+            phone.Contacts.Add(contact);
+            _smugglerContactAdded = true;
+        }
+        catch { }
+    }
+
+    private void OnSmugglerContactAnswered(iFruitContact sender)
+    {
+        try
+        {
+            _smugglerRedeemArmed = true;
+            SpawnSmugglerNpc();
+
+            Notification.Show(
+                NotificationIcon.Milsite,
+                "Notorious Smuggler",
+                T("RewardSmuggler_Name", "Smuggler"),
+                T("RewardSmugglerGoToNpc", "Tao chấp nhận cuộc giao dịch của mày! Đến đây mà lấy tiền đi!!")
+            );
+
+            try
+            {
+                CustomiFruit.GetCurrentInstance()?.Close(0);
+            }
+            catch { }
+        }
+        catch { }
+    }
+
+    private void BuildIllegalMoneyTradeMenu()
+    {
+        if (_luiIllegalMoneyTradeMenu == null)
+            return;
+
+        _luiIllegalMoneyTradeMenu.Clear();
+
+        long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+
+        _illegalMoneyOwnerItem = new NativeItem(
+            string.Format(T("RewardIllegalMoneyOwnerLabel", "Tên người sở hữu: {0}"), GetCurrentCharacterDisplayName()));
+        _illegalMoneyBalanceItem = new NativeItem(
+            string.Format(T("RewardIllegalMoneyBalanceLabel", "Số tiền bất hợp pháp: {0}"), FormatCash(dirty)));
+        _illegalMoneyRatioItem = new NativeItem(
+            T("RewardIllegalMoneyRatioLabel", "Tỷ lệ quy đổi: 1:10"));
+
+        _illegalMoneyAmountItem = new NativeItem(
+            string.Format(T("RewardIllegalMoneyAmountLabel", "Số tiền cần đổi: {0}"),
+            _illegalMoneyConvertAmount > 0 ? FormatCash(_illegalMoneyConvertAmount) : "N/A"));
+
+        _illegalMoneyReceiveItem = new NativeItem(
+            string.Format(T("RewardIllegalMoneyReceiveLabel", "Số tiền nhận được: {0}"),
+            _illegalMoneyExpectedCash > 0 ? FormatCash(_illegalMoneyExpectedCash) : "N/A"));
+
+        _illegalMoneyOwnerItem.Description = T("RewardIllegalMoneyOwnerDesc", "Nhân vật hiện tại.");
+        _illegalMoneyBalanceItem.Description = T("RewardIllegalMoneyBalanceDesc", "Số tiền bất hợp pháp mà bạn đang sở hữu.");
+        _illegalMoneyRatioItem.Description = T("RewardIllegalMoneyRatioDesc", "$18 tiền bất hợp pháp sẽ đổi được $1 tiền mặt.");
+        _illegalMoneyAmountItem.Description = T("RewardIllegalMoneyAmountDesc", "Hãy nhập số tiền cần đổi vào đây.");
+        _illegalMoneyReceiveItem.Description = T("RewardIllegalMoneyReceiveDesc", "Số tiền đã được quyết định.");
+
+        _illegalMoneyAmountItem.Activated += (s, e) =>
+        {
+            PromptIllegalMoneyAmount();
+        };
+
+        _luiIllegalMoneyTradeMenu.Add(_illegalMoneyOwnerItem);
+        _luiIllegalMoneyTradeMenu.Add(_illegalMoneyBalanceItem);
+        _luiIllegalMoneyTradeMenu.Add(_illegalMoneyRatioItem);
+        _luiIllegalMoneyTradeMenu.Add(_illegalMoneyAmountItem);
+        _luiIllegalMoneyTradeMenu.Add(_illegalMoneyReceiveItem);
+
+        var confirm = new NativeItem(T("RewardIllegalMoneyTradeConfirm", "Xác nhận quy đổi"));
+        confirm.Activated += (s, e) =>
+        {
+            ConfirmIllegalMoneyConversion();
+        };
+        _luiIllegalMoneyTradeMenu.Add(confirm);
+
+        var cancel = new NativeItem(T("RewardIllegalMoneyTradeCancel", "Hủy giao dịch"));
+        cancel.Activated += (s, e) =>
+        {
+            OpenIllegalMoneyDetailMenu();
+        };
+        _luiIllegalMoneyTradeMenu.Add(cancel);
+    }
+
+    private void UpdateIllegalMoneyTradeMenuVisuals()
+    {
+        try
+        {
+            if (_luiIllegalMoneyTradeMenu == null)
+                return;
+
+            BuildIllegalMoneyTradeMenu();
+        }
+        catch
+        {
+        }
+    }
+
+    private void OpenIllegalMoneyTradeMenu()
+    {
+        try
+        {
+            if (!_illegalMoneyRedeemArmed)
+                return;
+
+            if (!IsNearMazeBankAtm())
+                return;
+
+            if (IsHelpBoxCooldownActive())
+            {
+                ShowHelpCooldownMessage();
+                return;
+            }
+
+            EnsureIllegalMoneyTradeMenu();
+            BuildIllegalMoneyTradeMenu();
+
+            if (_luiIllegalMoneyMethodMenu != null) _luiIllegalMoneyMethodMenu.Visible = false;
+            if (_luiRewardRootMenu != null) _luiRewardRootMenu.Visible = false;
+            if (_luiRewardInsuranceMenu != null) _luiRewardInsuranceMenu.Visible = false;
+            if (_luiRewardBribeMenu != null) _luiRewardBribeMenu.Visible = false;
+            if (_luiRewardDetailMenu != null) _luiRewardDetailMenu.Visible = false;
+            if (_luiIllegalMoneyDetailMenu != null) _luiIllegalMoneyDetailMenu.Visible = false;
+            if (_luiSmugglerDetailMenu != null) _luiSmugglerDetailMenu.Visible = false;
+            if (_luiSmugglerTradeMenu != null) _luiSmugglerTradeMenu.Visible = false;
+
+            _luiIllegalMoneyTradeMenu.Visible = true;
+            Interval = 0;
+            PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+        }
+        catch
+        {
+        }
+    }
+
+    private void CloseIllegalMoneyTradeMenu(bool setCooldown)
+    {
+        try
+        {
+            if (_luiIllegalMoneyTradeMenu != null)
+                _luiIllegalMoneyTradeMenu.Visible = false;
+        }
+        catch
+        {
+        }
+
+        if (setCooldown)
+            EnsureHelpBoxCooldownSet();
+
+        Interval = 1000;
+    }
+
+    private void PromptIllegalMoneyAmount()
+    {
+        try
+        {
+            BlockRewardMenuInput(400);
+
+            string input = Game.GetUserInput(string.Empty);
+            if (string.IsNullOrWhiteSpace(input))
+                return;
+
+            var sb = new System.Text.StringBuilder();
+            foreach (char ch in input)
+            {
+                if (char.IsDigit(ch))
+                    sb.Append(ch);
+            }
+
+            if (sb.Length == 0)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardIllegalMoneyInvalidAmount", "~y~Số tiền không hợp lệ."),
+                    2500);
+                return;
+            }
+
+            if (!long.TryParse(sb.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long amount))
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardIllegalMoneyInvalidAmount", "~y~Số tiền không hợp lệ."),
+                    2500);
+                return;
+            }
+
+            if (amount < 10)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardIllegalMoneyMinimumAmount", "~y~Số tiền quy đổi tối thiểu là $10."),
+                    2500);
+                return;
+            }
+
+            long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+            if (amount > dirty)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    string.Format(T("RewardIllegalMoneyExceedBalance", "~HUD_COLOUR_DEGEN_RED~Bạn chỉ có thể đổi tối đa {0}."),
+                    FormatCash(dirty)),
+                    3000);
+                return;
+            }
+
+            _illegalMoneyConvertAmount = amount;
+            _illegalMoneyExpectedCash = (long)Math.Round(amount / (decimal)MazeBankConversionRate, 0, MidpointRounding.AwayFromZero);
+
+            if (_illegalMoneyExpectedCash < 1)
+                _illegalMoneyExpectedCash = 1;
+
+            UpdateIllegalMoneyTradeMenuVisuals();
+            PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+        }
+        catch
+        {
+        }
+        finally
+        {
+            BlockRewardMenuInput(350);
+        }
+    }
+
+    private void ConfirmIllegalMoneyConversion()
+    {
+        try
+        {
+            long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+
+            if (_illegalMoneyConvertAmount < 10)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardIllegalMoneyNeedAmount", "~y~Hãy nhập số tiền cần đổi trước."),
+                    2500);
+                return;
+            }
+
+            if (_illegalMoneyConvertAmount > dirty)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    string.Format(T("RewardIllegalMoneyExceedBalance", "~HUD_COLOUR_DEGEN_RED~Bạn chỉ có thể đổi tối đa {0}."),
+                    FormatCash(dirty)),
+                    3000);
+                return;
+            }
+
+            long receive = (long)Math.Round(_illegalMoneyConvertAmount / (decimal)MazeBankConversionRate, 0, MidpointRounding.AwayFromZero);
+            if (receive < 1)
+                receive = 1;
+
+            if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(_illegalMoneyConvertAmount))
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardIllegalMoneySpendFail", "~r~Không thể trừ tiền bất hợp pháp."),
+                    2500);
+                return;
+            }
+
+            if (receive > int.MaxValue)
+                receive = int.MaxValue;
+
+            Game.Player.Money += (int)receive;
+
+            _illegalMoneyWantedTriggerGameTime = Game.GameTime + 10000;
+            _illegalMoneyWantedConsumed = false;
+
+            PlayFrontendSound("PURCHASE", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+
+            GTA.UI.Screen.ShowSubtitle(
+                string.Format(
+                    T("RewardIllegalMoneySuccess", "~h~Đã quy đổi thành công {0} -> {1}."),
+                    FormatCash(_illegalMoneyConvertAmount),
+                    FormatCash(receive)),
+                3500);
+
+            _illegalMoneyRedeemArmed = false;
+            _illegalMoneyConvertAmount = -1;
+            _illegalMoneyExpectedCash = -1;
+
+            CloseIllegalMoneyTradeMenu(false);
+        }
+        catch
+        {
+            CloseIllegalMoneyTradeMenu(false);
+        }
     }
 
     // Khi help-box đang mở, Enter sẽ gọi vào đây.

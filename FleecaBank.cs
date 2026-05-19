@@ -22,7 +22,7 @@ public partial class FleecaBankLoanScript : Script
     private static readonly Color MenuBannerBlack = Color.FromArgb(255, 0, 0, 0);
     private static readonly Color MenuBannerGold = Color.FromArgb(255, 255, 215, 0);
 
-    private const string QuickPayBaseTitle = "Tất toán nợ trước hạn";
+    private static string QuickPayBaseTitle => L("Credit_QuickPayBaseTitle", "Tất toán nợ trước hạn");
     private readonly BadgeSet _debtBadge = new BadgeSet
     {
         NormalDictionary = "commonmenu",
@@ -339,7 +339,7 @@ public partial class FleecaBankLoanScript : Script
 
         ShowFleecaNotification(
             L("Credit_NotificationTitle", "Thông báo"),
-            "Ngân hàng đã khóa giao dịch, hãy quay lại sau.");
+            L("Credit_BankLockedMessage", "Ngân hàng đã khóa giao dịch, hãy quay lại sau."));
 
         TryClosePhone();
         return false;
@@ -648,12 +648,12 @@ public partial class FleecaBankLoanScript : Script
     private string GetQuickPayTierLabel(int elapsedDays)
     {
         if (elapsedDays < 7)
-            return "0-6 ngày";
+            return L("Credit_QuickPayTier_0_6", "0-6 ngày");
 
         if (elapsedDays < 17)
-            return "7-16 ngày";
+            return L("Credit_QuickPayTier_7_16", "7-16 ngày");
 
-        return "Từ ngày 17";
+        return L("Credit_QuickPayTier_17Plus", "Từ ngày 17");
     }
 
     private static decimal RoundQuickPayRate(decimal rate)

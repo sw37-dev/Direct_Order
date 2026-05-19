@@ -1175,6 +1175,21 @@ public partial class InstantRefill : Script
 
     // ------------------- NEW HELPER: HandleBackCancel -------------------
     // (sale logic đã được chuyển sang Sale.cs)
+    private int ApplyCurrentWorldPriceMultiplier(int price)
+    {
+        try
+        {
+            int basePrice = Math.Max(0, price);
+            double mult = CityBlackoutHackerState.GetWorldPriceMultiplierForCurrentCharacter();
+            if (mult <= 0.0) mult = 1.0;
+
+            return Math.Max(0, (int)Math.Ceiling(basePrice * mult));
+        }
+        catch
+        {
+            return Math.Max(0, price);
+        }
+    }
 
     // 1) thêm helper lấy heading ngẫu nhiên
     private float GetRandomPreviewHeading()
@@ -1493,14 +1508,14 @@ public partial class InstantRefill : Script
             NativeItem item = dirtyOnly
                 ? new RightBadgeMenuItem(
                     $"{index}. {captured.Name}",
-                    L("VehicleMenu_DirtyOnlyDesc", "Phương tiện này chỉ có thể thanh toán bằng tiền bẩn."),
+                    L("VehicleMenu_DirtyOnlyDesc", "Phương tiện này chỉ có thể thanh toán bằng tiền bất hợp pháp."),
                     _lockBadge)
                 : new NativeItem($"{index}. {captured.Name}");
 
             if (dirtyOnly)
             {
                 item.AltTitle = "";
-                item.Description = L("VehicleMenu_DirtyOnlyDesc", "Phương tiện này chỉ có thể thanh toán bằng tiền bẩn.");
+                item.Description = L("VehicleMenu_DirtyOnlyDesc", "Phương tiện này chỉ có thể thanh toán bằng tiền bất hợp pháp.");
             }
             else
             {
@@ -1764,14 +1779,14 @@ public partial class InstantRefill : Script
         var confirm = _luiDetailDirtyOnlyVehicle
             ? new RightBadgeMenuItem(
             L("VehicleDetail_ConfirmBuy", "Xác nhận mua phương tiện"),
-            L("Vehicle_DirtyMoneyOnly", "Xe này chỉ có thể thanh toán bằng tiền bẩn."),
+            L("Vehicle_DirtyMoneyOnly", "Xe này chỉ có thể thanh toán bằng tiền bất hợp pháp."),
             _lockBadge,
             () => true)
             : new NativeItem(L("VehicleDetail_ConfirmBuy", "Xác nhận mua phương tiện"));
 
         // Thay đổi description của nút xác nhận dựa trên biến dirtyOnly theo yêu cầu
         confirm.Description = dirtyOnly
-            ? L("VehicleDetail_DirtyOnlyConfirmDesc", "Xe này chỉ thanh toán bằng tiền bẩn.")
+            ? L("VehicleDetail_DirtyOnlyConfirmDesc", "Xe này chỉ thanh toán bằng tiền bất hợp pháp.")
             : L("VehicleDetail_ConfirmHint", "Nhấn Enter để xác nhận mua.");
 
         confirm.Selected += (s, e) =>
@@ -1845,7 +1860,7 @@ public partial class InstantRefill : Script
                 if (dirtyBalance < finalCost)
                 {
                     Notification.Show(
-                        LT("Vehicle_NoDirtyMoney", "Bạn không đủ tiền bẩn để mua phương tiện này. Giá: {price}", "{price}", finalCost.ToString("N0")));
+                        LT("Vehicle_NoDirtyMoney", "Bạn không đủ tiền bất hợp pháp để mua phương tiện này. Giá: {price}", "{price}", finalCost.ToString("N0")));
                     PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                     return;
                 }
@@ -1878,7 +1893,7 @@ public partial class InstantRefill : Script
                 if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(finalCost))
                 {
                     Notification.Show(
-                        LT("Vehicle_NoDirtyMoney", "Bạn không đủ tiền bẩn để mua phương tiện này. Giá: {price}", "{price}", finalCost.ToString("N0")));
+                        LT("Vehicle_NoDirtyMoney", "Bạn không đủ tiền bất hợp pháp để mua phương tiện này. Giá: {price}", "{price}", finalCost.ToString("N0")));
                     PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                     return;
                 }
@@ -2077,7 +2092,7 @@ public partial class InstantRefill : Script
         {
             if (CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter() < totalCost)
             {
-                Notification.Show(LT("Vehicle_DirtyMoneyOnly", "~r~Xe này chỉ có thể thanh toán bằng tiền bẩn."));
+                Notification.Show(LT("Vehicle_DirtyMoneyOnly", "~y~Xe này chỉ có thể thanh toán bằng tiền bất hợp pháp thôi."));
                 PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                 ClearPending(false, false);
                 return;
@@ -2085,7 +2100,7 @@ public partial class InstantRefill : Script
 
             if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(totalCost))
             {
-                Notification.Show(LT("Vehicle_DirtyMoneyOnly", "~r~Xe này chỉ có thể thanh toán bằng tiền bẩn."));
+                Notification.Show(LT("Vehicle_DirtyMoneyOnly", "~y~Xe này chỉ có thể thanh toán bằng tiền bất hợp pháp thôi."));
                 PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                 ClearPending(false, false);
                 return;

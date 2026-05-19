@@ -1506,7 +1506,10 @@ public partial class InstantRefill : Script
             UpdateWeaponStatsPanel(chosen);
 
             _luiWeaponDetailEntry = chosen;
-            _luiWeaponDetailPrice = chosen.GetRandomPrice(_rng);
+
+            // Cập nhật: Áp dụng hệ số nhân giá theo thế giới hiện tại
+            _luiWeaponDetailPrice = ApplyCurrentWorldPriceMultiplier(chosen.GetRandomPrice(_rng));
+
             _luiWeaponDetailAmmo = (chosen.TimesPurchased == 0)
                 ? chosen.GetFirstAmmo(_rng)
                 : chosen.GetRepeatAmmo(_rng);
@@ -1514,6 +1517,7 @@ public partial class InstantRefill : Script
             _luiWeaponDetailHasAccessory = false;
             _luiWeaponDetailAccessoryCost = 0;
 
+            // Phần phụ kiện giữ nguyên logic hiện tại (tự động phụ thuộc vào _luiWeaponDetailPrice mới)
             if (_weaponAttachments.TryGetValue(chosen.Hash, out uint[] comps) &&
                 comps != null &&
                 comps.Length > 0 &&

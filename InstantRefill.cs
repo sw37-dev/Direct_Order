@@ -144,6 +144,7 @@ public partial class InstantRefill : Script
     private const int SoftDisableDurationMs = 10000;
 
     private Keys KeyAmmo;
+    private Keys KeyStoreMenu = Keys.NumPad1;
     private readonly string iniPath = Path.Combine("scripts", "DirectOrder.ini");
     private readonly string customVehicleXmlPath = Path.Combine("scripts", "DirectOrder_CustomVehicles.xml");
 
@@ -479,6 +480,7 @@ public partial class InstantRefill : Script
         _spendingAccumulator = new SpendingAccumulatorStore(_spendFilePath);
         _spendingAccumulator.LoadSpendingAccumulator();
         _gameReadyTime = Game.GameTime + 3000;
+        _mazeBankAtmSpawnReadyTime = Game.GameTime + MazeBankAtmSpawnDelayMs;
         Tick += OnTick;
         KeyDown += OnKeyDown;
     }
@@ -510,6 +512,10 @@ public partial class InstantRefill : Script
             // New defaults for added settings
             BackCancelThreshold = 5;
             _saleMultiplier = 0.3;
+
+            // Default hotkeys
+            KeyStoreMenu = Keys.NumPad1;
+            KeyAmmo = Keys.NumPad2;
 
             return;
         }
@@ -602,9 +608,30 @@ public partial class InstantRefill : Script
             BackCancelThreshold = 5;
             _saleMultiplier = 0.3;
         }
+
+        // ----------------- Hotkeys -----------------
+        KeyStoreMenu = ReadKeyOrDefault(cfg, "Keys", "StoreMenu", Keys.NumPad1);
+        KeyAmmo = ReadKeyOrDefault(cfg, "Keys", "WeaponAmmoMenu", Keys.NumPad2);
     }
 
+    private static Keys ReadKeyOrDefault(ScriptSettings cfg, string section, string name, Keys fallback)
+    {
+        try
+        {
+            string raw = cfg.GetValue(section, name, fallback.ToString()).ToString().Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
 
+            raw = raw.Replace("Numpad", "NumPad");
+
+            Keys parsed;
+            if (Enum.TryParse(raw, true, out parsed))
+                return parsed;
+        }
+        catch { }
+
+        return fallback;
+    }
 
     // ----------------------- Tick / Help display -----------------------
     private void OnTick(object sender, EventArgs e)
@@ -626,6 +653,19 @@ public partial class InstantRefill : Script
         EnsureEliteProtectionContactRegistered();
         EnsurePrivilegeCreditsContactRegistered();
         EnsureLegendaryMotorsportContactRegistered();
+        EnsureSmugglerContactRegistered();
+        EnsureMazeBankAtmSpawned();
+        ProcessIllegalMoneyWantedRisk();
+
+        if (_illegalMoneyRedeemArmed && IsNearMazeBankAtm())
+        {
+            ShowMazeBankAtmHelpText();
+        }
+
+        if (_smugglerRedeemArmed && IsNearSmugglerNpc())
+        {
+            UpdateSmugglerPrompt();
+        }
 
         // --- SOFT DISABLE: nếu mod đang tắt tạm, chỉ chờ tới khi hết hạn ---
         if (_softDisabled)
@@ -804,10 +844,10 @@ public partial class InstantRefill : Script
             return;
         }
 
-        // Default interval logic when idle
-        if (Interval != 1000) Interval = 1000;
-
         if (_isProcessingAmmo) ProcessAmmoBatch();
+
+        // Giữ tick 0ms bất cứ khi nào help-box / menu / pending / search / ammo đang hoạt động
+        Interval = ShouldRunPerFrameTick() ? 0 : 1000;
     }
 
     private void InitializeLemonWeaponAmmoMenus()
@@ -2025,7 +2065,7 @@ public partial class InstantRefill : Script
             return;
         }
 
-        if (e.KeyCode == Keys.NumPad1)
+        if (e.KeyCode == KeyStoreMenu)
         {
             OpenStoreMenu();
             return;
@@ -2108,9 +2148,45 @@ public partial class InstantRefill : Script
             }
         }
 
+        // --- THÊM MỚI: Xử lý đóng các Menu giao dịch tiền lậu ---
+        if (_luiIllegalMoneyTradeMenu != null && _luiIllegalMoneyTradeMenu.Visible)
+        {
+            if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Escape)
+            {
+                CloseIllegalMoneyTradeMenu(false);
+                return;
+            }
+        }
+
+        if (_luiIllegalMoneyDetailMenu != null && _luiIllegalMoneyDetailMenu.Visible)
+        {
+            if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Escape)
+            {
+                if (_luiIllegalMoneyDetailMenu != null)
+                    _luiIllegalMoneyDetailMenu.Visible = false;
+
+                ShowRewardRootMenu();
+                return;
+            }
+        }
+
         // Kiểm tra nếu có bất kỳ menu LemonUI nào đang hiển thị thì không xử lý phím bên dưới
         if (_luiPool != null && SafeCall(() => _luiPool.AreAnyVisible, false))
             return;
+
+        // 9) Vá OnKeyDown() để nhấn Enter gần ATM / NPC là mở thẳng menu giao dịch
+        //    Chèn đoạn này sau chỗ kiểm tra _luiPool.AreAnyVisible và trước các logic khác:
+        if (_illegalMoneyRedeemArmed && e.KeyCode == Keys.Enter && !e.Shift && IsNearMazeBankAtm())
+        {
+            OpenIllegalMoneyTradeMenu();
+            return;
+        }
+
+        if (_smugglerRedeemArmed && e.KeyCode == Keys.Enter && !e.Shift && IsNearSmugglerNpc())
+        {
+            OpenSmugglerTradeMenu();
+            return;
+        }
 
         // --- TIẾP TỤC CÁC LOGIC CŨ ---
         if (_pendingType != PendingType.VehicleSelection && Game.GameTime - _lastInteractionGameTime < InteractionCooldownMs)
@@ -2227,26 +2303,8 @@ public partial class InstantRefill : Script
         Ped player = Game.Player.Character;
         if (player == null || !player.Exists() || player.IsDead) return;
 
-        if (e.Alt && e.Shift && (e.KeyCode == Keys.ShiftKey || e.KeyCode == Keys.Shift || e.KeyCode == Keys.Menu || e.KeyCode == Keys.Alt))
-        {
-            // Alt+Shift is replaced by the Legendary Motorsport phone contact.
-            return;
-        }
-
-        if (e.Shift && e.KeyCode == Keys.Z)
-        {
-            // Shift+Z is replaced by the Privilege Credits phone contact.
-            return;
-        }
-
-        if (e.Control && e.KeyCode == Keys.L)
-        {
-            // Ctrl+L is replaced by the Ammunation phone contact.
-            return;
-        }
-
         // --- MỚI: Mở menu vũ khí bằng Numpad2 ---
-        if (e.KeyCode == Keys.NumPad2)
+        if (e.KeyCode == KeyAmmo)
         {
             OpenWeaponAmmoMenu();
             return;

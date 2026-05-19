@@ -513,10 +513,7 @@ public partial class PersistentManager
                         _dealershipBulkLockedBadgeItems.Add(lockedItem);
                         SetRightBadgeSetIfExists(lockedItem, _lockBadge);
 
-                        lockedItem.Activated += (s, e) =>
-                        {
-                            GTA.UI.Screen.ShowSubtitle(GetCollateralLockedDescription(), 3000);
-                        };
+                        lockedItem.Activated += (s, e) => { };
 
                         _dealershipBulkMenu.Add(lockedItem);
                     }

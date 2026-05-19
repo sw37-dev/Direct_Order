@@ -18,7 +18,7 @@ public partial class LombankScript : Script
 {
     private const long INITIAL_TOTAL_LIMIT = 1_000_000L;
     private const long MAX_TOTAL_LIMIT = 15_000_000L;
-    private const long LIMIT_INCREMENT = 200_000L;
+    private const long LIMIT_INCREMENT = 275_000L;
     private const decimal LIMIT_INCREASE_WITHDRAW_RATIO = 0.30m; // 30%
 
     private const double OVERDUE_DAILY_MULTIPLIER = 1.002; // +0.2% mỗi ngày
@@ -343,7 +343,7 @@ public partial class LombankScript : Script
     private static string FormatLockRemaining(TimeSpan ts)
     {
         if (ts <= TimeSpan.Zero)
-            return "0 phút";
+            return L("Lombank_LockRemainingZero", "0 phút");
 
         int totalMinutes = (int)Math.Ceiling(ts.TotalMinutes);
         int days = totalMinutes / (24 * 60);
@@ -351,12 +351,21 @@ public partial class LombankScript : Script
         int minutes = totalMinutes % 60;
 
         if (days > 0)
-            return string.Format(CultureInfo.InvariantCulture, "{0} ngày {1} giờ", days, hours);
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                L("Lombank_LockRemainingDaysHours", "{0} ngày {1} giờ"),
+                days, hours);
 
         if (hours > 0)
-            return string.Format(CultureInfo.InvariantCulture, "{0} giờ {1} phút", hours, minutes);
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                L("Lombank_LockRemainingHoursMinutes", "{0} giờ {1} phút"),
+                hours, minutes);
 
-        return string.Format(CultureInfo.InvariantCulture, "{0} phút", Math.Max(1, minutes));
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            L("Lombank_LockRemainingMinutesOnly", "{0} phút"),
+            Math.Max(1, minutes));
     }
 
     private bool EnsureAtmTransactionsAllowed()
@@ -464,7 +473,7 @@ public partial class LombankScript : Script
         if (modelHash == HASH_TREVOR)
             return "Trevor Philips";
 
-        return "Không xác định";
+        return L("Lombank_CustomerUnknown", "Không xác định");
     }
 
     private string GetStateFileForOwner(int ownerHash)
@@ -854,13 +863,13 @@ public partial class LombankScript : Script
     {
         switch (dayOfWeek)
         {
-            case DayOfWeek.Monday: return "Thứ Hai";
-            case DayOfWeek.Tuesday: return "Thứ Ba";
-            case DayOfWeek.Wednesday: return "Thứ Tư";
-            case DayOfWeek.Thursday: return "Thứ Năm";
-            case DayOfWeek.Friday: return "Thứ Sáu";
-            case DayOfWeek.Saturday: return "Thứ Bảy";
-            default: return "Chủ Nhật";
+            case DayOfWeek.Monday: return L("Lombank_DayMonday", "Thứ Hai");
+            case DayOfWeek.Tuesday: return L("Lombank_DayTuesday", "Thứ Ba");
+            case DayOfWeek.Wednesday: return L("Lombank_DayWednesday", "Thứ Tư");
+            case DayOfWeek.Thursday: return L("Lombank_DayThursday", "Thứ Năm");
+            case DayOfWeek.Friday: return L("Lombank_DayFriday", "Thứ Sáu");
+            case DayOfWeek.Saturday: return L("Lombank_DaySaturday", "Thứ Bảy");
+            default: return L("Lombank_DaySunday", "Chủ Nhật");
         }
     }
 
@@ -869,18 +878,18 @@ public partial class LombankScript : Script
         int minutes = time.Hour * 60 + time.Minute;
 
         if (minutes >= 0 && minutes <= 59)
-            return "Nửa đêm";
+            return L("Lombank_TimePeriodMidnight", "Nửa đêm");
         if (minutes >= 60 && minutes <= 299)
-            return "Rạng sáng";
+            return L("Lombank_TimePeriodDawn", "Rạng sáng");
         if (minutes >= 300 && minutes <= 659)
-            return "Sáng";
+            return L("Lombank_TimePeriodMorning", "Sáng");
         if (minutes >= 660 && minutes <= 779)
-            return "Trưa";
+            return L("Lombank_TimePeriodNoon", "Trưa");
         if (minutes >= 780 && minutes <= 1079)
-            return "Chiều";
+            return L("Lombank_TimePeriodAfternoon", "Chiều");
         if (minutes >= 1080 && minutes <= 1259)
-            return "Tối";
-        return "Đêm";
+            return L("Lombank_TimePeriodEvening", "Tối");
+        return L("Lombank_TimePeriodNight", "Đêm");
     }
 
     private void EnsureLombankContactRegistered()

@@ -269,7 +269,6 @@ public partial class InstantRefill
 
         int price = chosen.GetRandomPrice(_rng, false, 0);
 
-        // SALE là luồng chính
         if (_vehOS)
         {
             if (forceFixedSalePrice)
@@ -278,16 +277,13 @@ public partial class InstantRefill
                 price = (int)Math.Ceiling(price * _saleMultiplier);
         }
 
-        // Thẻ giảm giá là luồng riêng, chỉ áp khi được bật
         if (applyTicketDiscount)
             price = ApplyVehicleDiscountTicket(price);
 
-        // Giữ nguyên rule riêng của Oppressor2
         if (chosen.Label == "OPPRESSOR2" && chosen.TimesPurchased > 0 && !_vehOS)
-        {
             price = (int)Math.Round(price * 1.3);
-        }
 
+        price = ApplyCurrentWorldPriceMultiplier(price);
         return Math.Max(0, price);
     }
 
@@ -333,6 +329,9 @@ public partial class InstantRefill
             double increased = Math.Round(price * 1.3);
             price = (int)increased;
         }
+
+        // Chèn thêm đúng một dòng này ngay trước khi dùng price để hiển thị / set pending
+        price = ApplyCurrentWorldPriceMultiplier(price);
 
         bool modelAvailable = SafeCall(() =>
         {

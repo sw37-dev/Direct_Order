@@ -528,8 +528,8 @@ public class Hacker : Script
 
     private void ShowPaigeConfirmationHelpBox()
     {
-        const string helpText =
-            "Anh có chắc muốn tôi hack lưới điện thành phố chứ, nhưng anh sẽ bị truy nã đấy?\n~INPUT_FRONTEND_ACCEPT~ để đồng ý\n~INPUT_FRONTEND_LEFT~ để hủy";
+        string helpText = T("CityBlackout_PaigeHelpBox",
+            "Anh có chắc muốn tôi hack lưới điện thành phố chứ, nhưng anh sẽ bị truy nã đấy?\n~INPUT_FRONTEND_ACCEPT~ để đồng ý\n~INPUT_FRONTEND_LEFT~ để hủy");
 
         try
         {
@@ -624,6 +624,12 @@ public class Hacker : Script
                     ResetPaigeSequenceState(false);
                 }
 
+                // Gắn trạng thái giá thế giới cho nhân vật hiện tại sau khi bắt đầu thành công
+                CityBlackoutHackerState.SetWorldPriceStateForCurrentCharacter(
+                    source == BlackoutSource.Paige
+                        ? CityBlackoutHackerState.WorldPriceState.PaigeBlackout
+                        : CityBlackoutHackerState.WorldPriceState.SystemBlackout);
+
                 Interval = IDLE_INTERVAL_MS;
                 return true;
             }
@@ -670,6 +676,12 @@ public class Hacker : Script
                     ResetPaigeSequenceState(false);
                 }
 
+                // Gắn trạng thái giá thế giới cho nhân vật hiện tại sau khi bắt đầu thành công (Trường hợp Fallback)
+                CityBlackoutHackerState.SetWorldPriceStateForCurrentCharacter(
+                    source == BlackoutSource.Paige
+                        ? CityBlackoutHackerState.WorldPriceState.PaigeBlackout
+                        : CityBlackoutHackerState.WorldPriceState.SystemBlackout);
+
                 Interval = SMOOTH_INTERVAL_MS;
                 return true;
             }
@@ -684,6 +696,9 @@ public class Hacker : Script
                     ResetPaigeSequenceState(true);
                 }
 
+                // Xóa trạng thái giá vì khởi tạo lỗi ở nhánh fallback nội bộ
+                CityBlackoutHackerState.ClearWorldPriceStateForCurrentCharacter();
+
                 return false;
             }
         }
@@ -697,6 +712,9 @@ public class Hacker : Script
             {
                 ResetPaigeSequenceState(true);
             }
+
+            // Xóa trạng thái giá vì toàn bộ hàm khởi tạo bọc ngoài bị lỗi
+            CityBlackoutHackerState.ClearWorldPriceStateForCurrentCharacter();
 
             return false;
         }
@@ -1225,6 +1243,9 @@ public class Hacker : Script
             // an toàn: xóa luôn bất kỳ lớp xác nhận Paige nào còn sót
             ResetPaigeSequenceState(true);
 
+            // Xóa trạng thái giá thế giới khi blackout kết thúc thành công
+            CityBlackoutHackerState.ClearWorldPriceStateForCurrentCharacter();
+
             Interval = IDLE_INTERVAL_MS;
             GTA.UI.Screen.ShowSubtitle(T("CityBlackout_PowerRestored", "~HUD_COLOUR_CONTROLLER_MICHAEL~~h~Đã có điện trở lại."), 3000);
             TriggerPowerOnSound();
@@ -1235,9 +1256,14 @@ public class Hacker : Script
             _blackoutActive = false;
             _smoothingActive = false;
             _forcedVehicleHandles.Clear();
+
+            // Đảm bảo xóa trạng thái giá kể cả khi gặp lỗi trong lúc dọn dẹp
+            CityBlackoutHackerState.ClearWorldPriceStateForCurrentCharacter();
+
             Interval = IDLE_INTERVAL_MS;
         }
     }
+
 
     private void OnAborted(object sender, EventArgs e)
     {
@@ -1269,12 +1295,17 @@ public class Hacker : Script
                 _paigeWantedGranted = true;
 
                 ResetPaigeSequenceState(true);
+
+                // Xóa trạng thái giá khi script bị hủy giữa chừng lúc đang blackout
+                CityBlackoutHackerState.ClearWorldPriceStateForCurrentCharacter();
             }
             catch { }
         }
         else
         {
             ResetPaigeSequenceState(true);
+            // Đảm bảo an toàn, xóa trạng thái giá khi script bị hủy
+            CityBlackoutHackerState.ClearWorldPriceStateForCurrentCharacter();
         }
     }
 
@@ -1428,6 +1459,64 @@ internal static class CityBlackoutHackerState
         }
     }
 
+    public enum WorldPriceState
+    {
+        Normal = 0,
+        SystemBlackout = 1,
+        PaigeBlackout = 2
+    }
+
+    private static readonly Dictionary<int, WorldPriceState> _worldPriceStates
+        = new Dictionary<int, WorldPriceState>();
+
+    public static void SetWorldPriceStateForCurrentCharacter(WorldPriceState state)
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return;
+
+        lock (_sync)
+        {
+            if (state == WorldPriceState.Normal)
+                _worldPriceStates.Remove(ownerHash);
+            else
+                _worldPriceStates[ownerHash] = state;
+        }
+    }
+
+    public static void ClearWorldPriceStateForCurrentCharacter()
+    {
+        SetWorldPriceStateForCurrentCharacter(WorldPriceState.Normal);
+    }
+
+    public static WorldPriceState GetWorldPriceStateForCurrentCharacter()
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return WorldPriceState.Normal;
+
+        lock (_sync)
+        {
+            WorldPriceState state;
+            return _worldPriceStates.TryGetValue(ownerHash, out state)
+                ? state
+                : WorldPriceState.Normal;
+        }
+    }
+
+    public static double GetWorldPriceMultiplierForCurrentCharacter()
+    {
+        switch (GetWorldPriceStateForCurrentCharacter())
+        {
+            case WorldPriceState.SystemBlackout:
+                return 0.80; // -20%
+            case WorldPriceState.PaigeBlackout:
+                return 1.30; // +30%
+            default:
+                return 1.00;
+        }
+    }
+
     private static DateTime? ParseNullableDateTime(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -1530,11 +1619,11 @@ internal static class CityBlackoutHackerState
         TimeSpan remain = GetAtmTransactionLockRemainingForCurrentCharacter();
         int days = Math.Max(0, (int)Math.Ceiling(remain.TotalDays));
         if (days <= 0)
-            return "ATM tạm khóa";
+            return T("CityBlackout_AtmContactLocked", "ATM tạm khóa");
 
         return string.Format(
             CultureInfo.InvariantCulture,
-            "ATM tạm khóa còn {0} ngày",
+            T("CityBlackout_AtmContactLockedDays", "ATM tạm khóa còn {0} ngày"),
             days);
     }
 
@@ -1997,7 +2086,7 @@ internal static class CityBlackoutHackerState
             Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME,
                 string.Format(
                     CultureInfo.InvariantCulture,
-                    "Lom Bank đã phát hiện {0} tiền bẩn từ ATM. Tiền đã bị thu lại.",
+                    T("CityBlackout_AtmHackCaughtBody", "Lom Bank đã phát hiện {0} tiền bẩn từ ATM. Tiền đã bị thu lại."),
                     string.Format(CultureInfo.InvariantCulture, "${0:N0}", confiscatedTotal)));
 
             Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_MESSAGETEXT,
@@ -2053,7 +2142,7 @@ internal static class CityBlackoutHackerState
                     }
                     catch
                     {
-                        try { GTA.UI.Screen.ShowSubtitle("Lom Bank: Ngân hàng đã mở khóa lại giao dịch của anh rồi!", 3000); } catch { }
+                        try { GTA.UI.Screen.ShowSubtitle(T("CityBlackout_LombankUnlockedFallback", "Lom Bank: Ngân hàng đã mở khóa lại giao dịch của anh rồi!"), 3000); } catch { }
                     }
 
                     changed = true;
@@ -2075,7 +2164,7 @@ internal static class CityBlackoutHackerState
                     }
                     catch
                     {
-                        try { GTA.UI.Screen.ShowSubtitle("Fleeca Bank: Ngân hàng đã mở khóa lại giao dịch của anh rồi!", 3000); } catch { }
+                        try { GTA.UI.Screen.ShowSubtitle(T("CityBlackout_FleecaUnlockedFallback", "Fleeca Bank: Ngân hàng đã mở khóa lại giao dịch của anh rồi!"), 3000); } catch { }
                     }
 
                     changed = true;
@@ -2095,7 +2184,7 @@ internal static class CityBlackoutHackerState
         try
         {
             Function.Call(Hash.BEGIN_TEXT_COMMAND_THEFEED_POST, "STRING");
-            Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, "Ngân hàng đã mở khóa lại giao dịch của anh rồi!");
+            Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, T("CityBlackout_BankUnlockedBody", "Ngân hàng đã mở khóa lại giao dịch của anh rồi!"));
 
             Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_MESSAGETEXT,
                 "WEB_LOMBANK",
@@ -2103,13 +2192,13 @@ internal static class CityBlackoutHackerState
                 false,
                 0,
                 "Lom Bank",
-                "Thông báo");
+                T("CityBlackout_BankUnlockedTitle", "Thông báo"));
 
             Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_TICKER, false, true);
         }
         catch
         {
-            try { GTA.UI.Screen.ShowSubtitle("Lom Bank: Ngân hàng đã mở khóa lại giao dịch của anh rồi!", 3000); } catch { }
+            try { GTA.UI.Screen.ShowSubtitle(T("CityBlackout_LombankUnlockedFallback", "Lom Bank: Ngân hàng đã mở khóa lại giao dịch của anh rồi!"), 3000); } catch { }
         }
     }
 
@@ -2120,12 +2209,12 @@ internal static class CityBlackoutHackerState
             Notification.Show(
                 NotificationIcon.BankFleeca,
                 "Fleeca Bank",
-                "Thông báo",
-                "Ngân hàng đã mở khóa lại giao dịch của anh rồi!");
+                T("CityBlackout_BankUnlockedTitle", "Thông báo"),
+                T("CityBlackout_BankUnlockedBody", "Ngân hàng đã mở khóa lại giao dịch của anh rồi!"));
         }
         catch
         {
-            try { GTA.UI.Screen.ShowSubtitle("Fleeca Bank: Ngân hàng đã mở khóa lại giao dịch của anh rồi!", 3000); } catch { }
+            try { GTA.UI.Screen.ShowSubtitle(T("CityBlackout_FleecaUnlockedFallback", "Fleeca Bank: Ngân hàng đã mở khóa lại giao dịch của anh rồi!"), 3000); } catch { }
         }
     }
 
