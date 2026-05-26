@@ -85,6 +85,21 @@ public class Hacker : Script
     private CustomiFruit _paigePhoneInstance = null;
     private bool _paigeContactAdded = false;
 
+    private static string RickieContactName => T("CityBlackout_RickieContactName", "Rickie Lukens");
+
+    private CustomiFruit _rickiePhoneInstance = null;
+    private bool _rickieContactAdded = false;
+
+    private CityBlackoutHackerState.VehicleUnlockRequester _activeUnlockVehicleRequester
+        = CityBlackoutHackerState.VehicleUnlockRequester.Paige;
+
+    private NativeMenu _unlockVehicleMenu;
+    private bool _unlockVehicleMenuReady = false;
+    private readonly List<NativeCheckboxItem> _unlockVehicleCheckboxItems = new List<NativeCheckboxItem>();
+    private bool _unlockVehicleUiSync = false;
+    private uint _unlockVehicleSelectedHash = 0;
+    private string _unlockVehicleSelectedName = string.Empty;
+
     // --- Smoothing / flicker ---
     private bool _smoothingActive = false;
     private int _smoothingStartTime = 0;
@@ -160,7 +175,10 @@ public class Hacker : Script
     {
         try
         {
-            bool anyMenuVisible = _hackerMenu != null && _hackerMenu.Visible;
+            // Thêm unlock menu vào điều kiện kiểm tra hiển thị
+            bool anyMenuVisible = (_hackerMenu != null && _hackerMenu.Visible) ||
+                                  (_unlockVehicleMenu != null && _unlockVehicleMenu.Visible);
+
             if (!anyMenuVisible)
                 return;
 
@@ -349,7 +367,9 @@ public class Hacker : Script
     {
         try
         {
+            // Đăng ký các contact (Paige và Rickie)
             EnsurePaigeHarrisContactRegistered();
+            EnsureRickieLukensContactRegistered();
 
             int currentDayKey = GetCurrentGameDayKey();
             if (currentDayKey != -1 && currentDayKey != _lastObservedDayKey)
@@ -360,8 +380,10 @@ public class Hacker : Script
                 _rolledThisWindow = false;
             }
 
+            // Xử lý các hành động chờ/hoãn và các tiến trình hack
             HandlePaigeDeferredActions();
             CityBlackoutHackerState.ProcessPendingAtmHackRollsForCurrentCharacter();
+            CityBlackoutHackerState.ProcessPendingVehicleUnlockWantedRollsForCurrentCharacter();
             CityBlackoutHackerState.ProcessBankAccessTimersForCurrentCharacter();
 
             if (_uiPool != null && _uiPool.AreAnyVisible)
@@ -854,9 +876,62 @@ public class Hacker : Script
                 // Mặc định: mở menu Hacker
                 if (!_blackoutActive && !_smoothingActive && !_paigeSequenceActive)
                 {
-                    OpenHackerMenu();
+                    OpenHackerMenu(CityBlackoutHackerState.VehicleUnlockRequester.Paige);
                 }
             }
+        }
+        finally
+        {
+            try { CustomiFruit.GetCurrentInstance()?.Close(0); } catch { }
+        }
+    }
+
+    private void EnsureRickieLukensContactRegistered()
+    {
+        try
+        {
+            var phone = CustomiFruit.GetCurrentInstance();
+            if (phone == null || phone.Contacts == null)
+                return;
+
+            if (!ReferenceEquals(_rickiePhoneInstance, phone))
+            {
+                _rickiePhoneInstance = phone;
+                _rickieContactAdded = false;
+            }
+
+            if (_rickieContactAdded)
+                return;
+
+            if (phone.Contacts.Any(c =>
+                string.Equals(c.Name, RickieContactName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(c.Name, "Rickie Lukens", StringComparison.OrdinalIgnoreCase)))
+            {
+                _rickieContactAdded = true;
+                return;
+            }
+
+            var contact = new iFruitContact(RickieContactName)
+            {
+                Active = true,
+                DialTimeout = 6000,
+                Bold = false,
+                Icon = ContactIcon.Rickie_Lukens
+            };
+
+            contact.Answered += OnRickieLukensContactAnswered;
+            phone.Contacts.Add(contact);
+
+            _rickieContactAdded = true;
+        }
+        catch { }
+    }
+
+    private void OnRickieLukensContactAnswered(iFruitContact sender)
+    {
+        try
+        {
+            OpenDangerousVehicleUnlockMenu(CityBlackoutHackerState.VehicleUnlockRequester.Rickie);
         }
         finally
         {
@@ -899,11 +974,21 @@ public class Hacker : Script
             T("CityBlackout_Hacker_Target2", "2. Hack ATM của Lom Bank"),
             false);
 
+        // Thêm Khởi tạo Item 3 trước nút confirm
+        var unlockVehicleItem = new NativeItem(
+            T("CityBlackout_Hacker_Target3", "3. Mở khóa phương tiện nguy hiểm"));
+
         _hackerConfirmItem = new NativeItem(
             T("CityBlackout_HackerConfirm", "Xác nhận giao dịch"));
 
         _hackerCancelItem = new NativeItem(
             T("CityBlackout_HackerCancel", "Hủy dịch vụ hacker"));
+
+        // Sự kiện Click của Item 3
+        unlockVehicleItem.Activated += (s, e) =>
+        {
+            OpenDangerousVehicleUnlockMenu(CityBlackoutHackerState.VehicleUnlockRequester.Paige);
+        };
 
         _hackerConfirmItem.Activated += (s, e) =>
         {
@@ -915,15 +1000,255 @@ public class Hacker : Script
             CloseHackerMenu(true);
         };
 
+        // Thêm các Item vào Menu theo đúng thứ tự hiển thị
         _hackerMenu.Add(_hackerCityBlackoutItem);
         _hackerMenu.Add(_hackerAtmItem);
+        _hackerMenu.Add(unlockVehicleItem); // Item 3 xuất hiện trước nút Confirm
         _hackerMenu.Add(_hackerConfirmItem);
         _hackerMenu.Add(_hackerCancelItem);
 
         UpdateLemonUiMouseState();
     }
 
-    private void OpenHackerMenu()
+    private void EnsureDangerousVehicleUnlockMenuCreated()
+    {
+        try
+        {
+            if (_unlockVehicleMenuReady)
+                return;
+
+            _unlockVehicleMenu = new NativeMenu(
+                T("CityBlackout_UnlockVehicleTitle", "Unlock Vehicle"),
+                T("CityBlackout_UnlockVehicleSubtitle", "CÁC PHƯƠNG TIỆN NGUY HIỂM"));
+
+            _unlockVehicleMenu.MouseBehavior = MenuMouseBehavior.Disabled;
+            _unlockVehicleMenu.ResetCursorWhenOpened = false;
+            _unlockVehicleMenu.CloseOnInvalidClick = false;
+            _unlockVehicleMenu.RotateCamera = true;
+
+            _uiPool.Add(_unlockVehicleMenu);
+            _unlockVehicleMenu.Visible = false;
+
+            _unlockVehicleMenuReady = true;
+        }
+        catch { }
+    }
+
+    private void OpenDangerousVehicleUnlockMenu(CityBlackoutHackerState.VehicleUnlockRequester requester)
+    {
+        try
+        {
+            EnsureDangerousVehicleUnlockMenuCreated();
+
+            _activeUnlockVehicleRequester = requester;
+
+            CloseHackerMenu(false); // chỉ đóng nếu đang mở từ Paige
+            BuildDangerousVehicleUnlockMenu();
+
+            if (_unlockVehicleMenu != null)
+            {
+                _unlockVehicleMenu.Visible = true;
+                Interval = 0;
+            }
+        }
+        catch { }
+    }
+
+    private void BuildDangerousVehicleUnlockMenu()
+    {
+        if (_unlockVehicleMenu == null)
+            return;
+
+        _unlockVehicleMenu.Clear();
+        _unlockVehicleCheckboxItems.Clear();
+        _unlockVehicleSelectedHash = 0;
+        _unlockVehicleSelectedName = string.Empty;
+
+        var options = InstantRefill.Instance?.GetDirtyOnlyVehicleOptionsForUnlockMenu()
+                      ?? new List<InstantRefill.UnlockableVehicleOption>();
+
+        if (options.Count == 0)
+        {
+            _unlockVehicleMenu.Add(new NativeItem(
+                T("CityBlackout_UnlockVehicleEmpty", "Không có phương tiện nào đang bị khóa.")));
+        }
+        else
+        {
+            int index = 1;
+            foreach (var opt in options)
+            {
+                var captured = opt;
+
+                var item = new NativeCheckboxItem(
+                    string.Format(CultureInfo.InvariantCulture, "{0}. {1}", index, captured.Name),
+                    false);
+
+                item.Description = string.Format(
+                    CultureInfo.InvariantCulture,
+                    T("CityBlackout_UnlockVehicleItemDesc", "{0}\nNhấn Enter để chọn phương tiện này."),
+                    string.IsNullOrWhiteSpace(captured.Class) ? "" : captured.Class);
+
+                item.CheckboxChanged += (s, e) =>
+                {
+                    HandleUnlockVehicleCheckboxChanged(captured, item);
+                };
+
+                _unlockVehicleCheckboxItems.Add(item);
+                _unlockVehicleMenu.Add(item);
+                index++;
+            }
+        }
+
+        // Item: Xác nhận mở khóa phương tiện này
+        var confirm = new NativeItem(
+            T("CityBlackout_UnlockVehicleConfirm", "Xác nhận mở khóa phương tiện này"));
+
+        confirm.Activated += (s, e) =>
+        {
+            ConfirmDangerousVehicleUnlock();
+        };
+        _unlockVehicleMenu.Add(confirm);
+
+        // CHÈN VÀO ĐÂY: Chuyển hóa phương tiện sang tiền mặt
+        var convertToCash = new NativeItem(
+            T("CityBlackout_UnlockVehicleConvert", "Chuyển hóa phương tiện sang tiền mặt"));
+
+        convertToCash.Activated += (s, e) =>
+        {
+            ConfirmDangerousVehicleConvertToCash();
+        };
+        _unlockVehicleMenu.Add(convertToCash);
+
+        // Item: Hủy bỏ mở khóa
+        var cancel = new NativeItem(
+            T("CityBlackout_UnlockVehicleCancel", "Hủy bỏ mở khóa"));
+
+        // Thay đổi logic tại đây: Chỉ quay lại Hacker menu nếu người yêu cầu là Paige, 
+        // trường hợp Rickie (hoặc các trường hợp khác) sẽ chỉ đóng menu.
+        cancel.Activated += (s, e) =>
+        {
+            CloseDangerousVehicleUnlockMenu(false);
+
+            if (_activeUnlockVehicleRequester == CityBlackoutHackerState.VehicleUnlockRequester.Paige)
+                OpenHackerMenu(CityBlackoutHackerState.VehicleUnlockRequester.Paige);
+        };
+        _unlockVehicleMenu.Add(cancel);
+    }
+
+    private void HandleUnlockVehicleCheckboxChanged(
+        InstantRefill.UnlockableVehicleOption option,
+        NativeCheckboxItem item)
+    {
+        if (_unlockVehicleUiSync)
+            return;
+
+        try
+        {
+            _unlockVehicleUiSync = true;
+
+            if (item.Checked)
+            {
+                _unlockVehicleSelectedHash = option.Hash;
+                _unlockVehicleSelectedName = option.Name ?? string.Empty;
+
+                foreach (var other in _unlockVehicleCheckboxItems)
+                {
+                    if (!ReferenceEquals(other, item))
+                        other.Checked = false;
+                }
+            }
+            else
+            {
+                if (_unlockVehicleSelectedHash == option.Hash)
+                {
+                    _unlockVehicleSelectedHash = 0;
+                    _unlockVehicleSelectedName = string.Empty;
+                }
+            }
+        }
+        finally
+        {
+            _unlockVehicleUiSync = false;
+        }
+    }
+
+    private void ConfirmDangerousVehicleUnlock()
+    {
+        try
+        {
+            if (_unlockVehicleSelectedHash == 0)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("CityBlackout_UnlockVehicleNeedPick", "~y~Hãy chọn một phương tiện trước."),
+                    2500);
+                return;
+            }
+
+            CityBlackoutHackerState.SetVehicleUnlockSelectionForCurrentCharacter(
+                _unlockVehicleSelectedHash,
+                _unlockVehicleSelectedName,
+                _activeUnlockVehicleRequester,
+                CityBlackoutHackerState.VehicleUnlockActionMode.UnlockAndBuy);
+
+            GTA.UI.Screen.ShowSubtitle(
+                T("CityBlackout_UnlockVehicleSaved", "~HUD_COLOUR_DEGEN_GREEN~Đã mở khóa tạm thời phương tiện đã chọn."),
+                2500);
+
+            CloseDangerousVehicleUnlockMenu(false);
+        }
+        catch { }
+    }
+
+    private void ConfirmDangerousVehicleConvertToCash()
+    {
+        try
+        {
+            if (_unlockVehicleSelectedHash == 0)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("CityBlackout_UnlockVehicleNeedPick", "~y~Hãy chọn một phương tiện trước."),
+                    2500);
+                return;
+            }
+
+            CityBlackoutHackerState.SetVehicleUnlockSelectionForCurrentCharacter(
+                _unlockVehicleSelectedHash,
+                _unlockVehicleSelectedName,
+                _activeUnlockVehicleRequester,
+                CityBlackoutHackerState.VehicleUnlockActionMode.ConvertToCash);
+
+            GTA.UI.Screen.ShowSubtitle(
+                T("CityBlackout_UnlockVehicleConverted", "~HUD_COLOUR_DEGEN_GREEN~Đã chọn chuyển hóa phương tiện sang tiền mặt."),
+                2500);
+
+            CloseDangerousVehicleUnlockMenu(false);
+        }
+        catch { }
+    }
+
+    private void CloseDangerousVehicleUnlockMenu(bool setCooldown)
+    {
+        try
+        {
+            if (_unlockVehicleMenu != null)
+            {
+                _unlockVehicleMenu.Visible = false;
+                _unlockVehicleMenu.Clear();
+            }
+        }
+        catch { }
+
+        _unlockVehicleCheckboxItems.Clear();
+        _unlockVehicleSelectedHash = 0;
+        _unlockVehicleSelectedName = string.Empty;
+
+        if (setCooldown)
+            EnsureHelpBoxCooldownSet();
+
+        Interval = 1000;
+    }
+
+    private void OpenHackerMenu(CityBlackoutHackerState.VehicleUnlockRequester requester)
     {
         try
         {
@@ -935,6 +1260,8 @@ public class Hacker : Script
 
             if (_paigeSequenceActive || _blackoutActive || _smoothingActive)
                 return;
+
+            _activeUnlockVehicleRequester = requester;
 
             EnsureHackerMenuCreated();
             BuildHackerMenu();
@@ -1060,10 +1387,17 @@ public class Hacker : Script
 
             if (atmArmed)
             {
+                decimal armedMultiplier = CityBlackoutHackerState.GetArmedAtmHackMultiplierForCurrentCharacter();
+
                 ShowPaigeHarrisNotification(
                     T("CityBlackout_HackerAtmTitle", "Hack ATM"),
                     T("CityBlackout_HackerAtmActiveOnce",
-                        "Đợi tôi một chút. ATM của Lom Bank sẽ rơi vào tay tôi do tôi kiểm soát nhưng sẽ có rủi ro nếu ATM của Lom Bank có trục trặc nhé."));
+                    "Đợi tôi một chút. ATM của Lom Bank sẽ rơi vào tay tôi do tôi kiểm soát nhưng sẽ có rủi ro nếu ATM của Lom Bank có trục trặc nhé.")
+                    + "\n" +
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Tỷ lệ nhận tiền bất hợp pháp là ~HUD_COLOUR_DEGEN_CYAN~1:{0:0.00}~s~ chỉ lần này thôi.",
+                        armedMultiplier));
             }
 
             if (blackoutSelected)
@@ -1365,6 +1699,223 @@ internal static class CityBlackoutHackerState
         HackAtm = 2
     }
 
+    public enum VehicleUnlockActionMode
+    {
+        UnlockAndBuy = 0,
+        ConvertToCash = 1
+    }
+
+    public enum VehicleUnlockRequester
+    {
+        None = 0,
+        Paige = 1,
+        Rickie = 2
+    }
+
+    private sealed class VehicleUnlockSession
+    {
+        public uint ModelHash;
+        public string DisplayName;
+        public VehicleUnlockRequester Requester;
+        public VehicleUnlockActionMode ActionMode;
+    }
+
+    private sealed class PendingWantedRollEntry
+    {
+        public int DueGameTimeMs;
+        public double Chance;
+        public int WantedIncrement;
+    }
+
+    private static readonly Dictionary<int, VehicleUnlockSession> _vehicleUnlockSessions
+        = new Dictionary<int, VehicleUnlockSession>();
+
+    private static readonly Dictionary<int, List<PendingWantedRollEntry>> _pendingWantedRolls
+        = new Dictionary<int, List<PendingWantedRollEntry>>();
+
+    public static void SetVehicleUnlockSelectionForCurrentCharacter(
+    uint modelHash,
+    string displayName,
+    VehicleUnlockRequester requester,
+    VehicleUnlockActionMode actionMode = VehicleUnlockActionMode.UnlockAndBuy)
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return;
+
+        lock (_sync)
+        {
+            _vehicleUnlockSessions[ownerHash] = new VehicleUnlockSession
+            {
+                ModelHash = modelHash,
+                DisplayName = displayName ?? string.Empty,
+                Requester = requester,
+                ActionMode = actionMode
+            };
+        }
+    }
+
+    public static double GetVehicleUnlockMultiplierForCurrentCharacter(VehicleUnlockActionMode mode)
+    {
+        if (!TryGetVehicleUnlockSelectionForCurrentCharacter(out _, out _, out var requester, out var selectedMode))
+            return 1.0;
+
+        VehicleUnlockActionMode finalMode = mode;
+        if (finalMode != VehicleUnlockActionMode.UnlockAndBuy &&
+            finalMode != VehicleUnlockActionMode.ConvertToCash)
+        {
+            finalMode = selectedMode;
+        }
+
+        if (finalMode == VehicleUnlockActionMode.ConvertToCash)
+            return requester == VehicleUnlockRequester.Rickie ? 0.41 : 1.13;
+
+        return requester == VehicleUnlockRequester.Rickie ? 0.12 : 0.45;
+    }
+
+    public static bool TryGetVehicleUnlockSelectionForCurrentCharacter(
+    out uint modelHash,
+    out string displayName,
+    out VehicleUnlockRequester requester,
+    out VehicleUnlockActionMode actionMode)
+    {
+        modelHash = 0;
+        displayName = string.Empty;
+        requester = VehicleUnlockRequester.None;
+        actionMode = VehicleUnlockActionMode.UnlockAndBuy;
+
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return false;
+
+        lock (_sync)
+        {
+            if (_vehicleUnlockSessions.TryGetValue(ownerHash, out var session) &&
+                session != null &&
+                session.ModelHash != 0)
+            {
+                modelHash = session.ModelHash;
+                displayName = session.DisplayName ?? string.Empty;
+                requester = session.Requester;
+                actionMode = session.ActionMode;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static bool IsVehicleUnlockSelectionForCurrentCharacter(uint modelHash)
+    {
+        return TryGetVehicleUnlockSelectionForCurrentCharacter(
+            out uint selectedHash,
+            out _,
+            out _,
+            out _) && selectedHash == modelHash;
+    }
+
+    public static double GetVehicleUnlockMultiplierForCurrentCharacter()
+    {
+        if (!TryGetVehicleUnlockSelectionForCurrentCharacter(out _, out _, out var requester, out var actionMode))
+            return 1.0;
+
+        if (actionMode == VehicleUnlockActionMode.ConvertToCash)
+            return requester == VehicleUnlockRequester.Rickie ? 0.41 : 1.13;
+
+        return requester == VehicleUnlockRequester.Rickie ? 0.12 : 0.45;
+    }
+
+    public static void ClearVehicleUnlockSelectionForCurrentCharacter()
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return;
+
+        lock (_sync)
+        {
+            _vehicleUnlockSessions.Remove(ownerHash);
+        }
+    }
+
+    public static void ArmVehicleUnlockWantedRollForCurrentCharacter(
+        int delayMs,
+        double chance,
+        int wantedIncrement)
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return;
+
+        lock (_sync)
+        {
+            if (!_pendingWantedRolls.TryGetValue(ownerHash, out var list) || list == null)
+            {
+                list = new List<PendingWantedRollEntry>();
+                _pendingWantedRolls[ownerHash] = list;
+            }
+
+            list.Add(new PendingWantedRollEntry
+            {
+                DueGameTimeMs = Game.GameTime + Math.Max(1, delayMs),
+                Chance = Math.Max(0.0, Math.Min(1.0, chance)),
+                WantedIncrement = Math.Max(1, wantedIncrement)
+            });
+        }
+    }
+
+    public static void ProcessPendingVehicleUnlockWantedRollsForCurrentCharacter()
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return;
+
+        lock (_sync)
+        {
+            if (!_pendingWantedRolls.TryGetValue(ownerHash, out var list) || list == null || list.Count == 0)
+                return;
+
+            int now = Game.GameTime;
+            var due = list.Where(x => x != null && now >= x.DueGameTimeMs).ToList();
+            if (due.Count == 0)
+                return;
+
+            bool anyHit = false;
+            int wanted = 0;
+            try { wanted = Math.Max(0, Game.Player.WantedLevel); } catch { wanted = 0; }
+
+            foreach (var entry in due)
+            {
+                if (_rng.NextDouble() <= entry.Chance)
+                {
+                    anyHit = true;
+                    wanted = Math.Min(5, wanted + entry.WantedIncrement);
+                }
+            }
+
+            list.RemoveAll(x => x != null && now >= x.DueGameTimeMs);
+            if (list.Count == 0)
+                _pendingWantedRolls.Remove(ownerHash);
+
+            if (!anyHit)
+                return;
+
+            try
+            {
+                Game.Player.WantedLevel = wanted;
+                try
+                {
+                    int playerId = Function.Call<int>(Hash.PLAYER_ID);
+                    Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, playerId, false);
+                }
+                catch
+                {
+                    try { Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, Function.Call<int>(Hash.PLAYER_ID)); } catch { }
+                }
+            }
+            catch { }
+        }
+    }
+
     private sealed class PendingAtmRiskEntry
     {
         public int DueGameTimeMs;
@@ -1402,6 +1953,7 @@ internal static class CityBlackoutHackerState
     private static readonly object _sync = new object();
     private static readonly Random _rng = new Random();
     private static readonly Dictionary<int, HackerTarget> _sessionTargets = new Dictionary<int, HackerTarget>();
+    private static readonly Dictionary<int, decimal> _sessionAtmHackMultipliers = new Dictionary<int, decimal>();
 
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -1822,7 +2374,51 @@ internal static class CityBlackoutHackerState
         lock (_sync)
         {
             _sessionTargets[ownerHash] = HackerTarget.HackAtm;
+            _sessionAtmHackMultipliers[ownerHash] = RollAtmHackMultiplier(GetLombankTotalLimitForCurrentCharacter());
         }
+    }
+
+    public static decimal GetArmedAtmHackMultiplierForCurrentCharacter()
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return 1.00m;
+
+        lock (_sync)
+        {
+            decimal multiplier;
+            return _sessionAtmHackMultipliers.TryGetValue(ownerHash, out multiplier)
+                ? multiplier
+                : 1.00m;
+        }
+    }
+
+    private static decimal RollAtmHackMultiplier(long lombankTotalLimit)
+    {
+        long limit = Math.Max(1_000_000L, Math.Min(15_000_000L, lombankTotalLimit));
+
+        // 3 dải mới, không còn 1:1.00:
+        int minHundredths;
+        int maxHundredths;
+
+        if (limit <= 5_000_000L)
+        {
+            minHundredths = 175;
+            maxHundredths = 200;
+        }
+        else if (limit <= 10_000_000L)
+        {
+            minHundredths = 150;
+            maxHundredths = 174;
+        }
+        else
+        {
+            minHundredths = 125;
+            maxHundredths = 149;
+        }
+
+        int rollHundredths = _rng.Next(minHundredths, maxHundredths + 1);
+        return rollHundredths / 100m;
     }
 
     public static bool IsAtmHackActiveForCurrentCharacter()
@@ -1842,6 +2438,7 @@ internal static class CityBlackoutHackerState
             if (_sessionTargets.TryGetValue(ownerHash, out target) && target == HackerTarget.HackAtm)
             {
                 _sessionTargets.Remove(ownerHash);
+                _sessionAtmHackMultipliers.Remove(ownerHash);
                 return true;
             }
         }
@@ -1919,9 +2516,17 @@ internal static class CityBlackoutHackerState
             if (!_sessionTargets.TryGetValue(ownerHash, out target) || target != HackerTarget.HackAtm)
                 return false;
 
+            decimal multiplier;
+            if (!_sessionAtmHackMultipliers.TryGetValue(ownerHash, out multiplier))
+                multiplier = 1.00m;
+
             StateData s = Load();
 
-            s.DirtyMoney = Math.Max(0, s.DirtyMoney + amount);
+            long dirtyMoneyAmount = (long)Math.Round(amount * multiplier, MidpointRounding.AwayFromZero);
+            if (dirtyMoneyAmount < amount)
+                dirtyMoneyAmount = amount;
+
+            s.DirtyMoney = Math.Max(0, s.DirtyMoney + dirtyMoneyAmount);
 
             // 7 giây in-game: dùng Game.GameTime cho timer live,
             // đồng thời lưu thêm in-game clock để còn an toàn khi reload state.
@@ -1929,11 +2534,12 @@ internal static class CityBlackoutHackerState
             {
                 DueGameTimeMs = Game.GameTime + 7000,
                 DueAtInGameTime = GetCurrentInGameDateTime().AddSeconds(7),
-                DirtyMoneyAmount = amount
+                DirtyMoneyAmount = dirtyMoneyAmount
             });
 
             Save(s);
             _sessionTargets.Remove(ownerHash);
+            _sessionAtmHackMultipliers.Remove(ownerHash);
             return true;
         }
     }

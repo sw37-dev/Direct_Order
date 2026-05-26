@@ -354,6 +354,9 @@ public class VehicleDeliveryContractEvent : Script
 
     private void UpdateIdleState()
     {
+        if (!PrimeAutoHandoverBridge.CanTriggerDeliveryContractsForCurrentCharacter())
+            return;
+
         if (DeliveryContractBridge.VehiclePendingStart &&
             DeliveryContractBridge.CurrentKind == DeliveryContractMissionKind.Vehicle &&
             _state == EventState.Idle)

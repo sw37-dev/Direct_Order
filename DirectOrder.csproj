@@ -75,6 +75,7 @@
     <Compile Include="AuctionHouse.cs" />
     <Compile Include="AutoDrive.cs" />
     <Compile Include="Banker.cs" />
+    <Compile Include="Davey.cs" />
     <Compile Include="Hacker.cs" />
     <Compile Include="Bodyguards.cs" />
     <Compile Include="Dealership.cs" />
@@ -82,15 +83,18 @@
     <Compile Include="InstantRefill.cs" />
     <Compile Include="LanguageManager.cs" />
     <Compile Include="FleecaBank.cs" />
+    <Compile Include="Lester.cs" />
     <Compile Include="LomBank.cs" />
     <Compile Include="MoneyTruckEvent.cs" />
     <Compile Include="PersistentManager.cs" />
     <Compile Include="PlaneDeliveryContractEvent.cs" />
+    <Compile Include="PrimeAutoHandover.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Reward.cs" />
     <Compile Include="Sale.cs" />
     <Compile Include="SnowOnTerrain.cs" />
     <Compile Include="SpendingAccumulatorStore.cs" />
+    <Compile Include="SteveHaines.cs" />
     <Compile Include="SubmarineDeliveryContractEvent.cs" />
     <Compile Include="Vehicle.cs" />
     <Compile Include="VehicleDelivery.cs" />

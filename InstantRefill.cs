@@ -431,6 +431,7 @@ public partial class InstantRefill : Script
 
     public InstantRefill()
     {
+        Instance = this;
         Interval = 1000;
 
         _luiPreviewSkipTokens = LMany("VehiclePreviewSkipTokens", "blimp", "khinh khí cầu");
@@ -483,6 +484,34 @@ public partial class InstantRefill : Script
         _mazeBankAtmSpawnReadyTime = Game.GameTime + MazeBankAtmSpawnDelayMs;
         Tick += OnTick;
         KeyDown += OnKeyDown;
+    }
+
+    public sealed class UnlockableVehicleOption
+    {
+        public uint Hash;
+        public string Name;
+        public string Class;
+    }
+
+    public List<UnlockableVehicleOption> GetDirtyOnlyVehicleOptionsForUnlockMenu()
+    {
+        try
+        {
+            return _vehicles
+                .Where(v => v != null &&
+                            CityBlackoutHackerState.IsDirtyOnlyVehicle(v.Hash, v.Name, v.Class))
+                .Select(v => new UnlockableVehicleOption
+                {
+                    Hash = v.Hash,
+                    Name = v.Name,
+                    Class = v.Class
+                })
+                .ToList();
+        }
+        catch
+        {
+            return new List<UnlockableVehicleOption>();
+        }
     }
 
     private void LoadSettings()
@@ -656,6 +685,9 @@ public partial class InstantRefill : Script
         EnsureSmugglerContactRegistered();
         EnsureMazeBankAtmSpawned();
         ProcessIllegalMoneyWantedRisk();
+        EnsureDaveyContactRegistered();
+        EnsureSteveHainesContactRegistered();
+        ProcessSteveBribeWantedRestore();
 
         if (_illegalMoneyRedeemArmed && IsNearMazeBankAtm())
         {
@@ -2082,24 +2114,8 @@ public partial class InstantRefill : Script
             }
         }
 
-        if (IsRewardMenuInputBlocked())
+        if (HandleDaveyBribeMenuInput(e))
             return;
-
-        if (_luiRewardBribeMenu != null && _luiRewardBribeMenu.Visible)
-        {
-            if ((e.KeyCode == Keys.Left || e.KeyCode == Keys.Right) && _rewardBribeLevelFocused)
-            {
-                AdjustRewardBribeStars(e.KeyCode == Keys.Left ? -1 : 1);
-                return;
-            }
-
-            if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Escape)
-            {
-                CloseRewardBribeMenu(false);
-                ShowRewardRootMenu();
-                return;
-            }
-        }
 
         if (_luiRewardInsuranceMenu != null && _luiRewardInsuranceMenu.Visible)
         {

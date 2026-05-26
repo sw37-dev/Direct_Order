@@ -191,6 +191,9 @@ public class SubmarineDeliveryContractEvent : Script
 
     private void UpdateIdleState()
     {
+        if (!PrimeAutoHandoverBridge.CanTriggerDeliveryContractsForCurrentCharacter())
+            return;
+
         if (!DeliveryContractBridge.SubmarinePendingStart)
             return;
 

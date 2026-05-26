@@ -26,17 +26,11 @@ public partial class InstantRefill : Script
     // Reward root / sub menus
     private NativeMenu _luiRewardRootMenu = null;
     private NativeMenu _luiRewardInsuranceMenu = null;
-    private NativeMenu _luiRewardBribeMenu = null;
 
     // Insurance UI
     private NativeCheckboxItem _luiRewardInsuranceTicketItem = null;
     private NativeItem _luiRewardInsuranceValueItem = null;
     private NativeItem _luiRewardInsuranceConfirmItem = null;
-
-    // Bribe UI
-    private NativeItem _luiRewardBribeServiceItem = null;
-    private NativeItem _luiRewardBribeLevelItem = null;
-    private NativeItem _luiRewardBribeConfirmItem = null;
 
     private static readonly BadgeSet _smugglerLockBadge = new BadgeSet
     {
@@ -75,9 +69,6 @@ public partial class InstantRefill : Script
 
     // Reward state
     private bool _rewardInsuranceChecked = false;
-    private bool _rewardBribeLevelFocused = false;
-    private int _rewardBribeStars = 0;
-
     private int _rewardMenuInputBlockUntil = 0;
 
     // --- Maze Bank ATM (illegal money conversion) ---
@@ -94,6 +85,7 @@ public partial class InstantRefill : Script
 
     private NativeItem _illegalMoneyOwnerItem = null;
     private NativeItem _illegalMoneyBalanceItem = null;
+    private NativeItem _illegalMoneyCurrentItem = null;
     private NativeItem _illegalMoneyRatioItem = null;
     private NativeItem _illegalMoneyAmountItem = null;
     private NativeItem _illegalMoneyReceiveItem = null;
@@ -118,6 +110,7 @@ public partial class InstantRefill : Script
     private long _smugglerConvertAmount = -1;
     private long _smugglerExpectedCash = -1;
     private bool _smugglerContactAdded = false;
+    private int _smugglerExpireGameTime = -1;
 
     private Ped _smugglerNpc = null;
     private Blip _smugglerBlip = null;
@@ -125,8 +118,9 @@ public partial class InstantRefill : Script
     private static readonly Vector3 SmugglerNpcPosition = new Vector3(1558.424000f, -2152.824000f, 77.502410f);
     private const float SmugglerNpcRadius = 2.5f;
     private const int SmugglerContactDialTimeoutMs = 2000;
+    private const int SmugglerLifetimeMs = 180000;
     private const long MazeBankConversionRate = 18L;
-    private const long SmugglerConversionRate = 100L;
+    private const long SmugglerConversionRate = 82L;
 
     private int _illegalMoneyWantedTriggerGameTime = -1;
     private bool _illegalMoneyWantedConsumed = false;
@@ -139,9 +133,6 @@ public partial class InstantRefill : Script
     private const long RewardInsuranceCost = 25000000L;
     private const int RewardInsuranceBaseCompensationPercent = 18;
     private const int RewardInsuranceReducedCompensationPercent = 5;
-
-    private const long RewardBribeCostPerStar = 10000000L;
-    private const int RewardBribeMaxStars = 5;
 
     private static string T(string key, string fallback = "", params string[] tokensAndValues)
     {
@@ -223,7 +214,7 @@ public partial class InstantRefill : Script
 
             _luiRewardRootMenu = new NativeMenu(
               T("RewardRootMenuTitle", "Redeem points"),
-              T("RewardRootMenuDescription", "Chọn mục muốn đổi thưởng"));
+              T("RewardRootMenuDescription", "Chọn mục đổi thưởng"));
 
             _luiPool.Add(_luiRewardRootMenu);
             ConfigureKeyboardOnlyVehicleMenu(_luiRewardRootMenu);
@@ -266,7 +257,7 @@ public partial class InstantRefill : Script
                 || _pendingType != PendingType.None
                 || (_luiPool != null && SafeCall(() => _luiPool.AreAnyVisible, false))
                 || (_illegalMoneyRedeemArmed && IsNearMazeBankAtm())
-                || (_smugglerRedeemArmed && IsNearSmugglerNpc())
+                || _smugglerRedeemArmed
                 || _isProcessingAmmo;
         }
         catch
@@ -305,26 +296,6 @@ public partial class InstantRefill : Script
             _luiPool.Add(_luiRewardInsuranceMenu);
             ConfigureKeyboardOnlyVehicleMenu(_luiRewardInsuranceMenu);
             _luiRewardInsuranceMenu.Visible = false;
-        }
-        catch
-        {
-        }
-    }
-
-    private void EnsureRewardBribeMenu()
-    {
-        try
-        {
-            if (_luiRewardBribeMenu != null)
-                return;
-
-            _luiRewardBribeMenu = new NativeMenu(
-              T("RewardBribeMenuTitle", "Secret bribe"),
-              T("RewardBribeMenuDescription", "Chi tiết hối lộ truy nã"));
-
-            _luiPool.Add(_luiRewardBribeMenu);
-            ConfigureKeyboardOnlyVehicleMenu(_luiRewardBribeMenu);
-            _luiRewardBribeMenu.Visible = false;
         }
         catch
         {
@@ -404,6 +375,14 @@ public partial class InstantRefill : Script
         pointsItem.Description = T("RewardCurrentPointsDescription", "Số điểm hiện tại đang có.");
         _luiRewardRootMenu.Add(pointsItem);
 
+        long dirtyBalance = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+        _illegalMoneyCurrentItem = new NativeItem(T("RewardCurrentIllegalMoneyLabel", "Tiền bất hợp pháp hiện có:"));
+        _illegalMoneyCurrentItem.AltTitle = FormatCash(dirtyBalance);
+        _illegalMoneyCurrentItem.Description = T(
+            "RewardCurrentIllegalMoneyDescription",
+            "Số tiền bất hợp pháp hiện tại mà nhân vật này đang sở hữu.");
+        _luiRewardRootMenu.Add(_illegalMoneyCurrentItem);
+
         var vehicleItem = new NativeItem(T("RewardVehicleMenuLabel", "1. Siêu phẩm phương tiện"));
         vehicleItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
         vehicleItem.Description = T("RewardVehicleMenuDescription", "Mở danh sách siêu phẩm.");
@@ -422,16 +401,7 @@ public partial class InstantRefill : Script
         };
         _luiRewardRootMenu.Add(insuranceItem);
 
-        var bribeItem = new NativeItem(T("RewardBribeMenuLabel", "3. Hối lộ sao truy nã"));
-        bribeItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
-        bribeItem.Description = T("RewardBribeMenuDescription", "Hối lộ cảnh sát.");
-        bribeItem.Activated += (s, e) =>
-        {
-            OpenRewardBribeMenu();
-        };
-        _luiRewardRootMenu.Add(bribeItem);
-
-        var illegalMoneyItem = new NativeItem(T("RewardIllegalMoneyMenuLabel", "4. Quy đổi tiền bất hợp pháp"));
+        var illegalMoneyItem = new NativeItem(T("RewardIllegalMoneyMenuLabel", "3. Quy đổi tiền bất hợp pháp"));
         illegalMoneyItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
         illegalMoneyItem.Description = T("RewardIllegalMoneyMenuDescription", "Đổi tiền bất hợp pháp sang tiền mặt qua Maze Bank hoặc Smuggler.");
         illegalMoneyItem.Activated += (s, e) =>
@@ -484,7 +454,7 @@ public partial class InstantRefill : Script
         {
             Ped p = Game.Player.Character;
             if (p == null || !p.Exists())
-                return "Không xác định";
+                return "N/A";
 
             int hash = p.Model.Hash;
 
@@ -492,12 +462,76 @@ public partial class InstantRefill : Script
             if (hash == HASH_FRANKLIN) return "Franklin Clinton";
             if (hash == HASH_TREVOR) return "Trevor Philips";
 
-            return "Không xác định";
+            return "N/A";
         }
         catch
         {
-            return "Không xác định";
+            return "N/A";
         }
+    }
+
+    private string GetSmugglerContactName()
+    {
+        return T("RewardSmugglerContactName", "Smuggler");
+    }
+
+    private void ArmSmugglerDeal()
+    {
+        _smugglerRedeemArmed = true;
+        _smugglerExpireGameTime = Game.GameTime + SmugglerLifetimeMs;
+    }
+
+    private void ResetSmugglerDealState()
+    {
+        _smugglerRedeemArmed = false;
+        _smugglerConvertAmount = -1;
+        _smugglerExpectedCash = -1;
+        _smugglerExpireGameTime = -1;
+    }
+
+    private void AbortSmugglerDeal(string subtitleKey = null)
+    {
+        try
+        {
+            if (_luiSmugglerTradeMenu != null)
+                _luiSmugglerTradeMenu.Visible = false;
+        }
+        catch { }
+
+        try
+        {
+            if (_luiSmugglerDetailMenu != null)
+                _luiSmugglerDetailMenu.Visible = false;
+        }
+        catch { }
+
+        ResetSmugglerDealState();
+        DespawnSmugglerNpc();
+
+        if (!string.IsNullOrWhiteSpace(subtitleKey))
+        {
+            GTA.UI.Screen.ShowSubtitle(
+                T(subtitleKey, "~y~Smuggler đã rời đi vì quá thời gian chờ giao dịch."),
+                3000);
+        }
+    }
+
+    private void ProcessSmugglerLifetime()
+    {
+        try
+        {
+            if (!_smugglerRedeemArmed)
+                return;
+
+            if (_smugglerExpireGameTime <= 0)
+                return;
+
+            if (Game.GameTime < _smugglerExpireGameTime)
+                return;
+
+            AbortSmugglerDeal("RewardSmugglerExpired");
+        }
+        catch { }
     }
 
     private bool IsNearMazeBankAtm()
@@ -917,11 +951,11 @@ public partial class InstantRefill : Script
         _smugglerBalanceItem = new NativeItem(
             string.Format(T("RewardSmugglerBalanceLabel", "Số tiền bất hợp pháp: {0}"), FormatCash(dirty)));
         _smugglerRatioItem = new NativeItem(
-            T("RewardSmugglerRatioLabel", "Tỷ lệ quy đổi: 1:100"));
+            T("RewardSmugglerRatioLabel", "Tỷ lệ quy đổi: 1:82"));
 
         _smugglerOwnerItem.Description = T("RewardSmugglerOwnerDesc", "Nhân vật hiện tại.");
         _smugglerBalanceItem.Description = T("RewardSmugglerBalanceDesc", "Số tiền bất hợp pháp mà bạn đang sở hữu.");
-        _smugglerRatioItem.Description = T("RewardSmugglerRatioDesc", "$100 tiền bất hợp pháp sẽ đổi được $1 tiền mặt.");
+        _smugglerRatioItem.Description = T("RewardSmugglerRatioDesc", "$82 tiền bất hợp pháp sẽ đổi được $1 tiền mặt.");
 
         _luiSmugglerDetailMenu.Add(_smugglerOwnerItem);
         _luiSmugglerDetailMenu.Add(_smugglerBalanceItem);
@@ -930,7 +964,7 @@ public partial class InstantRefill : Script
         var confirm = new NativeItem(T("RewardSmugglerDetailConfirm", "Xác nhận với Smuggler"));
         confirm.Activated += (s, e) =>
         {
-            _smugglerRedeemArmed = true;
+            ArmSmugglerDeal();
             SpawnSmugglerNpc();
 
             CloseRewardMenus(false);
@@ -1012,7 +1046,7 @@ public partial class InstantRefill : Script
         _smugglerBalanceItem = new NativeItem(
             string.Format(T("RewardSmugglerBalanceLabel", "Số tiền bất hợp pháp: {0}"), FormatCash(dirty)));
         _smugglerRatioItem = new NativeItem(
-            T("RewardSmugglerRatioLabel", "Tỷ lệ quy đổi: 1:100"));
+            T("RewardSmugglerRatioLabel", "Tỷ lệ quy đổi: 1:82"));
 
         _smugglerAmountItem = new NativeItem(
             string.Format(T("RewardSmugglerAmountLabel", "Số tiền cần đổi: {0}"),
@@ -1024,7 +1058,7 @@ public partial class InstantRefill : Script
 
         _smugglerOwnerItem.Description = T("RewardSmugglerOwnerDesc", "Nhân vật hiện tại.");
         _smugglerBalanceItem.Description = T("RewardSmugglerBalanceDesc", "Số tiền bất hợp pháp mà bạn đang sở hữu.");
-        _smugglerRatioItem.Description = T("RewardSmugglerRatioDesc", "$100 tiền bất hợp pháp sẽ đổi được $1 tiền mặt.");
+        _smugglerRatioItem.Description = T("RewardSmugglerRatioDesc", "$82 tiền bất hợp pháp sẽ đổi được $1 tiền mặt.");
         _smugglerAmountItem.Description = T("RewardSmugglerAmountDesc", "Hãy nhập số tiền cần đổi vào đây.");
         _smugglerReceiveItem.Description = T("RewardSmugglerReceiveDesc", "Số tiền đã được quyết định.");
 
@@ -1122,9 +1156,7 @@ public partial class InstantRefill : Script
                 SetBlipName(_smugglerBlip, T("RewardSmugglerBlipName", "Smuggler"));
             }
         }
-        catch
-        {
-        }
+        catch { }
     }
 
     private Ped TryCreatePed(string modelName, Vector3 position)
@@ -1215,12 +1247,16 @@ public partial class InstantRefill : Script
             }
         }
         catch { }
+
+        _smugglerExpireGameTime = -1;
     }
 
     private void UpdateSmugglerPrompt()
     {
         try
         {
+            ProcessSmugglerLifetime();
+
             if (!_smugglerRedeemArmed)
                 return;
 
@@ -1244,6 +1280,8 @@ public partial class InstantRefill : Script
     {
         try
         {
+            ProcessSmugglerLifetime();
+
             if (!_smugglerRedeemArmed)
                 return;
 
@@ -1324,10 +1362,12 @@ public partial class InstantRefill : Script
                 return;
             }
 
-            if (amount < 100)
+            if (amount < SmugglerConversionRate)
             {
                 GTA.UI.Screen.ShowSubtitle(
-                    T("RewardSmugglerMinimumAmount", "Số tiền quy đổi ~HUD_COLOUR_DEGEN_YELLOW~tối thiểu~s~ là ~HUD_COLOUR_DEGEN_GREEN~$100.~s~"),
+                    string.Format(
+                        T("RewardSmugglerMinimumAmount", "Số tiền quy đổi ~HUD_COLOUR_DEGEN_YELLOW~tối thiểu~s~ là ~HUD_COLOUR_DEGEN_GREEN~{0}.~s~"),
+                        FormatCash(SmugglerConversionRate)),
                     2500);
                 return;
             }
@@ -1343,7 +1383,7 @@ public partial class InstantRefill : Script
             }
 
             _smugglerConvertAmount = amount;
-            _smugglerExpectedCash = Math.Max(1, amount / 100);
+            _smugglerExpectedCash = Math.Max(1, amount / SmugglerConversionRate);
 
             UpdateSmugglerTradeMenuVisuals();
             PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
@@ -1363,7 +1403,7 @@ public partial class InstantRefill : Script
         {
             long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
 
-            if (_smugglerConvertAmount < 100)
+            if (_smugglerConvertAmount < SmugglerConversionRate)
             {
                 GTA.UI.Screen.ShowSubtitle(
                     T("RewardSmugglerNeedAmount", "~HUD_COLOUR_DEGEN_YELLOW~Hãy nhập số tiền cần đổi trước.~s~"),
@@ -1380,7 +1420,7 @@ public partial class InstantRefill : Script
                 return;
             }
 
-            long receive = Math.Max(1, _smugglerConvertAmount / 100);
+            long receive = Math.Max(1, _smugglerConvertAmount / SmugglerConversionRate);
             if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(_smugglerConvertAmount))
             {
                 GTA.UI.Screen.ShowSubtitle(
@@ -1420,16 +1460,18 @@ public partial class InstantRefill : Script
             if (_smugglerContactAdded)
                 return;
 
+            string contactName = GetSmugglerContactName();
+
             foreach (var c in phone.Contacts)
             {
-                if (c != null && string.Equals(c.Name, "Smuggler", StringComparison.OrdinalIgnoreCase))
+                if (c != null && string.Equals(c.Name, contactName, StringComparison.OrdinalIgnoreCase))
                 {
                     _smugglerContactAdded = true;
                     return;
                 }
             }
 
-            var contact = new iFruitContact("Smuggler")
+            var contact = new iFruitContact(contactName)
             {
                 Active = true,
                 DialTimeout = SmugglerContactDialTimeoutMs,
@@ -1448,7 +1490,7 @@ public partial class InstantRefill : Script
     {
         try
         {
-            _smugglerRedeemArmed = true;
+            ArmSmugglerDeal();
             SpawnSmugglerNpc();
 
             Notification.Show(
@@ -1481,7 +1523,7 @@ public partial class InstantRefill : Script
         _illegalMoneyBalanceItem = new NativeItem(
             string.Format(T("RewardIllegalMoneyBalanceLabel", "Số tiền bất hợp pháp: {0}"), FormatCash(dirty)));
         _illegalMoneyRatioItem = new NativeItem(
-            T("RewardIllegalMoneyRatioLabel", "Tỷ lệ quy đổi: 1:10"));
+            T("RewardIllegalMoneyRatioLabel", "Tỷ lệ quy đổi: 1:18"));
 
         _illegalMoneyAmountItem = new NativeItem(
             string.Format(T("RewardIllegalMoneyAmountLabel", "Số tiền cần đổi: {0}"),
@@ -1624,10 +1666,12 @@ public partial class InstantRefill : Script
                 return;
             }
 
-            if (amount < 10)
+            if (amount < MazeBankConversionRate)
             {
                 GTA.UI.Screen.ShowSubtitle(
-                    T("RewardIllegalMoneyMinimumAmount", "~y~Số tiền quy đổi tối thiểu là $10."),
+                    string.Format(
+                        T("RewardIllegalMoneyMinimumAmount", "~y~Số tiền quy đổi tối thiểu là {0}."),
+                        FormatCash(MazeBankConversionRate)),
                     2500);
                 return;
             }
@@ -1666,7 +1710,7 @@ public partial class InstantRefill : Script
         {
             long dirty = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
 
-            if (_illegalMoneyConvertAmount < 10)
+            if (_illegalMoneyConvertAmount < MazeBankConversionRate)
             {
                 GTA.UI.Screen.ShowSubtitle(
                     T("RewardIllegalMoneyNeedAmount", "~y~Hãy nhập số tiền cần đổi trước."),
@@ -2179,208 +2223,6 @@ public partial class InstantRefill : Script
         catch
         {
             CloseRewardInsuranceMenu(false);
-        }
-    }
-
-    private void OpenRewardBribeMenu()
-    {
-        try
-        {
-            EnsureRewardBribeMenu();
-            BuildRewardBribeMenu();
-
-            if (_luiRewardRootMenu != null) _luiRewardRootMenu.Visible = false;
-            if (_luiRewardInsuranceMenu != null) _luiRewardInsuranceMenu.Visible = false;
-            if (_luiRewardDetailMenu != null) _luiRewardDetailMenu.Visible = false;
-
-            _luiRewardBribeMenu.Visible = true;
-            Interval = 0;
-            PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-        }
-        catch
-        {
-        }
-    }
-
-    private void BuildRewardBribeMenu()
-    {
-        if (_luiRewardBribeMenu == null)
-            return;
-
-        _luiRewardBribeMenu.Clear();
-
-        _rewardBribeStars = 0;
-        _rewardBribeLevelFocused = false;
-
-        _luiRewardBribeServiceItem = new NativeItem(T("RewardBribeServiceLabel", "Dịch vụ: Hối lộ giảm tội"));
-        _luiRewardBribeServiceItem.Description = T("RewardBribeServiceDescription", "Dùng điểm thưởng để giảm sao truy nã.");
-        _luiRewardBribeServiceItem.Selected += (s, e) =>
-        {
-            _rewardBribeLevelFocused = false;
-        };
-        _luiRewardBribeMenu.Add(_luiRewardBribeServiceItem);
-
-        _luiRewardBribeLevelItem = new NativeItem(T("RewardBribeLevelLabel", "Chọn mức độ giảm tội"));
-        _luiRewardBribeLevelItem.Selected += (s, e) =>
-        {
-            _rewardBribeLevelFocused = true;
-            UpdateRewardBribeMenuVisuals();
-        };
-        _luiRewardBribeMenu.Add(_luiRewardBribeLevelItem);
-
-        _luiRewardBribeConfirmItem = new NativeItem(T("RewardBribeConfirmLabel", "Xác nhận giảm sao truy nã"));
-        _luiRewardBribeConfirmItem.Selected += (s, e) =>
-        {
-            _rewardBribeLevelFocused = false;
-        };
-        _luiRewardBribeConfirmItem.Activated += (s, e) =>
-        {
-            ConfirmWantedBribeFromMenu();
-        };
-        _luiRewardBribeMenu.Add(_luiRewardBribeConfirmItem);
-
-        var back = new NativeItem(T("RewardBribeBackLabel", "Từ chối sử dụng dịch vụ"));
-        back.Activated += (s, e) =>
-        {
-            CloseRewardBribeMenu(false);
-            ShowRewardRootMenu();
-        };
-        _luiRewardBribeMenu.Add(back);
-
-        UpdateRewardBribeMenuVisuals();
-    }
-
-    private void UpdateRewardBribeMenuVisuals()
-    {
-        try
-        {
-            if (_luiRewardBribeLevelItem != null)
-            {
-                _luiRewardBribeLevelItem.AltTitle = $"\u2190 {_rewardBribeStars} \u2192";
-            }
-
-            if (_luiRewardBribeConfirmItem != null)
-            {
-                long cost = (long)_rewardBribeStars * RewardBribeCostPerStar;
-                _luiRewardBribeConfirmItem.Description = T(
-                    "RewardBribeConfirmDescription",
-                    "Chi phí chi trả dự kiến: ${cost} điểm thưởng.",
-                    "{cost}", FormatML(cost)
-                    );
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    private void CloseRewardBribeMenu(bool setCooldown)
-    {
-        try
-        {
-            if (_luiRewardBribeMenu != null)
-                _luiRewardBribeMenu.Visible = false;
-        }
-        catch
-        {
-        }
-
-        _rewardBribeLevelFocused = false;
-        _rewardBribeStars = 0;
-
-        if (setCooldown)
-            EnsureHelpBoxCooldownSet();
-    }
-
-    private void AdjustRewardBribeStars(int delta)
-    {
-        try
-        {
-            _rewardBribeStars += delta;
-            if (_rewardBribeStars < 0) _rewardBribeStars = 0;
-            if (_rewardBribeStars > RewardBribeMaxStars) _rewardBribeStars = RewardBribeMaxStars;
-
-            UpdateRewardBribeMenuVisuals();
-            PlayFrontendSound("NAV_UP_DOWN", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-        }
-        catch
-        {
-        }
-    }
-
-    private int GetCurrentWantedLevel()
-    {
-        try
-        {
-            int playerId = Function.Call<int>(Hash.PLAYER_ID);
-            return Function.Call<int>(Hash.GET_PLAYER_WANTED_LEVEL, playerId);
-        }
-        catch
-        {
-            return 0;
-        }
-    }
-
-    private void SetWantedLevel(int stars)
-    {
-        try
-        {
-            if (stars < 0) stars = 0;
-            if (stars > 5) stars = 5;
-
-            int playerId = Function.Call<int>(Hash.PLAYER_ID);
-            Function.Call(Hash.SET_PLAYER_WANTED_LEVEL, playerId, stars, false);
-            Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, playerId, true);
-        }
-        catch
-        {
-        }
-    }
-
-    private void ConfirmWantedBribeFromMenu()
-    {
-        try
-        {
-            int currentWanted = GetCurrentWantedLevel();
-            int reduceStars = Math.Min(currentWanted, _rewardBribeStars);
-
-            if (reduceStars <= 0)
-            {
-                GTA.UI.Screen.ShowSubtitle(
-                  T("RewardBribeNoWantedLevel", "~HUD_COLOUR_DEGEN_YELLOW~Hiện không có sao truy nã để giảm."),
-                   2500
-                );
-                PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-                return;
-            }
-
-            long cost = (long)reduceStars * RewardBribeCostPerStar;
-
-            ReloadSpendingAccumulatorFromDisk();
-
-            if (_spendingAccumulator.Total < cost)
-            {
-                GTA.UI.Screen.ShowSubtitle(
-                  T("RewardBribeNotEnoughPoints", "~HUD_COLOUR_DEGEN_RED~Không đủ điểm để hối lộ cho mức sao này!!!"),
-                   3000
-                );
-                PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-                return;
-            }
-
-            _spendingAccumulator.SubtractFromSpendingAccumulator(cost);
-
-            int newWanted = Math.Max(0, currentWanted - reduceStars);
-            SetWantedLevel(newWanted);
-
-            PlayFrontendSound("PURCHASE", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-
-            CloseRewardBribeMenu(false);
-            ShowRewardRootMenu();
-        }
-        catch
-        {
-            CloseRewardBribeMenu(false);
         }
     }
 }

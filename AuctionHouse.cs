@@ -11,6 +11,9 @@ public partial class InstantRefill : Script
 {
     private static string AuctionContactName => L("AuctionContactName", "Velocity Auctions");
 
+    private const int AuctionDefaultMinDelta = -25;
+    private const int AuctionDefaultMaxDelta = 25;
+
     private const int AuctionRollIntervalMs = 105000;
     private const int AuctionDurationMs = 180000;
     private const int AuctionPriceTickMs = 20000;
@@ -74,6 +77,12 @@ public partial class InstantRefill : Script
     private int _auctionCurrentPrice = 0;
     private int _auctionStartingPrice = 0;
     private AuctionPhase _auctionPhase = AuctionPhase.None;
+
+    // Biên độ áp dụng cho đúng 1 phiên đấu giá hiện tại.
+    // Nếu không có thao túng từ Lester thì sẽ quay về mặc định -25% ~ +25%.
+    private bool _auctionHasCustomDeltaRange = false;
+    private int _auctionSessionMinDelta = AuctionDefaultMinDelta;
+    private int _auctionSessionMaxDelta = AuctionDefaultMaxDelta;
 
     private CustomiFruit _auctionPhoneInstance = null;
     private bool _auctionContactAdded = false;
@@ -283,6 +292,10 @@ public partial class InstantRefill : Script
             _auctionEndGameTime = Game.GameTime + AuctionDurationMs;
             _auctionPhaseDueGameTime = Game.GameTime + AuctionPriceTickMs;
 
+            // Lấy biên độ từ Lester đúng 1 lần cho phiên đấu giá này.
+            // Nếu không có thao túng pending thì dùng mặc định.
+            ApplyAuctionManipulationRangeForThisSession();
+
             ResetAuctionBidderCycle();
             PlayFrontendSound("LOCAL_PLYR_CASH_COUNTER_COMPLETE", "DLC_HEISTS_GENERAL_FRONTEND_SOUNDS");
 
@@ -329,7 +342,17 @@ public partial class InstantRefill : Script
                 return;
 
             int oldPrice = _auctionCurrentPrice;
-            int deltaPct = _rng.Next(-25, 26);
+            int minDelta = _auctionHasCustomDeltaRange ? _auctionSessionMinDelta : AuctionDefaultMinDelta;
+            int maxDelta = _auctionHasCustomDeltaRange ? _auctionSessionMaxDelta : AuctionDefaultMaxDelta;
+
+            if (minDelta > maxDelta)
+            {
+                int tmp = minDelta;
+                minDelta = maxDelta;
+                maxDelta = tmp;
+            }
+
+            int deltaPct = _rng.Next(minDelta, maxDelta + 1);
             double factor = 1.0 + (deltaPct / 100.0);
             int newPrice = (int)Math.Round(oldPrice * factor, MidpointRounding.AwayFromZero);
 
@@ -395,9 +418,50 @@ public partial class InstantRefill : Script
         _auctionCurrentPrice = 0;
 
         _auctionCycleStartGameTime = 0;
+        ClearAuctionManipulationRange();
 
         // Quan trọng: không reset về 0 nữa, mà hẹn phiên tiếp theo sau 3-4 ngày
         ScheduleNextAuctionSession();
+    }
+
+    private void ApplyAuctionManipulationRangeForThisSession()
+    {
+        try
+        {
+            int minDelta;
+            int maxDelta;
+            int fee;
+
+            // Dùng đúng 1 lần: lấy ra khỏi state của Lester ngay khi phiên đấu giá bắt đầu.
+            if (LesterAuctionManipulationState.TryTakePendingManipulationForCurrentCharacter(out minDelta, out maxDelta, out fee))
+            {
+                if (minDelta > maxDelta)
+                {
+                    int tmp = minDelta;
+                    minDelta = maxDelta;
+                    maxDelta = tmp;
+                }
+
+                _auctionHasCustomDeltaRange = true;
+                _auctionSessionMinDelta = minDelta;
+                _auctionSessionMaxDelta = maxDelta;
+                return;
+            }
+        }
+        catch
+        {
+        }
+
+        _auctionHasCustomDeltaRange = false;
+        _auctionSessionMinDelta = AuctionDefaultMinDelta;
+        _auctionSessionMaxDelta = AuctionDefaultMaxDelta;
+    }
+
+    private void ClearAuctionManipulationRange()
+    {
+        _auctionHasCustomDeltaRange = false;
+        _auctionSessionMinDelta = AuctionDefaultMinDelta;
+        _auctionSessionMaxDelta = AuctionDefaultMaxDelta;
     }
 
     private void QueueAuctionSoldDelivery(VehicleEntry soldVehicle)

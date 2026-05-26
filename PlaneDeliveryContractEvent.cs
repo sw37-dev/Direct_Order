@@ -201,6 +201,9 @@ public class PlaneDeliveryContractEvent : Script
 
     public static void RequestSpawn()
     {
+        if (!PrimeAutoHandoverBridge.CanTriggerDeliveryContractsForCurrentCharacter())
+            return;
+
         DeliveryContractBridge.PlanePendingStart = true;
     }
 
@@ -209,6 +212,16 @@ public class PlaneDeliveryContractEvent : Script
         if (Game.IsLoading)
         {
             ResetRuntimeState();
+            return;
+        }
+
+        if (!PrimeAutoHandoverBridge.CanTriggerDeliveryContractsForCurrentCharacter())
+        {
+            DeliveryContractBridge.PlanePendingStart = false;
+
+            if (_state != EventState.Idle)
+                CleanupAllAndReturnToIdle(true);
+
             return;
         }
 

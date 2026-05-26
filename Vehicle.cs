@@ -16,6 +16,8 @@ public partial class InstantRefill : Script
     private static string LT(string key, string fallback, params string[] tokensAndValues)
         => Language.ReplaceTokens(Language.Get(key, fallback), tokensAndValues);
 
+    public static InstantRefill Instance { get; private set; }
+
     // Thêm gần nhóm field LemonUI của class
     private string DiscountTicketHelpText
     => L("VehicleDetail_TicketHelp",
@@ -55,6 +57,9 @@ public partial class InstantRefill : Script
     private Vehicle _luiPreviewVehicle = null;
     private uint _luiPreviewVehicleHash = 0;
 
+    private CityBlackoutHackerState.VehicleUnlockActionMode _luiDetailUnlockActionMode
+    = CityBlackoutHackerState.VehicleUnlockActionMode.UnlockAndBuy;
+
     private static readonly BadgeSet _lockBadge = new BadgeSet
     {
         NormalDictionary = "commonmenu",
@@ -64,6 +69,11 @@ public partial class InstantRefill : Script
     };
 
     private bool _luiDetailDirtyOnlyVehicle = false;
+
+    private bool _luiDetailHasUnlockPrice = false;
+    private int _luiDetailUnlockPrice = 0;
+    private CityBlackoutHackerState.VehicleUnlockRequester _luiDetailUnlockRequester
+        = CityBlackoutHackerState.VehicleUnlockRequester.None;
 
     private sealed class RightBadgeMenuItem : NativeItem
     {
@@ -307,6 +317,18 @@ public partial class InstantRefill : Script
         {
             try { GTA.UI.Screen.ShowSubtitle("~HUD_COLOUR_DEGEN_RED~Lỗi khi đọc file XML phương tiện.", 3000); } catch { }
         }
+    }
+
+    private int ComputeVehicleUnlockPrice(
+    int purchasePrice,
+    CityBlackoutHackerState.VehicleUnlockRequester requester,
+    CityBlackoutHackerState.VehicleUnlockActionMode actionMode)
+    {
+        double multiplier = actionMode == CityBlackoutHackerState.VehicleUnlockActionMode.ConvertToCash
+            ? (requester == CityBlackoutHackerState.VehicleUnlockRequester.Rickie ? 0.41 : 1.13)
+            : (requester == CityBlackoutHackerState.VehicleUnlockRequester.Rickie ? 0.12 : 0.45);
+
+        return Math.Max(0, (int)Math.Ceiling(Math.Max(0, purchasePrice) * multiplier));
     }
 
     // -------------------------- Initialize vehicles (NEW) --------------------------
@@ -1519,7 +1541,6 @@ public partial class InstantRefill : Script
             }
             else
             {
-                item.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
                 item.Description = LT("VehicleMenu_OpenDetailHint", "Chọn một chiếc phương tiện để xem chi tiết phương tiện đó.");
             }
 
@@ -1629,6 +1650,24 @@ public partial class InstantRefill : Script
 
         _luiDetailPrice = ComputeVehicleMenuPrice(chosen, _luiDetailForceFixedSalePrice, false);
 
+        // --- ĐOẠN MÃ THAY THẾ THEO HƯỚNG DẪN MỚI (SAU KHI TÍNH _luiDetailPrice) ---
+        bool unlockTarget =
+            CityBlackoutHackerState.TryGetVehicleUnlockSelectionForCurrentCharacter(
+                out uint unlockHash,
+                out string unlockName,
+                out var unlockRequester,
+                out var unlockActionMode) &&
+            unlockHash == chosen.Hash;
+
+        _luiDetailHasUnlockPrice = dirtyOnly && unlockTarget;
+        _luiDetailUnlockRequester = unlockRequester;
+        _luiDetailUnlockActionMode = unlockActionMode;
+
+        _luiDetailUnlockPrice = _luiDetailHasUnlockPrice
+            ? ComputeVehicleUnlockPrice(_luiDetailPrice, unlockRequester, unlockActionMode)
+            : 0;
+        // -------------------------------------------------------------------------
+
         _luiDetailPlate = GenerateRandomPlate();
         _luiReturnMenu = returnMenu ?? _luiVehicleListMenu;
         _luiPlateEdited = false;
@@ -1681,7 +1720,24 @@ public partial class InstantRefill : Script
             () => SpawnVehiclePreview(chosen)
         );
 
-        // item 3: giá
+        // [ĐÃ CẬP NHẬT] Đổi dòng hiển thị phí mở khóa / chuyển hóa trước item "Giá mua"
+        if (_luiDetailHasUnlockPrice && dirtyOnly)
+        {
+            string unlockLabel = _luiDetailUnlockActionMode == CityBlackoutHackerState.VehicleUnlockActionMode.ConvertToCash
+                ? L("VehicleDetail_ConvertFeeLabel", "Phí chuyển hóa")
+                : L("VehicleDetail_UnlockPriceLabel", "Giá mở khóa");
+
+            AddReadOnlyMenuLine(
+                _luiVehicleDetailMenu,
+                LT("VehicleDetail_UnlockPrice", "{label}: ${price}",
+                   "{label}", unlockLabel,
+                   "{price}", _luiDetailUnlockPrice.ToString("N0")),
+                null,
+                () => SpawnVehiclePreview(chosen)
+            );
+        }
+
+        // item 3: giá mua
         AddReadOnlyMenuLine(
             _luiVehicleDetailMenu,
             LT("VehicleDetail_Price", "Giá mua: ${price}", "{price}", price.ToString("N0")),
@@ -1764,6 +1820,15 @@ public partial class InstantRefill : Script
             _luiUseDiscountTicket = ticketItem.Checked;
             _luiDetailPrice = ComputeVehicleMenuPrice(chosen, _luiDetailForceFixedSalePrice, _luiUseDiscountTicket);
 
+            // Cập nhật giá mở khóa sau khi tính lại giá mua nếu xe có giá mở khóa
+            if (_luiDetailHasUnlockPrice)
+            {
+                _luiDetailUnlockPrice = ComputeVehicleUnlockPrice(
+                    _luiDetailPrice,
+                    _luiDetailUnlockRequester,
+                    _luiDetailUnlockActionMode);
+            }
+
             // Rebuild lại và truyền tiếp giá trị dirtyOnly khi đổi trạng thái giảm giá
             BuildVehicleDetailMenu(chosen, returnMenu, _luiDetailPrice, _luiDetailPlate, dirtyOnly);
             ConfigureKeyboardOnlyVehicleMenu(_luiVehicleDetailMenu);
@@ -1775,19 +1840,41 @@ public partial class InstantRefill : Script
 
         _luiVehicleDetailMenu.Add(ticketItem);
 
-        // item 5: xác nhận mua
-        var confirm = _luiDetailDirtyOnlyVehicle
+        // item 5: xác nhận mua - Bỏ icon khóa khi đã có unlock và cập nhật description động
+        var confirm = (dirtyOnly && !_luiDetailHasUnlockPrice)
             ? new RightBadgeMenuItem(
-            L("VehicleDetail_ConfirmBuy", "Xác nhận mua phương tiện"),
-            L("Vehicle_DirtyMoneyOnly", "Xe này chỉ có thể thanh toán bằng tiền bất hợp pháp."),
-            _lockBadge,
-            () => true)
+                L("VehicleDetail_ConfirmBuy", "Xác nhận mua phương tiện"),
+                L("Vehicle_DirtyMoneyOnly", "Phương tiện này chỉ có thể thanh toán bằng tiền bất hợp pháp."),
+                _lockBadge,
+                () => true)
             : new NativeItem(L("VehicleDetail_ConfirmBuy", "Xác nhận mua phương tiện"));
 
-        // Thay đổi description của nút xác nhận dựa trên biến dirtyOnly theo yêu cầu
-        confirm.Description = dirtyOnly
-            ? L("VehicleDetail_DirtyOnlyConfirmDesc", "Xe này chỉ thanh toán bằng tiền bất hợp pháp.")
-            : L("VehicleDetail_ConfirmHint", "Nhấn Enter để xác nhận mua.");
+        // [ĐÃ CẬP NHẬT] Đổi description của nút xác nhận theo logic mới
+        if (_luiDetailHasUnlockPrice && dirtyOnly)
+        {
+            if (_luiDetailUnlockActionMode == CityBlackoutHackerState.VehicleUnlockActionMode.ConvertToCash)
+            {
+                confirm.Description = _luiDetailUnlockRequester == CityBlackoutHackerState.VehicleUnlockRequester.Rickie
+                    ? L("VehicleDetail_ConvertRickieDesc",
+                        "Phương tiện này sẽ được thanh toán hoàn toàn bằng tiền mặt. Sau khi mua xong có thể bị truy nã sau 10 giây.")
+                    : L("VehicleDetail_ConvertPaigeDesc",
+                        "Phương tiện này sẽ được thanh toán hoàn toàn bằng tiền mặt.");
+            }
+            else
+            {
+                confirm.Description = _luiDetailUnlockRequester == CityBlackoutHackerState.VehicleUnlockRequester.Rickie
+                    ? L("VehicleDetail_UnlockRickieDesc",
+                        "Xe này đã được mở khóa tạm thời. Giá mở khóa sẽ trừ vào tiền bất hợp pháp, giá mua trừ vào tiền của nhân vật. Sau khi mua xong có thể sẽ bị truy nã.")
+                    : L("VehicleDetail_UnlockPaigeDesc",
+                        "Phương tiện này đang được mở khóa tạm thời. Giá mở khóa sẽ trừ tiền bất hợp pháp, giá mua phương tiện sẽ được trừ vào tiền của nhân vật.");
+            }
+        }
+        else
+        {
+            confirm.Description = dirtyOnly
+                ? L("VehicleDetail_DirtyOnlyConfirmDesc", "Xe này chỉ thanh toán bằng tiền bất hợp pháp.")
+                : L("VehicleDetail_ConfirmHint", "Nhấn Enter để xác nhận mua.");
+        }
 
         confirm.Selected += (s, e) =>
         {
@@ -1852,20 +1939,36 @@ public partial class InstantRefill : Script
                 }
             }
 
-            // Kiểm tra tiền theo loại xe
-            if (dirtyOnly)
-            {
-                long dirtyBalance = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
+            // Logic kiểm tra và tính toán Unlock xe bằng tiền bẩn (Đã đổi phần đọc session)
+            CityBlackoutHackerState.VehicleUnlockRequester unlockRequester =
+                CityBlackoutHackerState.VehicleUnlockRequester.None;
 
-                if (dirtyBalance < finalCost)
-                {
-                    Notification.Show(
-                        LT("Vehicle_NoDirtyMoney", "Bạn không đủ tiền bất hợp pháp để mua phương tiện này. Giá: {price}", "{price}", finalCost.ToString("N0")));
-                    PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-                    return;
-                }
-            }
-            else
+            CityBlackoutHackerState.VehicleUnlockActionMode unlockActionMode =
+                CityBlackoutHackerState.VehicleUnlockActionMode.UnlockAndBuy;
+
+            uint unlockHash = 0;
+            string unlockName = string.Empty;
+
+            bool hasUnlockSelection =
+                dirtyOnly &&
+                CityBlackoutHackerState.TryGetVehicleUnlockSelectionForCurrentCharacter(
+                    out unlockHash,
+                    out unlockName,
+                    out unlockRequester,
+                    out unlockActionMode);
+
+            bool unlockActive = hasUnlockSelection && unlockHash == chosen.Hash;
+            bool cashConversionMode = unlockActive &&
+                unlockActionMode == CityBlackoutHackerState.VehicleUnlockActionMode.ConvertToCash;
+
+            int unlockCost = unlockActive
+                ? ComputeVehicleUnlockPrice(finalCost, unlockRequester, unlockActionMode)
+                : 0;
+
+            int totalCashCost = cashConversionMode ? finalCost + unlockCost : finalCost;
+
+            // Khối kiểm tra điều kiện giao xe (Chỉ áp dụng với xe mua bằng tiền mặt thông thường)
+            if (!dirtyOnly)
             {
                 string waypointReason;
                 if (!VehicleDelivery.CanUseWaypointDelivery(out waypointReason))
@@ -1874,28 +1977,124 @@ public partial class InstantRefill : Script
                     PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                     return;
                 }
+            }
 
+            // Khối kiểm tra số dư tài khoản (Đoạn kiểm tra tiền đã sửa đổi)
+            if (dirtyOnly)
+            {
+                if (cashConversionMode)
+                {
+                    if (Game.Player.Money < totalCashCost)
+                    {
+                        Notification.Show(
+                            NotificationIcon.Carsite,
+                            "Legendary Motorsport",
+                            L("Vehicle_NoMoney_Title", "Giao dịch thất bại"),
+                            LT("Vehicle_NoMoney",
+                               "Bạn không đủ tiền để mua phương tiện này. Tổng giá: ${price}",
+                               "{price}", totalCashCost.ToString("N0")));
+                        PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                        return;
+                    }
+                }
+                else if (unlockActive)
+                {
+                    if (CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter() < unlockCost)
+                    {
+                        Notification.Show(
+                            NotificationIcon.Carsite,
+                            "Legendary Motorsport",
+                            L("Vehicle_NoDirtyMoney_Title", "Giao dịch thất bại"),
+                            LT("Vehicle_NoDirtyMoney",
+                               "Bạn không đủ tiền bất hợp pháp để mở khóa phương tiện này. Giá mở khóa: {price}",
+                               "{price}", unlockCost.ToString("N0")));
+                        PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                        return;
+                    }
+
+                    if (Game.Player.Money < finalCost)
+                    {
+                        Notification.Show(
+                            NotificationIcon.Carsite,
+                            "Legendary Motorsport",
+                            L("Vehicle_NoMoney_Title", "Giao dịch thất bại"),
+                            LT("Vehicle_NoMoney",
+                               "Bạn không đủ tiền mặt để mua phương tiện này. Giá mua: ${price}",
+                               "{price}", finalCost.ToString("N0")));
+                        PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                        return;
+                    }
+                }
+                else
+                {
+                    if (CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter() < finalCost)
+                    {
+                        Notification.Show(
+                            NotificationIcon.Carsite,
+                            "Legendary Motorsport",
+                            L("Vehicle_NoDirtyMoney_Title", "Giao dịch thất bại"),
+                            LT("Vehicle_NoDirtyMoney",
+                               "Bạn không đủ tiền bất hợp pháp để mua phương tiện này. Giá: {price}",
+                               "{price}", finalCost.ToString("N0")));
+                        PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                        return;
+                    }
+                }
+            }
+            else
+            {
                 if (Game.Player.Money < finalCost)
                 {
-                    Notification.Show(LT(
-                        "Vehicle_NoMoney",
-                        "Bạn không đủ tiền để mua phương tiện này. Giá: ${price}",
-                        "{price}", finalCost.ToString("N0")
-                    ));
+                    Notification.Show(
+                        NotificationIcon.Carsite,
+                        "Legendary Motorsport",
+                        L("Vehicle_NoMoney_Title", "Giao dịch thất bại"),
+                        LT("Vehicle_NoMoney",
+                           "Bạn không đủ tiền để mua phương tiện này. Giá: ${price}",
+                           "{price}", finalCost.ToString("N0")));
                     PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                     return;
                 }
             }
 
-            // Trừ tiền
+            // Khối thực hiện trừ tiền tài khoản (Đoạn trừ tiền đã sửa đổi)
             if (dirtyOnly)
             {
-                if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(finalCost))
+                if (cashConversionMode)
                 {
-                    Notification.Show(
-                        LT("Vehicle_NoDirtyMoney", "Bạn không đủ tiền bất hợp pháp để mua phương tiện này. Giá: {price}", "{price}", finalCost.ToString("N0")));
-                    PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-                    return;
+                    Game.Player.Money -= totalCashCost;
+                }
+                else if (unlockActive)
+                {
+                    if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(unlockCost))
+                    {
+                        Notification.Show(
+                            NotificationIcon.Carsite,
+                            "Legendary Motorsport",
+                            L("Vehicle_NoDirtyMoney_Title", "Giao dịch thất bại"),
+                            LT("Vehicle_NoDirtyMoney",
+                               "Bạn không đủ tiền bất hợp pháp để mở khóa phương tiện này. Giá mở khóa: {price}",
+                               "{price}", unlockCost.ToString("N0")));
+                        PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                        return;
+                    }
+
+                    Game.Player.Money -= finalCost;
+                }
+                else
+                {
+                    if (!CityBlackoutHackerState.TrySpendDirtyMoneyForCurrentCharacter(finalCost))
+                    {
+                        Notification.Show(
+                            NotificationIcon.Carsite,
+                            "Legendary Motorsport",
+                            L("Vehicle_NoDirtyMoney_Title", "Giao dịch thất bại"),
+                            LT("Vehicle_NoDirtyMoney",
+                               "Bạn không đủ tiền bất hợp pháp để mua phương tiện này. Giá: {price}",
+                               "{price}", finalCost.ToString("N0")));
+                        PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                        return;
+                    }
                 }
             }
             else
@@ -1903,16 +2102,19 @@ public partial class InstantRefill : Script
                 Game.Player.Money -= finalCost;
             }
 
-            AddToSpendingAccumulator(finalCost);
+            // Tích lũy chi tiêu (Đã đổi theo yêu cầu)
+            AddToSpendingAccumulator(finalCost + (unlockActive ? unlockCost : 0));
 
             if (_luiUseDiscountTicket)
                 TryConsumeVehicleDiscountTicket();
 
             ClearVehiclePreview();
 
-            int purchasePriceForRegister = finalCost;
+            // Đổi giá lưu vào PersistentManager.RegisterVehicle cho nhánh chuyển hóa
+            int purchasePriceForRegister = cashConversionMode ? totalCashCost : finalCost;
             string plateSnapshot = dirtyOnly ? "" : plateText;
 
+            // Thực hiện giao xe
             VehicleDelivery.RequestDelivery(chosen.Hash, player.Position, (veh) =>
             {
                 try
@@ -1942,6 +2144,17 @@ public partial class InstantRefill : Script
                 }
                 catch { }
             }, 150, 30000);
+
+            // Sau khi giao xe thành công: Xử lý xóa Session Unlock và Roll sao truy nã đối với Rickie (Giữ nguyên)
+            if (unlockActive)
+            {
+                if (unlockRequester == CityBlackoutHackerState.VehicleUnlockRequester.Rickie)
+                {
+                    CityBlackoutHackerState.ArmVehicleUnlockWantedRollForCurrentCharacter(10000, 0.30, 1);
+                }
+
+                CityBlackoutHackerState.ClearVehicleUnlockSelectionForCurrentCharacter();
+            }
 
             chosen.TimesPurchased = Math.Max(0, chosen.TimesPurchased + 1);
 

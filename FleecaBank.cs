@@ -15,6 +15,7 @@ using System.Drawing;
 
 public partial class FleecaBankLoanScript : Script
 {
+    private const long MAX_LOAN_PRINCIPAL = 260_000_000L;
     private string ContactName => L("Credit_ContactName", "Fleeca Bank");
     private string BankerDisplayName => L("Credit_BankerDisplayName", "Nhân viên ngân hàng");
 
@@ -499,6 +500,7 @@ public partial class FleecaBankLoanScript : Script
             if (_stateOwnerHash == currentHash && _stateLoaded)
             {
                 RefreshLoanMenuQuickPayText();
+                PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
                 return;
             }
 
@@ -524,6 +526,7 @@ public partial class FleecaBankLoanScript : Script
             }
 
             RefreshLoanMenuQuickPayText();
+            PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
         }
         catch (Exception ex)
         {
@@ -1017,7 +1020,7 @@ public partial class FleecaBankLoanScript : Script
                 200000000L,
                 220000000L,
                 245000000L,
-                260000000L
+                MAX_LOAN_PRINCIPAL
             };
 
             _loanPackageOptions.Clear();
@@ -1622,6 +1625,7 @@ public partial class FleecaBankLoanScript : Script
                 // Mở khóa xe và tắt chế độ thế chấp trước khi lưu trạng thái
                 UnlockAllCollateralVehiclesForCurrentCharacter();
                 _loanCollateralMode = false;
+                PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
 
                 SaveStateForOwner(currentHash);
                 RefreshLoanMenuQuickPayText();
@@ -1660,6 +1664,7 @@ public partial class FleecaBankLoanScript : Script
                 // Mở khóa các xe còn lại (nếu có) và tắt chế độ thế chấp trước khi lưu trạng thái
                 UnlockAllCollateralVehiclesForCurrentCharacter();
                 _loanCollateralMode = false;
+                PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
 
                 SaveStateForOwner(currentHash);
                 RefreshLoanMenuQuickPayText();
@@ -2140,7 +2145,7 @@ public partial class FleecaBankLoanScript : Script
             if (!EnsureFleecaBankAccessAllowed())
                 return;
 
-            amount = Math.Min(amount, 200_000_000L);
+            amount = Math.Min(amount, MAX_LOAN_PRINCIPAL);
             if (amount <= 0)
                 return;
 
@@ -2184,6 +2189,7 @@ public partial class FleecaBankLoanScript : Script
             SaveStateForOwner(currentHash);
             RefreshLoanMenuQuickPayText();
             RefreshCollateralMenuText();
+            PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
             // ---------------------------------------
 
             ShowFleecaNotification(
@@ -2245,6 +2251,7 @@ public partial class FleecaBankLoanScript : Script
                         // Giải phóng phương tiện thế chấp
                         UnlockAllCollateralVehiclesForCurrentCharacter();
                         _loanCollateralMode = false;
+                        PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
 
                         ShowFleecaNotification(
                             L("Credit_PaymentTitle", "Trả nợ"),
@@ -2311,6 +2318,7 @@ public partial class FleecaBankLoanScript : Script
                 // Giải phóng phương tiện thế chấp
                 UnlockAllCollateralVehiclesForCurrentCharacter();
                 _loanCollateralMode = false;
+                PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
 
                 ShowFleecaNotification(
                     L("Credit_SettleTitle", "Tất toán khoản nợ"),
@@ -2359,6 +2367,7 @@ public partial class FleecaBankLoanScript : Script
             object chosen = candidates[_rng.Next(candidates.Count)];
             RemovePersistentVehicleEntry(chosen);
             RefreshCollateralStateFileForCurrentCharacter();
+            PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
             return true;
         }
         catch (Exception ex)

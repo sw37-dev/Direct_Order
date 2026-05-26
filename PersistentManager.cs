@@ -1299,7 +1299,7 @@ public partial class PersistentManager : Script
                             {
                                 pv.MapBlip.IsShortRange = false;
                                 pv.MapBlip.Sprite = GetVehicleBlipSprite(pv.ModelHash);
-                                pv.MapBlip.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
+                                pv.MapBlip.Color = GetBlipColorForPersistentVehicle(pv);
                                 pv.MapBlip.Name = "Phương tiện đã trả lại";
                             }
                         }
@@ -2080,6 +2080,7 @@ public partial class PersistentManager : Script
             try
             {
                 pv.RuntimeVehicle = v;
+                RefreshSinglePersistentVehicleBlip(pv);
 
                 lock (_persistVehicles)
                 {
@@ -2091,7 +2092,7 @@ public partial class PersistentManager : Script
                     {
                         b.IsShortRange = false;
                         b.Sprite = GetVehicleBlipSprite(v);
-                        b.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
+                        b.Color = GetBlipColorForPersistentVehicle(pv);
                         b.Name = L("PM_VehicleRestoredBlip", "Phương tiện đã khôi phục");
                         pv.MapBlip = b;
                     }
@@ -2119,62 +2120,19 @@ public partial class PersistentManager : Script
 
             int total = copy.Count;
             int toProcess = Math.Min(BLIPS_PER_TICK, total);
+
             for (int processed = 0; processed < toProcess; processed++)
             {
                 int i = (_blipsCursor + processed) % total;
                 var pv = copy[i];
                 try
                 {
-                    if (pv.RuntimeVehicle != null)
-                    {
-                        bool exists = false;
-                        try { exists = pv.RuntimeVehicle.Exists(); } catch { exists = false; }
-                        if (!exists) { HandleEngineDeletionForVehicle(pv); continue; }
-
-                        if (pv.MapBlip == null || !pv.MapBlip.Exists())
-                        {
-                            var b = pv.RuntimeVehicle.AddBlip();
-                            if (b != null)
-                            {
-                                b.IsShortRange = false;
-                                b.Sprite = GetVehicleBlipSprite(pv.RuntimeVehicle);
-                                b.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
-                                b.Name = L("PM_VehicleNearbyBlip", "Phương tiện đang ở gần");
-                            }
-                            pv.MapBlip = b;
-                        }
-                        else
-                        {
-                            try { pv.MapBlip.Position = pv.RuntimeVehicle.Position; } catch { }
-                            try { pv.MapBlip.Color = GetBlipColorForCharacter(pv.OwnerModelHash); } catch { }
-                        }
-                    }
-                    else
-                    {
-                        if (!pv.AutoSpawnEnabled)
-                        {
-                            if (pv.MapBlip != null) { SafeRemoveBlip(pv.MapBlip); pv.MapBlip = null; }
-                            continue;
-                        }
-
-                        if (pv.MapBlip == null || !pv.MapBlip.Exists())
-                        {
-                            pv.MapBlip = World.CreateBlip(pv.Position);
-                            if (pv.MapBlip != null)
-                            {
-                                pv.MapBlip.IsShortRange = false;
-                                pv.MapBlip.Sprite = GetVehicleBlipSprite(pv.ModelHash);
-                                pv.MapBlip.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
-                                pv.MapBlip.Name = L("PM_VehicleReturnedBlip", "Phương tiện đã trả lại");
-                            }
-                        }
-                        else
-                        {
-                            try { pv.MapBlip.Position = pv.Position; } catch { }
-                        }
-                    }
+                    RefreshSinglePersistentVehicleBlip(pv);
                 }
-                catch (Exception ex) { Log("UpdateBlips loop error: " + ex.ToString()); }
+                catch (Exception ex)
+                {
+                    Log("UpdateBlips loop error: " + ex.ToString());
+                }
             }
 
             _blipsCursor = (_blipsCursor + toProcess) % Math.Max(1, copy.Count);
@@ -2192,21 +2150,12 @@ public partial class PersistentManager : Script
                 {
                     try
                     {
-                        if (!pv.AutoSpawnEnabled) continue;
-
-                        if (pv.MapBlip == null || !pv.MapBlip.Exists())
-                        {
-                            pv.MapBlip = World.CreateBlip(pv.Position);
-                            if (pv.MapBlip != null)
-                            {
-                                pv.MapBlip.IsShortRange = false;
-                                pv.MapBlip.Sprite = GetVehicleBlipSprite(pv.ModelHash);
-                                pv.MapBlip.Color = GetBlipColorForCharacter(pv.OwnerModelHash);
-                                pv.MapBlip.Name = L("PM_VehicleReturnedBlip", "Phương tiện đã trả lại");
-                            }
-                        }
+                        RefreshSinglePersistentVehicleBlip(pv);
                     }
-                    catch (Exception ex) { Log("CreateBlipsForAllLoadedVehicles inner: " + ex.ToString()); }
+                    catch (Exception ex)
+                    {
+                        Log("CreateBlipsForAllLoadedVehicles inner: " + ex.ToString());
+                    }
                 }
             }
         }
@@ -2223,6 +2172,152 @@ public partial class PersistentManager : Script
         if (hash == (uint)PedHash.Trevor) return BlipColor.Orange;
 
         return BlipColor.White;
+    }
+
+    private static int GetCurrentCharacterHashSafe()
+    {
+        try
+        {
+            return Game.Player?.Character?.Model.Hash ?? 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static bool ShouldShowVehicleOnMapForCurrentCharacter(PersistentVehicle pv)
+    {
+        try
+        {
+            if (pv == null)
+                return false;
+
+            int currentHash = GetCurrentCharacterHashSafe();
+            if (currentHash == 0)
+                return false;
+
+            return pv.OwnerModelHash == currentHash;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static BlipColor GetBlipColorForPersistentVehicle(PersistentVehicle pv)
+    {
+        try
+        {
+            if (pv != null && pv.IsCollateralLocked)
+                return BlipColor.Red;
+
+            return GetBlipColorForCharacter(pv != null ? pv.OwnerModelHash : 0);
+        }
+        catch
+        {
+            return BlipColor.White;
+        }
+    }
+
+    private static void RefreshSinglePersistentVehicleBlip(PersistentVehicle pv)
+    {
+        try
+        {
+            if (pv == null)
+                return;
+
+            // Chỉ hiện xe của nhân vật hiện tại.
+            if (!ShouldShowVehicleOnMapForCurrentCharacter(pv))
+            {
+                SafeRemoveBlip(pv.MapBlip);
+                pv.MapBlip = null;
+                return;
+            }
+
+            BlipColor color = GetBlipColorForPersistentVehicle(pv);
+
+            // Nếu xe đang tồn tại ngoài world
+            if (pv.RuntimeVehicle != null)
+            {
+                bool exists = false;
+                try { exists = pv.RuntimeVehicle.Exists(); } catch { exists = false; }
+
+                if (exists)
+                {
+                    if (pv.MapBlip == null || !pv.MapBlip.Exists())
+                    {
+                        pv.MapBlip = pv.RuntimeVehicle.AddBlip();
+                    }
+
+                    if (pv.MapBlip != null && pv.MapBlip.Exists())
+                    {
+                        pv.MapBlip.IsShortRange = false;
+                        pv.MapBlip.Sprite = GetVehicleBlipSprite(pv.RuntimeVehicle);
+                        pv.MapBlip.Color = color;
+                        try { pv.MapBlip.Position = pv.RuntimeVehicle.Position; } catch { }
+                        pv.MapBlip.Name = color == BlipColor.Red
+                            ? L("PM_VehicleSeizedBlip", "Phương tiện bị niêm phong")
+                            : L("PM_VehicleNearbyBlip", "Phương tiện đang ở gần");
+                    }
+
+                    return;
+                }
+            }
+
+            // Xe không còn runtime, chỉ tạo blip static nếu AutoSpawnEnabled
+            if (!pv.AutoSpawnEnabled)
+            {
+                SafeRemoveBlip(pv.MapBlip);
+                pv.MapBlip = null;
+                return;
+            }
+
+            if (pv.MapBlip == null || !pv.MapBlip.Exists())
+            {
+                pv.MapBlip = World.CreateBlip(pv.Position);
+            }
+
+            if (pv.MapBlip != null && pv.MapBlip.Exists())
+            {
+                pv.MapBlip.IsShortRange = false;
+                pv.MapBlip.Sprite = GetVehicleBlipSprite(pv.ModelHash);
+                pv.MapBlip.Color = color;
+                try { pv.MapBlip.Position = pv.Position; } catch { }
+                pv.MapBlip.Name = color == BlipColor.Red
+                    ? L("PM_VehicleSeizedBlip", "Phương tiện bị niêm phong")
+                    : L("PM_VehicleReturnedBlip", "Phương tiện đã trả lại");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("RefreshSinglePersistentVehicleBlip failed: " + ex.ToString());
+        }
+    }
+
+    public static void RefreshVehicleBlipsForCurrentCharacter()
+    {
+        try
+        {
+            lock (_persistVehicles)
+            {
+                foreach (var pv in _persistVehicles)
+                {
+                    try
+                    {
+                        RefreshSinglePersistentVehicleBlip(pv);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log("RefreshVehicleBlipsForCurrentCharacter inner failed: " + ex.ToString());
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("RefreshVehicleBlipsForCurrentCharacter failed: " + ex.ToString());
+        }
     }
 
     private static BlipSprite GetVehicleBlipSprite(Vehicle v)
