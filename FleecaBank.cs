@@ -48,6 +48,7 @@ public partial class FleecaBankLoanScript : Script
 
     private NativeMenu _loanCollateralMenu;
     private NativeItem _loanCollateralItem;
+    private NativeItem _loanDueTimeItem;
     private bool _loanCollateralMenuInitialized = false;
 
     private bool _loanCollateralMode = false;
@@ -310,6 +311,93 @@ public partial class FleecaBankLoanScript : Script
         {
             Log("UpdateLemonUiMouseState failed: " + ex);
         }
+    }
+
+    private bool HasActiveDebtForMenu()
+    {
+        return _loanActive && _loanRemainingDebt > 0;
+    }
+
+    private bool ShouldShowLoanDueTimeItem()
+    {
+        return HasActiveDebtForMenu() && _dueWindowStartHour >= 0 && _dueWindowEndHour >= 0;
+    }
+
+    private string GetLoanDueTimeText()
+    {
+        if (_dueWindowStartHour < 0 || _dueWindowEndHour < 0)
+            return "N/A";
+
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0}:00 mỗi ngày (+{1}h)",
+            _dueWindowStartHour,
+            DueWindowHours);
+    }
+
+    private void RefreshLoanDueTimeItem()
+    {
+        try
+        {
+            if (_loanDueTimeItem == null)
+                return;
+
+            if (!ShouldShowLoanDueTimeItem())
+                return;
+
+            _loanDueTimeItem.Title = string.Format(
+                L("Credit_MenuDueTime", "Thời gian thu nợ: {0}"),
+                GetLoanDueTimeText());
+
+            _loanDueTimeItem.Description = L(
+                "Credit_MenuDueTimeDesc",
+                "Mốc thu nợ được tính từ thời điểm khoản vay được giải ngân.");
+        }
+        catch (Exception ex)
+        {
+            Log("RefreshLoanDueTimeItem failed: " + ex);
+        }
+    }
+
+    private void RefreshLoanMenuItems()
+    {
+        try
+        {
+            if (_loanMenu == null)
+                return;
+
+            RefreshLoanMenuQuickPayText();
+            RefreshLoanDueTimeItem();
+
+            _loanMenu.Clear();
+
+            if (_loanConfirmItem != null)
+                _loanMenu.Add(_loanConfirmItem);
+
+            if (ShouldShowLoanDueTimeItem() && _loanDueTimeItem != null)
+                _loanMenu.Add(_loanDueTimeItem);
+
+            if (_loanCollateralItem != null)
+                _loanMenu.Add(_loanCollateralItem);
+
+            if (_loanQuickPayItem != null)
+                _loanMenu.Add(_loanQuickPayItem);
+
+            if (_loanCancelItem != null)
+                _loanMenu.Add(_loanCancelItem);
+        }
+        catch (Exception ex)
+        {
+            Log("RefreshLoanMenuItems failed: " + ex);
+        }
+    }
+
+    private void ShowDailyCollectionSuccessMessage()
+    {
+        ShowFleecaNotification(
+            L("Credit_DailyCollectionSuccessTitle", "Thu nợ thành công"),
+            L("Credit_DailyCollectionSuccessDesc",
+                "Ngân hàng Fleeca đã thu tiền của ngày hôm nay thành công. Chúc quý khách một ngày vui vẻ!"));
     }
 
     private bool IsAnyLoanMenuVisible()
@@ -822,10 +910,11 @@ public partial class FleecaBankLoanScript : Script
                 _loanCancelItem = new NativeItem(
                     L("Credit_MenuCancel", "Hủy dịch vụ"));
 
-                _loanMenu.Add(_loanConfirmItem);
-                _loanMenu.Add(_loanCollateralItem);
-                _loanMenu.Add(_loanQuickPayItem);
-                _loanMenu.Add(_loanCancelItem);
+                // Khởi tạo _loanDueTimeItem ngay sau khi tạo _loanCancelItem
+                _loanDueTimeItem = new NativeItem("", "");
+
+                // Thay thế toàn bộ khối Add cũ bằng hàm RefreshLoanMenuItems()
+                RefreshLoanMenuItems();
 
                 _loanConfirmItem.Activated += (s, e) =>
                 {
@@ -1458,6 +1547,7 @@ public partial class FleecaBankLoanScript : Script
             if (_loanCollateralMenu != null) _loanCollateralMenu.Visible = false;
 
             RefreshLoanMenuQuickPayText();
+            RefreshLoanMenuItems();
             ApplyLoanMenuTheme(_loanMenu);
             ApplyLoanMenuTheme(_loanDetailMenu);
             UpdateLemonUiMouseState();
@@ -1629,6 +1719,7 @@ public partial class FleecaBankLoanScript : Script
 
                 SaveStateForOwner(currentHash);
                 RefreshLoanMenuQuickPayText();
+                RefreshLoanMenuItems(); // <--- Thêm ở đây để item biến mất sau khi trả đủ
 
                 ShowFleecaNotification(
                     L("Credit_QuickPaySuccessTitle", "Tất toán sớm"),
@@ -1668,6 +1759,7 @@ public partial class FleecaBankLoanScript : Script
 
                 SaveStateForOwner(currentHash);
                 RefreshLoanMenuQuickPayText();
+                RefreshLoanMenuItems(); // <--- Thêm ở đây để item biến mất sau khi siết nợ xóa nợ
 
                 ShowFleecaNotification(
                     L("Credit_SeizureTitle", "Siết nợ"),
@@ -1678,12 +1770,14 @@ public partial class FleecaBankLoanScript : Script
             }
             else
             {
+                // NHÁNH 3: KHÔNG TỊCH THU ĐƯỢC XE
                 long stillOwe = Math.Max(0, totalPayoff - allMoney);
                 _loanRemainingDebt = stillOwe;
                 _loanActive = _loanRemainingDebt > 0;
 
                 SaveStateForOwner(currentHash);
                 RefreshLoanMenuQuickPayText();
+                RefreshLoanMenuItems(); // <--- Thêm ở đây để đồng bộ lại menu (hoặc ẩn item nếu nợ về 0)
 
                 ShowFleecaNotification(
                     L("Credit_WarningShortTitle", "Cảnh báo"),
@@ -2188,6 +2282,7 @@ public partial class FleecaBankLoanScript : Script
             // Lưu trạng thái và cập nhật UI
             SaveStateForOwner(currentHash);
             RefreshLoanMenuQuickPayText();
+            RefreshLoanMenuItems(); // <--- Đã thêm hàm refresh menu layout ở đây để item "Thời gian thu nợ" xuất hiện
             RefreshCollateralMenuText();
             PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
             // ---------------------------------------
@@ -2306,16 +2401,22 @@ public partial class FleecaBankLoanScript : Script
             if (dueAmount > _loanRemainingDebt)
                 dueAmount = _loanRemainingDebt;
 
+            // --- Bắt đầu đoạn mã đã được chỉnh sửa theo hướng dẫn ---
             long collectedAmount = CollectDueAmount(dueAmount);
 
             _loanRemainingDebt = Math.Max(0, _loanRemainingDebt - collectedAmount);
             _loanLastChargedDayStamp = currentDayStamp;
 
+            // Chèn thông báo thành công khi ngân hàng thu được tiền hằng ngày
+            if (collectedAmount >= dueAmount && dueAmount > 0)
+            {
+                ShowDailyCollectionSuccessMessage();
+            }
+
             if (_loanRemainingDebt <= 0)
             {
                 _loanActive = false;
 
-                // Giải phóng phương tiện thế chấp
                 UnlockAllCollateralVehiclesForCurrentCharacter();
                 _loanCollateralMode = false;
                 PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
@@ -2326,6 +2427,7 @@ public partial class FleecaBankLoanScript : Script
 
                 SaveStateForOwner(currentHash);
                 RefreshLoanMenuQuickPayText();
+                RefreshLoanMenuItems();
                 return;
             }
 
@@ -2342,6 +2444,8 @@ public partial class FleecaBankLoanScript : Script
 
             SaveStateForOwner(currentHash);
             RefreshLoanMenuQuickPayText();
+            RefreshLoanMenuItems();
+            // --- Kết thúc đoạn mã chỉnh sửa ---
         }
         catch (Exception ex)
         {
@@ -2937,7 +3041,9 @@ public partial class FleecaBankLoanScript : Script
             if (!File.Exists(file))
             {
                 _stateLoaded = true;
+                _stateOwnerHash = ownerHash; // Cập nhật hash cho trường hợp file không tồn tại
                 RefreshLoanMenuQuickPayText();
+                RefreshLoanMenuItems(); // Refresh menu items để đúng trạng thái
                 return;
             }
 
@@ -3023,12 +3129,15 @@ public partial class FleecaBankLoanScript : Script
             _stateOwnerHash = ownerHash;
 
             RefreshLoanMenuQuickPayText();
+            RefreshLoanMenuItems(); // Thêm refresh menu items sau khi load thành công
         }
         catch (Exception ex)
         {
             Log("LoadStateForOwner failed: " + ex);
             _stateLoaded = true;
+            _stateOwnerHash = ownerHash; // Đảm bảo gán cả khi có lỗi xảy ra để tránh lệch state
             RefreshLoanMenuQuickPayText();
+            RefreshLoanMenuItems(); // Thêm refresh menu items ở khối catch phòng khi lỗi nửa chừng
         }
     }
 

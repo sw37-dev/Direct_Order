@@ -14,6 +14,13 @@ public class SimeonsShowroomFix : Script
     private const float PdmActivationRadius = 12.0f;
     private const int PdmSessionLifetimeMs = 200000; // 200 giây
 
+    // PATCH: thêm 20 giây cảnh báo trước khi tự đóng
+    private const int PdmCloseGraceDelayMs = 20000;
+
+    // PATCH: thông báo khi sắp đóng cửa sau 200 giây
+    private const string PdmClosingSoonNotice =
+        "Premium Deluxe Motorsprot sắp đóng cửa rồi, nếu bạn đang bên trong thì hãy ra ngoài ngay!";
+
     public static readonly Vector3[] PdmDeliverySpawnPoints =
     {
         new Vector3(-53.630660f, -1117.313000f, 26.433740f),
@@ -45,7 +52,7 @@ public class SimeonsShowroomFix : Script
     };
 
     private const string PdmCloseFeedTitle = "Thông báo";
-    private const string PdmCloseFeedMessage = "PDM đã đóng cửa lại rồi đấy nhá!";
+    private const string PdmCloseFeedMessage = "Premium Deluxe Motorsport đã đóng cửa hàng lại rồi!";
 
     private bool _pdmIplAppliedOpen = false;
     private bool _contactAdded = false;
@@ -70,11 +77,28 @@ public class SimeonsShowroomFix : Script
 
             EnsurePdmContactRegistered();
 
+            bool canOpenNow = IsPdmOpenNow(out _);
+
+            // PATCH: khi hết phiên 200 giây, báo trước rồi gia hạn thêm 20 giây trước khi đóng thật
+            if (PdmShowroomBridge.IsActive &&
+                Game.GameTime >= PdmShowroomBridge.ExpiresAtGameTime &&
+                !PdmShowroomBridge.IsCloseGracePeriodArmed)
+            {
+                ShowPdmNotification(PdmCloseFeedTitle, PdmClosingSoonNotice);
+                PdmShowroomBridge.StartCloseGracePeriod(PdmCloseGraceDelayMs);
+            }
+
+            // Giữ logic cũ: ngoài giờ thì PDM không cho hoạt động
+            // PATCH: nhưng không ép đóng ngay trong 20 giây cảnh báo cuối phiên
+            if (PdmShowroomBridge.IsActive && !canOpenNow && !PdmShowroomBridge.IsCloseGracePeriodArmed)
+            {
+                DeactivatePdmShowroom();
+            }
+
             bool isActive = PdmShowroomBridge.IsActive;
 
             if (isActive)
             {
-                // Ghi nhận session hiện tại để phục vụ việc tránh thông báo lặp
                 if (!_wasPdmActive || _trackedSessionStartedAt != PdmShowroomBridge.ActivatedAtGameTime)
                 {
                     _trackedSessionStartedAt = PdmShowroomBridge.ActivatedAtGameTime;
@@ -88,7 +112,6 @@ public class SimeonsShowroomFix : Script
                 return;
             }
 
-            // Nếu vừa chuyển từ mở sang đóng thì báo đúng 1 lần
             if (_wasPdmActive && !_closeNoticeShownForSession)
             {
                 ShowPdmCloseNotification();
@@ -104,6 +127,50 @@ public class SimeonsShowroomFix : Script
         catch { }
     }
 
+    private bool IsPdmOpenNow(out string reason)
+    {
+        reason = "";
+
+        try
+        {
+            int dow = Function.Call<int>(Hash.GET_CLOCK_DAY_OF_WEEK); // 0 = CN, 1 = T2 ... 6 = T7
+            int hour = Function.Call<int>(Hash.GET_CLOCK_HOURS);
+            int minute = Function.Call<int>(Hash.GET_CLOCK_MINUTES);
+
+            int timeMinutes = (hour * 60) + minute;
+
+            bool open = false;
+
+            // Thứ 2 -> Thứ 6
+            if (dow >= 1 && dow <= 5)
+            {
+                open =
+                    (timeMinutes >= (9 * 60) && timeMinutes <= (11 * 60 + 59)) ||
+                    (timeMinutes >= (13 * 60) && timeMinutes < (18 * 60));
+            }
+            // Thứ 7
+            else if (dow == 6)
+            {
+                open =
+                    (timeMinutes >= (9 * 60) && timeMinutes <= (11 * 60 + 59)) ||
+                    (timeMinutes >= (13 * 60) && timeMinutes < (15 * 60));
+            }
+            // Chủ Nhật
+            else if (dow == 0)
+            {
+                open =
+                    (timeMinutes >= (9 * 60) && timeMinutes <= (11 * 60 + 59));
+            }
+
+            return open;
+        }
+        catch
+        {
+            reason = "";
+            return false;
+        }
+    }
+
     private void EnsurePdmContactRegistered()
     {
         try
@@ -112,18 +179,29 @@ public class SimeonsShowroomFix : Script
             if (phone == null || phone.Contacts == null)
                 return;
 
-            if (_contactAdded)
-                return;
+            bool canOpenNow = IsPdmOpenNow(out _);
 
-            if (phone.Contacts.Any(c => string.Equals(c.Name, "PDM", StringComparison.OrdinalIgnoreCase)))
+            if (!ReferenceEquals(_contactAdded, true))
             {
+                // không làm gì ở đây, chỉ giữ logic cũ
+            }
+
+            var existing = phone.Contacts.FirstOrDefault(c =>
+                string.Equals(c.Name, "PDM", StringComparison.OrdinalIgnoreCase));
+
+            if (existing != null)
+            {
+                existing.Active = canOpenNow;
                 _contactAdded = true;
                 return;
             }
 
+            if (_contactAdded)
+                return;
+
             var contact = new iFruitContact("PDM")
             {
-                Active = true,
+                Active = canOpenNow,
                 DialTimeout = 2500,
                 Bold = false,
                 Icon = new ContactIcon("WEB_PREMIUMDELUXEMOTORSPORT")
@@ -133,9 +211,7 @@ public class SimeonsShowroomFix : Script
             phone.Contacts.Add(contact);
             _contactAdded = true;
         }
-        catch
-        {
-        }
+        catch { }
     }
 
     // Thông báo dạng tin nhắn của PDM
@@ -178,12 +254,25 @@ public class SimeonsShowroomFix : Script
     {
         try
         {
+            if (!IsPdmOpenNow(out _))
+            {
+                try
+                {
+                    sender.Active = false;
+                }
+                catch
+                {
+                }
+
+                return;
+            }
+
             ActivatePdmShowroom();
 
             if (IsPlayerNearPdmShowroom())
             {
                 PdmShowroomBridge.RequestOpenMenu();
-                ShowPdmNotification("Mua xe", "PDM đang mở cửa! Bạn hãy lựa phương tiện đi!");
+                ShowPdmNotification("Mua xe", "Premium Deluxe Motorsport đang mở cửa! Hãy lựa phương tiện đi!");
             }
             else
             {
@@ -198,6 +287,12 @@ public class SimeonsShowroomFix : Script
 
     private void ActivatePdmShowroom()
     {
+        if (!IsPdmOpenNow(out _))
+        {
+            DeactivatePdmShowroom();
+            return;
+        }
+
         if (!PdmShowroomBridge.IsActive)
             PdmShowroomBridge.Activate(PdmSessionLifetimeMs);
 
@@ -309,6 +404,68 @@ internal static class PdmShowroomBridge
     public static readonly Vector3 ShowroomPreviewPos = new Vector3(-45.8048f, -1095.530f, 26.3272f);
     public const float ShowroomPreviewHeading = 106.3412f;
     public const float ShowroomActivationRadius = 12.0f;
+
+    public static int CloseGraceUntilGameTime { get; private set; } = -1;
+
+    public static bool IsCloseGracePeriodArmed
+    {
+        get { return CloseGraceUntilGameTime > 0; }
+    }
+
+    public static void StartCloseGracePeriod(int delayMs)
+    {
+        lock (SyncRoot)
+        {
+            if (!IsActive)
+                return;
+
+            int safeDelay = Math.Max(1, delayMs);
+            ExpiresAtGameTime = Game.GameTime + safeDelay;
+            CloseGraceUntilGameTime = ExpiresAtGameTime;
+        }
+    }
+
+    public static bool CanActivateNow(out string reason)
+    {
+        reason = "";
+
+        try
+        {
+            int dow = Function.Call<int>(Hash.GET_CLOCK_DAY_OF_WEEK);
+            int hour = Function.Call<int>(Hash.GET_CLOCK_HOURS);
+            int minute = Function.Call<int>(Hash.GET_CLOCK_MINUTES);
+
+            int timeMinutes = (hour * 60) + minute;
+            bool open = false;
+
+            if (dow >= 1 && dow <= 5)
+            {
+                open =
+                    (timeMinutes >= (9 * 60) && timeMinutes <= (11 * 60 + 59)) ||
+                    (timeMinutes >= (13 * 60) && timeMinutes < (18 * 60));
+            }
+            else if (dow == 6)
+            {
+                open =
+                    (timeMinutes >= (9 * 60) && timeMinutes <= (11 * 60 + 59)) ||
+                    (timeMinutes >= (13 * 60) && timeMinutes < (15 * 60));
+            }
+            else if (dow == 0)
+            {
+                open = (timeMinutes >= (9 * 60) && timeMinutes <= (11 * 60 + 59));
+            }
+
+            if (!open)
+                reason = "PDM hiện không hoạt động trong khung giờ này.";
+
+            return open;
+        }
+        catch
+        {
+            reason = "Không thể xác định giờ hoạt động của PDM.";
+            return false;
+        }
+    }
 
     public enum PdmOfferKind
     {
@@ -459,15 +616,18 @@ internal static class PdmShowroomBridge
     {
         lock (SyncRoot)
         {
+            if (!CanActivateNow(out _))
+                return;
+
             if (IsActive && Game.GameTime < ExpiresAtGameTime)
                 return;
 
             IsActive = true;
             ActivatedAtGameTime = Game.GameTime;
             ExpiresAtGameTime = Game.GameTime + Math.Max(1, durationMs);
+            CloseGraceUntilGameTime = -1;
             _openMenuRequested = false;
 
-            // Chốt chính sách ngay lúc PDM được kích hoạt
             RollPricingPolicyForCurrentDay();
         }
     }
@@ -479,6 +639,7 @@ internal static class PdmShowroomBridge
             IsActive = false;
             ActivatedAtGameTime = -1;
             ExpiresAtGameTime = -1;
+            CloseGraceUntilGameTime = -1;
             _openMenuRequested = false;
 
             _currentOfferProfile = new PdmOfferProfile

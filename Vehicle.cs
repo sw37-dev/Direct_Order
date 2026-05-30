@@ -2,14 +2,15 @@
 using GTA.Math;
 using GTA.Native;
 using GTA.UI;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Drawing;
-using System.Xml.Linq;
 using LemonUI;
 using LemonUI.Menus;
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Linq;
 using System.Reflection;
+using System.Xml.Linq;
 
 public partial class InstantRefill : Script
 {
@@ -33,6 +34,115 @@ public partial class InstantRefill : Script
     }
 
     private bool _luiDetailForceFixedSalePrice = false;
+
+    // --- PDM daily pool: chỉ dùng cho showroom PDM ---
+    private const int PdmDailyVehicleMenuCount = 20;
+
+    private int _pdmDailySelectionLastDayOfWeek = -1;
+    private int _pdmDailySelectionWeekSerial = 0;
+    private int _pdmDailySelectionDaySerial = int.MinValue;
+    private readonly List<VehicleEntry> _pdmDailySelection = new List<VehicleEntry>();
+
+    private int GetCurrentPdmDaySerial()
+    {
+        try
+        {
+            int dow = SafeCall(() => Function.Call<int>(Hash.GET_CLOCK_DAY_OF_WEEK), -1);
+            if (dow < 0)
+                return -1;
+
+            if (_pdmDailySelectionLastDayOfWeek < 0)
+            {
+                _pdmDailySelectionLastDayOfWeek = dow;
+                _pdmDailySelectionWeekSerial = 0;
+            }
+            else if (dow != _pdmDailySelectionLastDayOfWeek)
+            {
+                if (dow < _pdmDailySelectionLastDayOfWeek)
+                    _pdmDailySelectionWeekSerial++;
+
+                _pdmDailySelectionLastDayOfWeek = dow;
+            }
+
+            return _pdmDailySelectionWeekSerial * 7 + dow;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    private static void ShuffleList<T>(IList<T> list, Random rng)
+    {
+        if (list == null || rng == null)
+            return;
+
+        for (int i = list.Count - 1; i > 0; i--)
+        {
+            int j = rng.Next(i + 1);
+            if (j == i) continue;
+
+            T tmp = list[i];
+            list[i] = list[j];
+            list[j] = tmp;
+        }
+    }
+
+    private List<VehicleEntry> GetPdmDailyVehicleSelection()
+    {
+        try
+        {
+            if (_vehicles == null || _vehicles.Count == 0)
+                return _vehicles;
+
+            int daySerial = GetCurrentPdmDaySerial();
+            if (daySerial < 0)
+                return _vehicles;
+
+            if (_pdmDailySelectionDaySerial == daySerial && _pdmDailySelection.Count > 0)
+                return _pdmDailySelection;
+
+            // Tạo danh sách ổn định theo từng ngày: cùng 1 ngày => cùng 1 bộ xe
+            var pool = _vehicles.Where(v => v != null).ToList();
+
+            if (pool.Count <= PdmDailyVehicleMenuCount)
+            {
+                _pdmDailySelection.Clear();
+                _pdmDailySelection.AddRange(pool);
+                _pdmDailySelectionDaySerial = daySerial;
+                return _pdmDailySelection;
+            }
+
+            // Seed cố định theo ngày, để cùng ngày luôn ra đúng bộ 20 xe đó
+            int seed = unchecked(daySerial * 73856093 ^ 0x5D3A1F);
+            var dailyRng = new Random(seed);
+
+            ShuffleList(pool, dailyRng);
+
+            _pdmDailySelection.Clear();
+            for (int i = 0; i < PdmDailyVehicleMenuCount && i < pool.Count; i++)
+                _pdmDailySelection.Add(pool[i]);
+
+            _pdmDailySelectionDaySerial = daySerial;
+            return _pdmDailySelection;
+        }
+        catch
+        {
+            return _vehicles;
+        }
+    }
+
+    private List<VehicleEntry> GetVehicleBrowseSourceForCurrentContext()
+    {
+        try
+        {
+            if (_pdmShowroomMode && PdmShowroomBridge.IsActive)
+                return GetPdmDailyVehicleSelection();
+        }
+        catch { }
+
+        return _vehicles;
+    }
 
     // Thời lượng riêng cho menu chọn phương tiện (99 giây)
     private const int VehicleSelectionDurationMs = 99000;
@@ -1694,7 +1804,10 @@ public partial class InstantRefill : Script
 
             CloseLemonVehicleMenus(false);
 
-            BuildVehicleBrowseMenu(_vehicles, false);
+            // Thay đổi ở đây: Lấy danh sách xe PDM hàng ngày thay vì dùng toàn bộ danh sách _vehicles
+            var pdmDailyVehicles = GetPdmDailyVehicleSelection();
+            BuildVehicleBrowseMenu(pdmDailyVehicles, false);
+
             _luiBrowseMode = VehicleBrowseMode.Full;
             _luiMenuAutoCloseEnabled = true;
             _luiMenuAutoCloseExpiry = PdmShowroomBridge.ExpiresAtGameTime > Game.GameTime
@@ -1981,7 +2094,9 @@ public partial class InstantRefill : Script
 
     private bool OpenFilteredVehicleMenu(char filterChar)
     {
-        if (_vehicles == null || _vehicles.Count == 0)
+        var source = GetVehicleBrowseSourceForCurrentContext();
+
+        if (source == null || source.Count == 0)
         {
             GTA.UI.Screen.ShowSubtitle(L("Vehicle_Empty", "~HUD_COLOUR_DEGEN_RED~Phương tiện trống."), 3000);
             return false;
@@ -1990,9 +2105,11 @@ public partial class InstantRefill : Script
         char wanted = char.ToUpperInvariant(filterChar);
         var filtered = new List<VehicleEntry>();
 
-        foreach (var v in _vehicles)
+        foreach (var v in source)
         {
-            if (string.IsNullOrEmpty(v?.Name)) continue;
+            if (string.IsNullOrEmpty(v?.Name))
+                continue;
+
             if (char.ToUpperInvariant(v.Name[0]) == wanted)
                 filtered.Add(v);
         }
@@ -2030,7 +2147,7 @@ public partial class InstantRefill : Script
 
         CloseLemonVehicleMenus(false);
 
-        BuildVehicleBrowseMenu(_vehicles, false);
+        BuildVehicleBrowseMenu(GetVehicleBrowseSourceForCurrentContext(), false);
         _luiBrowseMode = VehicleBrowseMode.Full;
         _luiMenuAutoCloseEnabled = true;
         _luiMenuAutoCloseExpiry = Game.GameTime + 99000;
