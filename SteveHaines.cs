@@ -19,7 +19,7 @@ public partial class InstantRefill
     private int _steveBribeRestoreDueGameTime = 0;
     private int _steveBribeRestoreStars = 0;
 
-    private static string SteveContactName => "Steve Haines";
+    private string SteveContactName => T("SteveContactName", "Steve Haines");
 
     // Steve Haines bribe menu UI
     private NativeMenu _luiSteveBribeMenu = null;
@@ -461,15 +461,6 @@ public partial class InstantRefill
             else
             {
                 PlayFrontendSound("PURCHASE", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-
-                GTA.UI.Screen.ShowSubtitle(
-                    string.Format(
-                        CultureInfo.InvariantCulture,
-                        T("SteveBribeFailSubtitle",
-                          "~HUD_COLOUR_DEGEN_ORANGE~Giao dịch thất bại."),
-                        reduceStars),
-                    3500);
-
                 ScheduleSteveBribeWantedRestore(reduceStars);
             }
 

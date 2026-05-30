@@ -13,7 +13,7 @@ using System.Windows.Forms;
 
 public class Lester : Script
 {
-    private const string LesterContactName = "Lester";
+    private const string LesterContactNameFallback = "Lester";
     private const string LesterContactIconName = "HC_N_LESTER";
     private const int LesterDialTimeoutMs = 2500;
 
@@ -68,6 +68,11 @@ public class Lester : Script
         {
             return fallback;
         }
+    }
+
+    private static string GetLesterContactName()
+    {
+        return T("Lester_ContactName", LesterContactNameFallback);
     }
 
     private static string FormatCash(long value)
@@ -256,6 +261,8 @@ public class Lester : Script
             if (phone == null || phone.Contacts == null)
                 return;
 
+            string contactName = GetLesterContactName();
+
             if (!ReferenceEquals(_phoneInstance, phone))
             {
                 _phoneInstance = phone;
@@ -266,7 +273,7 @@ public class Lester : Script
                 return;
 
             if (phone.Contacts.Any(c =>
-                c != null && string.Equals(c.Name, LesterContactName, StringComparison.OrdinalIgnoreCase)))
+                c != null && string.Equals(c.Name, contactName, StringComparison.OrdinalIgnoreCase)))
             {
                 _contactAdded = true;
                 return;
@@ -282,7 +289,7 @@ public class Lester : Script
                 icon = null;
             }
 
-            iFruitContact contact = new iFruitContact(LesterContactName)
+            iFruitContact contact = new iFruitContact(contactName)
             {
                 Active = true,
                 DialTimeout = LesterDialTimeoutMs,

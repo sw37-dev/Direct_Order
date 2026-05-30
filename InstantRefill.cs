@@ -751,6 +751,9 @@ public partial class InstantRefill : Script
             return;
         }
 
+        // Chèn theo hướng dẫn: sau khối xử lý _luiPool.AreAnyVisible và trước search/pending
+        HandlePdmShowroomLifecycle();
+
         // ---------- SEARCH HELP-BOX (single-char) ----------
         if (_searchActive)
         {

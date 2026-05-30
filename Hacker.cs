@@ -1190,10 +1190,6 @@ public class Hacker : Script
                 _activeUnlockVehicleRequester,
                 CityBlackoutHackerState.VehicleUnlockActionMode.UnlockAndBuy);
 
-            GTA.UI.Screen.ShowSubtitle(
-                T("CityBlackout_UnlockVehicleSaved", "~HUD_COLOUR_DEGEN_GREEN~Đã mở khóa tạm thời phương tiện đã chọn."),
-                2500);
-
             CloseDangerousVehicleUnlockMenu(false);
         }
         catch { }
@@ -1216,10 +1212,6 @@ public class Hacker : Script
                 _unlockVehicleSelectedName,
                 _activeUnlockVehicleRequester,
                 CityBlackoutHackerState.VehicleUnlockActionMode.ConvertToCash);
-
-            GTA.UI.Screen.ShowSubtitle(
-                T("CityBlackout_UnlockVehicleConverted", "~HUD_COLOUR_DEGEN_GREEN~Đã chọn chuyển hóa phương tiện sang tiền mặt."),
-                2500);
 
             CloseDangerousVehicleUnlockMenu(false);
         }

@@ -186,7 +186,6 @@ public partial class InstantRefill : Script
 
         _luiRewardBribeServiceItem = new NativeItem(
             T("RewardBribeServiceLabel", "Dịch vụ: Hối lộ giảm tội"));
-        _luiRewardBribeServiceItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
         _luiRewardBribeMenu.Add(_luiRewardBribeServiceItem);
 
         var infoWanted = new NativeItem(

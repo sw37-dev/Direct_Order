@@ -25,12 +25,12 @@ public class PrimeAutoHandover : Script
     private const int GAME_READY_DELAY_MS = 3000;
 
     private static string NotificationSenderName => L("NotificationSenderName", "BOMW");
+    private static string ContactName => L("ContactName_PAH", "D2D Shipping");
 
     private static readonly Vector3 BusinessMarkerPosition = new Vector3(-167.915600f, 916.191600f, 235.655700f);
     private static string BusinessName => L("BusinessName", "Prime Auto Handover");
     private static string BrandName => L("BrandName", "PAH");
     private static string BusinessField => L("BusinessField", "Vận chuyển phương tiện");
-    private static string ContactName => L("ContactName", "D2D Shipping");
 
     private static string MainMenuTitle => L("MainMenuTitle", "Prime Handover");
     private static string MainMenuHeader => L("MainMenuHeader", "CHI TIẾT DOANH NGHIỆP");

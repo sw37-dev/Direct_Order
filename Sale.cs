@@ -261,7 +261,11 @@ public partial class InstantRefill
         catch { }
     }
 
-    private int ComputeVehicleMenuPrice(VehicleEntry chosen, bool forceFixedSalePrice = false, bool applyTicketDiscount = false)
+    private int ComputeVehicleMenuPrice(
+    VehicleEntry chosen,
+    bool forceFixedSalePrice = false,
+    bool applyTicketDiscount = false,
+    bool applyPdmSpecialOffer = false)
     {
         if (chosen == null) return 0;
 
@@ -276,6 +280,9 @@ public partial class InstantRefill
             else
                 price = (int)Math.Ceiling(price * _saleMultiplier);
         }
+
+        if (applyPdmSpecialOffer)
+            price = (int)Math.Ceiling(price * PdmShowroomBridge.CurrentOfferProfile.Multiplier);
 
         if (applyTicketDiscount)
             price = ApplyVehicleDiscountTicket(price);

@@ -53,6 +53,19 @@ public partial class InstantRefill : Script
     private NativeMenu _luiVehicleListMenu;
     private NativeMenu _luiVehicleDetailMenu;
 
+    // --- PDM special offer ---
+    private const double PdmSpecialOfferChance = 0.10;      // 10%
+    private const double PdmSpecialOfferMultiplier = 0.875;  // giảm 12.5%
+
+    private bool _luiDetailSpecialOfferAvailable = false;
+    private bool _luiDetailSpecialOfferUiSync = false;
+
+    private bool _luiDetailSpecialOfferIsIncrease = false;
+    private int _luiDetailSpecialOfferChancePercent = 0;
+    private double _luiDetailSpecialOfferMultiplier = 1.0;
+    private string _luiDetailSpecialOfferTitle = "";
+    private string _luiDetailSpecialOfferDescription = "";
+
     // 1) THÊM FIELD MỚI (đặt gần nhóm LemonUI fields)
     private Vehicle _luiPreviewVehicle = null;
     private uint _luiPreviewVehicleHash = 0;
@@ -158,6 +171,8 @@ public partial class InstantRefill : Script
 
     private bool _luiUseDiscountTicket = false;
     private int _luiBaseVehiclePrice = 0;
+
+    private bool _pdmShowroomMode = false;
 
     private VehicleEntry _luiDetailVehicle = null;
     private int _luiDetailPrice = 0;
@@ -1245,7 +1260,6 @@ public partial class InstantRefill : Script
             if (chosen == null) { ClearVehiclePreview(); return; }
             if (!CanPreviewVehicle(chosen)) { ClearVehiclePreview(); return; }
 
-            // cùng xe thì giữ nguyên, khỏi spawn lại
             if (_luiPreviewVehicle != null && _luiPreviewVehicle.Exists() && _luiPreviewVehicleHash == chosen.Hash)
                 return;
 
@@ -1273,8 +1287,19 @@ public partial class InstantRefill : Script
             if (!model.IsLoaded)
                 return;
 
-            if (!TryGetVehiclePreviewSpawnPoint(player, out Vector3 spawnPos, out float heading))
-                return;
+            Vector3 spawnPos;
+            float heading;
+
+            if (_pdmShowroomMode && PdmShowroomBridge.IsActive)
+            {
+                spawnPos = PdmShowroomBridge.ShowroomPreviewPos;
+                heading = PdmShowroomBridge.ShowroomPreviewHeading;
+            }
+            else
+            {
+                if (!TryGetVehiclePreviewSpawnPoint(player, out spawnPos, out heading))
+                    return;
+            }
 
             Vehicle veh = null;
             try
@@ -1292,7 +1317,6 @@ public partial class InstantRefill : Script
             _luiPreviewVehicle = veh;
             _luiPreviewVehicleHash = chosen.Hash;
 
-            // Khóa an toàn: không cho lái, không di chuyển, không bị phá
             try { Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, veh.Handle, true, true); } catch { }
             try { Function.Call(Hash.SET_VEHICLE_ON_GROUND_PROPERLY, veh.Handle); } catch { }
             try { Function.Call(Hash.SET_VEHICLE_UNDRIVEABLE, veh.Handle, true); } catch { }
@@ -1302,9 +1326,11 @@ public partial class InstantRefill : Script
             try { Function.Call(Hash.FREEZE_ENTITY_POSITION, veh.Handle, true); } catch { }
             try { Function.Call(Hash.SET_ENTITY_INVINCIBLE, veh.Handle, true); } catch { }
             try { Function.Call(Hash.SET_ENTITY_CAN_BE_DAMAGED, veh.Handle, false); } catch { }
-            try { Function.Call(Hash.SET_VEHICLE_HAS_BEEN_OWNED_BY_PLAYER, veh.Handle, false); } catch { }
             try { veh.IsInvincible = true; } catch { }
             try { veh.IsPersistent = true; } catch { }
+
+            if (_pdmShowroomMode && PdmShowroomBridge.IsActive)
+                SpawnPdmPreviewSpinVehicle(veh);
         }
         catch
         {
@@ -1343,6 +1369,30 @@ public partial class InstantRefill : Script
         catch
         {
             // swallow to avoid crashing the game
+        }
+    }
+
+    private bool RollPdmSpecialOfferForCurrentVehicle()
+    {
+        try
+        {
+            if (!_pdmShowroomMode || !PdmShowroomBridge.IsActive)
+                return false;
+
+            if (!PdmShowroomBridge.TryRollVehicleOffer(_rng, out var profile))
+                return false;
+
+            _luiDetailSpecialOfferIsIncrease = (profile.Kind == PdmShowroomBridge.PdmOfferKind.PriceIncrease);
+            _luiDetailSpecialOfferChancePercent = profile.ChancePercent;
+            _luiDetailSpecialOfferMultiplier = profile.Multiplier;
+            _luiDetailSpecialOfferTitle = profile.ItemTitle;
+            _luiDetailSpecialOfferDescription = profile.ItemDescription;
+
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -1506,7 +1556,19 @@ public partial class InstantRefill : Script
         _luiDetailPrice = 0;
         _luiDetailPlate = "";
         _luiReturnMenu = null;
-        _luiPlateEdited = false;   // <-- thêm dòng này
+        _luiPlateEdited = false;   // Dòng đã thêm trước đó
+
+        // Toàn bộ các trường mới được reset đầy đủ theo hướng dẫn:
+        _luiDetailSpecialOfferAvailable = false;
+        _luiDetailSpecialOfferUiSync = false;
+        _luiDetailSpecialOfferIsIncrease = false;
+        _luiDetailSpecialOfferChancePercent = 0;
+        _luiDetailSpecialOfferMultiplier = 1.0;
+        _luiDetailSpecialOfferTitle = "";
+        _luiDetailSpecialOfferDescription = "";
+
+        // Thêm vào gần cuối hàm (trước khi kiểm tra setCooldown)
+        _pdmShowroomMode = false;
 
         if (setCooldown)
             EnsureHelpBoxCooldownSet();
@@ -1561,6 +1623,359 @@ public partial class InstantRefill : Script
                 OpenVehicleDetailMenu(randomVehicle, _luiVehicleListMenu, true);
             };
             _luiVehicleListMenu.Add(randomItem);
+        }
+    }
+
+    private void HandlePdmShowroomLifecycle()
+    {
+        try
+        {
+            if (PdmShowroomBridge.IsActive && Game.GameTime >= PdmShowroomBridge.ExpiresAtGameTime)
+            {
+                PdmShowroomBridge.Deactivate();
+                CloseLemonVehicleMenus(false);
+                _pdmShowroomMode = false;
+                return;
+            }
+
+            if (_pdmShowroomMode && !PdmShowroomBridge.IsActive)
+            {
+                CloseLemonVehicleMenus(false);
+                _pdmShowroomMode = false;
+                return;
+            }
+
+            if (PdmShowroomBridge.HasOpenMenuRequest())
+            {
+                if (_pendingType == PendingType.None &&
+                    !(_luiPool != null && SafeCall(() => _luiPool.AreAnyVisible, false)))
+                {
+                    PdmShowroomBridge.ClearOpenMenuRequest();
+                    OpenPdmShowroomMenu();
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private bool IsNearPdmShowroom()
+    {
+        try
+        {
+            Ped p = Game.Player.Character;
+            if (p == null || !p.Exists() || p.IsDead)
+                return false;
+
+            return p.Position.DistanceTo(PdmShowroomBridge.ShowroomPreviewPos) <= PdmShowroomBridge.ShowroomActivationRadius;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool OpenPdmShowroomMenu()
+    {
+        try
+        {
+            if (!PdmShowroomBridge.IsActive)
+                return false;
+
+            if (_pendingType != PendingType.None)
+                return false;
+
+            if (_vehicles == null || _vehicles.Count == 0)
+            {
+                GTA.UI.Screen.ShowSubtitle(L("Vehicle_Empty", "~HUD_COLOUR_DEGEN_RED~Phương tiện trống."), 3000);
+                return false;
+            }
+
+            CloseLemonVehicleMenus(false);
+
+            BuildVehicleBrowseMenu(_vehicles, false);
+            _luiBrowseMode = VehicleBrowseMode.Full;
+            _luiMenuAutoCloseEnabled = true;
+            _luiMenuAutoCloseExpiry = PdmShowroomBridge.ExpiresAtGameTime > Game.GameTime
+                ? PdmShowroomBridge.ExpiresAtGameTime
+                : Game.GameTime + 200000;
+
+            _pdmShowroomMode = true;
+
+            ConfigureKeyboardOnlyVehicleMenu(_luiVehicleListMenu);
+            ConfigureKeyboardOnlyVehicleMenu(_luiVehicleDetailMenu);
+
+            _luiVehicleListMenu.Visible = true;
+            _luiVehicleDetailMenu.Visible = false;
+            Interval = 0;
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void SpawnPdmPreviewSpinVehicle(Vehicle veh)
+    {
+        try
+        {
+            if (veh == null || !veh.Exists())
+                return;
+
+            Function.Call(Hash.FREEZE_ENTITY_POSITION, veh.Handle, true);
+            Function.Call(Hash.SET_ENTITY_INVINCIBLE, veh.Handle, true);
+            Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, veh.Handle, true, true);
+            Function.Call(Hash.SET_VEHICLE_ENGINE_ON, veh.Handle, false, true, true);
+            Function.Call(Hash.SET_VEHICLE_DOORS_LOCKED, veh.Handle, 2);
+        }
+        catch
+        {
+        }
+    }
+
+    private void ApplyPdmShowroomUpgrades(Vehicle v)
+    {
+        if (v == null || !v.Exists())
+            return;
+
+        try
+        {
+            // Bắt buộc để mod hoạt động
+            Function.Call(Hash.SET_VEHICLE_MOD_KIT, v.Handle, 0);
+
+            // 60% full, 40% random như LM
+            bool chooseFullVehicle = _rng.NextDouble() < 0.60;
+
+            // Mods thường
+            for (int modType = 0; modType <= 49; modType++)
+            {
+                if (!v.Exists())
+                    break;
+
+                if (modType == 18) // turbo xử lý riêng
+                    continue;
+
+                int count = SafeCall(() => Function.Call<int>(Hash.GET_NUM_VEHICLE_MODS, v.Handle, modType), 0);
+                if (count > 0)
+                {
+                    int chosenIndex = chooseFullVehicle ? (count - 1) : _rng.Next(0, count);
+                    SafeCall(() =>
+                    {
+                        Function.Call(Hash.SET_VEHICLE_MOD, v.Handle, modType, chosenIndex, false);
+                        return 0;
+                    });
+                }
+            }
+
+            // Performance mods
+            int[] perfMods = new int[] { 11, 12, 13, 16 };
+            foreach (int pm in perfMods)
+            {
+                if (!v.Exists())
+                    break;
+
+                int count = SafeCall(() => Function.Call<int>(Hash.GET_NUM_VEHICLE_MODS, v.Handle, pm), 0);
+                if (count > 0)
+                {
+                    int chosenIndex = chooseFullVehicle ? (count - 1) : _rng.Next(0, count);
+                    SafeCall(() =>
+                    {
+                        Function.Call(Hash.SET_VEHICLE_MOD, v.Handle, pm, chosenIndex, false);
+                        return 0;
+                    });
+                }
+            }
+
+            // Turbo
+            SafeCall(() =>
+            {
+                Function.Call(Hash.TOGGLE_VEHICLE_MOD, v.Handle, 18, true);
+                return 0;
+            });
+
+            int turboCount = SafeCall(() => Function.Call<int>(Hash.GET_NUM_VEHICLE_MODS, v.Handle, 18), 0);
+            if (turboCount > 0)
+            {
+                int chosenIndex = chooseFullVehicle ? (turboCount - 1) : _rng.Next(0, turboCount);
+                SafeCall(() =>
+                {
+                    Function.Call(Hash.SET_VEHICLE_MOD, v.Handle, 18, chosenIndex, false);
+                    return 0;
+                });
+            }
+
+            // Livery
+            SafeCall(() =>
+            {
+                int liveryCount = SafeCall(() => Function.Call<int>(Hash.GET_VEHICLE_LIVERY_COUNT, v.Handle), 0);
+                if (liveryCount > 0)
+                {
+                    int chosenLivery = chooseFullVehicle ? Math.Max(0, liveryCount - 1) : _rng.Next(0, liveryCount);
+                    Function.Call(Hash.SET_VEHICLE_LIVERY, v.Handle, chosenLivery);
+                }
+                return 0;
+            });
+
+            // Màu sơn ngẫu nhiên
+            SafeCall(() =>
+            {
+                int primary = _rng.Next(0, 219);
+                int secondary = _rng.Next(0, 219);
+                Function.Call(Hash.SET_VEHICLE_COLOURS, v.Handle, primary, secondary);
+                return 0;
+            });
+
+            // Extra / tint / neon / smoke
+            SafeCall(() => { Function.Call(Hash.SET_VEHICLE_EXTRA_COLOURS, v.Handle, 0, 0); return 0; });
+            SafeCall(() => { Function.Call(Hash.SET_VEHICLE_WINDOW_TINT, v.Handle, 1); return 0; });
+
+            int r = _rng.Next(80, 256);
+            int g = _rng.Next(80, 256);
+            int b = _rng.Next(80, 256);
+
+            for (int i = 0; i <= 3; i++)
+            {
+                if (!v.Exists())
+                    break;
+
+                SafeCall(() => { Function.Call(Hash.SET_VEHICLE_NEON_ENABLED, v.Handle, i, true); return 0; });
+            }
+
+            SafeCall(() => { Function.Call(Hash.SET_VEHICLE_NEON_COLOUR, v.Handle, r, g, b); return 0; });
+            SafeCall(() => { Function.Call(Hash.SET_VEHICLE_TYRE_SMOKE_COLOR, v.Handle, r, g, b); return 0; });
+
+            for (int ex = 1; ex <= 20; ex++)
+            {
+                if (!v.Exists())
+                    break;
+
+                bool exists = SafeCall(() => Function.Call<bool>(Hash.DOES_EXTRA_EXIST, v.Handle, ex), false);
+                if (exists)
+                    SafeCall(() => { Function.Call(Hash.SET_VEHICLE_EXTRA, v.Handle, ex, 0); return 0; });
+            }
+
+            // Chốt trạng thái xe
+            SafeCall(() => { v.IsEngineRunning = true; return 0; });
+            SafeCall(() => { v.DirtLevel = 0f; return 0; });
+            SafeCall(() => { v.Repair(); return 0; });
+        }
+        catch
+        {
+        }
+    }
+
+    private bool TrySpawnPdmPurchasedVehicle(VehicleEntry chosen, string plateText)
+    {
+        try
+        {
+            if (chosen == null)
+                return false;
+
+            Vector3[] points = SimeonsShowroomFix.PdmDeliverySpawnPoints;
+            if (points == null || points.Length == 0)
+                return false;
+
+            Model model = new Model((int)chosen.Hash);
+            if (!model.IsValid || !model.IsInCdImage)
+                return false;
+
+            if (!model.IsLoaded)
+            {
+                model.Request(1000);
+                int waited = 0;
+                while (!model.IsLoaded && waited < 3000)
+                {
+                    Script.Wait(50);
+                    waited += 50;
+                }
+            }
+
+            if (!model.IsLoaded)
+                return false;
+
+            Vehicle veh = null;
+            Vector3 spawn = points[_rng.Next(points.Length)];
+
+            for (int i = 0; i < points.Length && (veh == null || !veh.Exists()); i++)
+            {
+                Vector3 candidate = points[(i + _rng.Next(points.Length)) % points.Length];
+                try
+                {
+                    veh = World.CreateVehicle(model, candidate, PdmShowroomBridge.ShowroomPreviewHeading);
+                    spawn = candidate;
+                }
+                catch
+                {
+                    veh = null;
+                }
+            }
+
+            if (veh == null || !veh.Exists())
+                return false;
+
+            // --- Bắt đầu đoạn sắp xếp và chèn mới theo hướng dẫn ---
+            try
+            {
+                veh.PlaceOnGround();
+                veh.Repair();
+                veh.DirtLevel = 0f;
+                veh.IsEngineRunning = true;
+                veh.LockStatus = VehicleLockStatus.Unlocked;
+                veh.IsPersistent = true;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(plateText))
+                    Function.Call(Hash.SET_VEHICLE_NUMBER_PLATE_TEXT, veh.Handle, plateText);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                ApplyPdmShowroomUpgrades(veh);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                Game.Player.Character.Task.ClearAllImmediately();
+                Game.Player.Character.SetIntoVehicle(veh, VehicleSeat.Driver);
+            }
+            catch
+            {
+                try { Function.Call(Hash.SET_PED_INTO_VEHICLE, Game.Player.Character.Handle, veh.Handle, -1); } catch { }
+            }
+            // --- Kết thúc đoạn sắp xếp và chèn mới ---
+
+            try
+            {
+                var meta = new PersistentManager.VehicleMeta
+                {
+                    PurchasePrice = Math.Max(0, _luiDetailPrice)
+                };
+                PersistentManager.RegisterVehicle(veh, meta);
+            }
+            catch
+            {
+                try { PersistentManager.RegisterVehicle(veh); } catch { }
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -1639,6 +2054,12 @@ public partial class InstantRefill : Script
         ClearVehiclePreview();
 
         _luiDetailVehicle = chosen;
+
+        // --- THÊM THEO HƯỚNG DẪN: Cập nhật Special Offer ngay sau khi gán _luiDetailVehicle ---
+        _luiDetailSpecialOfferAvailable = RollPdmSpecialOfferForCurrentVehicle();
+        _luiDetailSpecialOfferUiSync = false;
+        // ----------------------------------------------------------------------------------
+
         _luiDetailForceFixedSalePrice = forceFixedSalePrice;
 
         // Thêm biến kiểm tra xe chỉ mua bằng tiền bẩn theo hướng dẫn
@@ -1648,7 +2069,13 @@ public partial class InstantRefill : Script
         _luiBaseVehiclePrice = chosen.GetRandomPrice(_rng, false, 0);
         _luiUseDiscountTicket = false;
 
-        _luiDetailPrice = ComputeVehicleMenuPrice(chosen, _luiDetailForceFixedSalePrice, false);
+        // --- THAY ĐỔI DÒNG TÍNH GIÁ THÀNH (Có truyền thêm _luiDetailSpecialOfferAvailable) ---
+        _luiDetailPrice = ComputeVehicleMenuPrice(
+            chosen,
+            _luiDetailForceFixedSalePrice,
+            false,
+            _luiDetailSpecialOfferAvailable);
+        // ----------------------------------------------------------------------------------
 
         // --- ĐOẠN MÃ THAY THẾ THEO HƯỚNG DẪN MỚI (SAU KHI TÍNH _luiDetailPrice) ---
         bool unlockTarget =
@@ -1818,7 +2245,13 @@ public partial class InstantRefill : Script
             }
 
             _luiUseDiscountTicket = ticketItem.Checked;
-            _luiDetailPrice = ComputeVehicleMenuPrice(chosen, _luiDetailForceFixedSalePrice, _luiUseDiscountTicket);
+
+            // Sửa phần tính giá: Bổ sung tham số _luiDetailSpecialOfferAvailable để giữ ưu đãi PDM
+            _luiDetailPrice = ComputeVehicleMenuPrice(
+                chosen,
+                _luiDetailForceFixedSalePrice,
+                _luiUseDiscountTicket,
+                _luiDetailSpecialOfferAvailable);
 
             // Cập nhật giá mở khóa sau khi tính lại giá mua nếu xe có giá mở khóa
             if (_luiDetailHasUnlockPrice)
@@ -1839,6 +2272,54 @@ public partial class InstantRefill : Script
         };
 
         _luiVehicleDetailMenu.Add(ticketItem);
+
+        // [THAY THẾ] Chèn item ưu đãi đặc biệt mới ngay sau item thẻ giảm giá
+        if (_luiDetailSpecialOfferAvailable)
+        {
+            string policyTitle = string.IsNullOrWhiteSpace(_luiDetailSpecialOfferTitle)
+                ? (_luiDetailSpecialOfferIsIncrease
+                    ? "Chính sách tăng giá"
+                    : "Nhận sự ưu đãi")
+                : _luiDetailSpecialOfferTitle;
+
+            string policyDesc = string.IsNullOrWhiteSpace(_luiDetailSpecialOfferDescription)
+                ? (_luiDetailSpecialOfferIsIncrease
+                    ? string.Format("Có {0}% giá xe tăng thêm 25%.", _luiDetailSpecialOfferChancePercent)
+                    : string.Format("Có {0}% nhận ưu đãi giảm giá.", _luiDetailSpecialOfferChancePercent))
+                : _luiDetailSpecialOfferDescription;
+
+            var specialOfferItem = new NativeCheckboxItem(policyTitle, true);
+            specialOfferItem.Checked = true;
+            specialOfferItem.Description = policyDesc;
+
+            specialOfferItem.CheckboxChanged += (s, e) =>
+            {
+                if (_luiDetailSpecialOfferUiSync)
+                    return;
+
+                try
+                {
+                    _luiDetailSpecialOfferUiSync = true;
+
+                    if (!specialOfferItem.Checked)
+                    {
+                        specialOfferItem.Checked = true;
+                        PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                    }
+                }
+                finally
+                {
+                    _luiDetailSpecialOfferUiSync = false;
+                }
+            };
+
+            specialOfferItem.Selected += (s, e) =>
+            {
+                SpawnVehiclePreview(chosen);
+            };
+
+            _luiVehicleDetailMenu.Add(specialOfferItem);
+        }
 
         // item 5: xác nhận mua - Bỏ icon khóa khi đã có unlock và cập nhật description động
         var confirm = (dirtyOnly && !_luiDetailHasUnlockPrice)
@@ -2108,13 +2589,68 @@ public partial class InstantRefill : Script
             if (_luiUseDiscountTicket)
                 TryConsumeVehicleDiscountTicket();
 
-            ClearVehiclePreview();
-
             // Đổi giá lưu vào PersistentManager.RegisterVehicle cho nhánh chuyển hóa
             int purchasePriceForRegister = cashConversionMode ? totalCashCost : finalCost;
             string plateSnapshot = dirtyOnly ? "" : plateText;
 
-            // Thực hiện giao xe
+            // --- NHÁNH KIỂM TRA PDM SHOWROOM MODE (THÊM VÀO ĐÂY) ---
+            if (_pdmShowroomMode && PdmShowroomBridge.IsActive)
+            {
+                GTA.UI.Screen.FadeOut(1000);
+                Script.Wait(1000);
+
+                ClearVehiclePreview();
+
+                bool spawned = TrySpawnPdmPurchasedVehicle(chosen, plateSnapshot);
+                if (!spawned)
+                {
+                    // hoàn tiền nếu spawn thất bại
+                    if (dirtyOnly)
+                    {
+                        if (cashConversionMode)
+                            Game.Player.Money += totalCashCost;
+                        else if (unlockActive)
+                        {
+                            CityBlackoutHackerState.AddDirtyMoneyForCurrentCharacter(unlockCost);
+                            Game.Player.Money += finalCost;
+                        }
+                        else
+                        {
+                            CityBlackoutHackerState.AddDirtyMoneyForCurrentCharacter(finalCost);
+                        }
+                    }
+                    else
+                    {
+                        Game.Player.Money += finalCost;
+                    }
+
+                    GTA.UI.Screen.FadeIn(1000);
+                    GTA.UI.Screen.ShowSubtitle("~r~Không thể spawn xe tại PDM.", 3000);
+                    return;
+                }
+
+                PdmShowroomBridge.Deactivate();
+                CloseLemonVehicleMenus(false);
+
+                GTA.UI.Screen.FadeIn(1000);
+
+                _pdmShowroomMode = false;
+
+                chosen.TimesPurchased = Math.Max(0, chosen.TimesPurchased + 1);
+                PlayFrontendSound("PURCHASE", "HUD_FRONTEND_DEFAULT_SOUNDSET");
+                ShowFeedMessage(
+                    L("VehicleFeed_Title", "Online Shop"),
+                    L("VehicleFeed_Subtitle", "Mua hàng"),
+                    LT("VehicleFeed_SuccessMessage", "{prefix} Dù gì thì cũng cảm ơn bạn đã mua hàng nhé! Nhớ quay lại mua tiếp nha!",
+                    "{prefix}", _msgSuccess[_rng.Next(_msgSuccess.Length)] ?? string.Empty)
+                );
+                return;
+            }
+            // --------------------------------------------------------
+
+            ClearVehiclePreview();
+
+            // Thực hiện giao xe thông thường
             VehicleDelivery.RequestDelivery(chosen.Hash, player.Position, (veh) =>
             {
                 try
