@@ -72,6 +72,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="AssetLeaking.cs" />
     <Compile Include="AuctionHouse.cs" />
     <Compile Include="AutoDrive.cs" />
     <Compile Include="Banker.cs" />
@@ -90,6 +91,7 @@
     <Compile Include="PlaneDeliveryContractEvent.cs" />
     <Compile Include="PrimeAutoHandover.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Refinance.cs" />
     <Compile Include="Reward.cs" />
     <Compile Include="Sale.cs" />
     <Compile Include="PremiumDeluxeMotorsport.cs" />
@@ -97,6 +99,7 @@
     <Compile Include="SpendingAccumulatorStore.cs" />
     <Compile Include="SteveHaines.cs" />
     <Compile Include="SubmarineDeliveryContractEvent.cs" />
+    <Compile Include="Clifford.cs" />
     <Compile Include="Vehicle.cs" />
     <Compile Include="VehicleDelivery.cs" />
     <Compile Include="VehicleDeliveryContractEvent.cs" />

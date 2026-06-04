@@ -242,6 +242,7 @@ public partial class FleecaBankLoanScript : Script
                 return;
 
             SyncStateForCurrentCharacter();
+            SyncLoanStateFromMinotaurIfNeeded();
 
             EnsureFleecabankContactRegistered();
             EnsureLoanMenuCreated();
@@ -267,6 +268,76 @@ public partial class FleecaBankLoanScript : Script
         _quickPayFeeRateFirst7Days = -1m;
         _quickPayFeeRateNext10Days = -1m;
         _quickPayFeeRateAfter17Days = -1m;
+    }
+
+    private bool TryGetMinotaurOverride(out long debt, out decimal rate)
+    {
+        debt = 0;
+        rate = 0m;
+
+        try
+        {
+            return MinotaurBankBridge.TryGetOverrideDebtAndRate(out debt, out rate)
+                   && debt > 0
+                   && rate > 0m;
+        }
+        catch
+        {
+            debt = 0;
+            rate = 0m;
+            return false;
+        }
+    }
+
+    private bool SyncLoanStateFromMinotaurIfNeeded()
+    {
+        try
+        {
+            if (!_loanActive || _loanRemainingDebt <= 0)
+                return false;
+
+            if (!TryGetMinotaurOverride(out long overriddenDebt, out decimal overriddenRate))
+                return false;
+
+            int currentHash = GetCurrentCharacterHash();
+            if (currentHash == 0)
+                return false;
+
+            if (_stateOwnerHash != 0 && _stateOwnerHash != currentHash)
+                return false;
+
+            overriddenDebt = Math.Max(0, overriddenDebt);
+            if (overriddenDebt <= 0)
+                return false;
+
+            long newDailyDue = Math.Max(1L, (long)Math.Ceiling((decimal)overriddenDebt * overriddenRate));
+
+            bool changed =
+                _loanPrincipal != overriddenDebt ||
+                _loanRemainingDebt != overriddenDebt ||
+                _loanDailyDue != newDailyDue;
+
+            _loanPrincipal = overriddenDebt;
+            _loanRemainingDebt = overriddenDebt;
+            _loanDailyDue = newDailyDue;
+            _loanActive = true;
+
+            if (changed)
+            {
+                SaveStateForOwner(currentHash);
+                RefreshLoanMenuQuickPayText();
+                RefreshLoanMenuItems();
+                RefreshQuickPayDetailMenu();
+                RefreshCollateralMenuText();
+            }
+
+            return changed;
+        }
+        catch (Exception ex)
+        {
+            Log("SyncLoanStateFromMinotaurIfNeeded failed: " + ex);
+            return false;
+        }
     }
 
     private void UpdateLemonUiMouseState()
@@ -1055,6 +1126,7 @@ public partial class FleecaBankLoanScript : Script
                 return;
 
             EnsureLoanTypeMenuCreated();
+            ReloadLoanStateFromDiskForCurrentCharacter();
 
             if (_loanMenu != null) _loanMenu.Visible = false;
             if (_loanPackageMenu != null) _loanPackageMenu.Visible = false;
@@ -1243,6 +1315,7 @@ public partial class FleecaBankLoanScript : Script
                 return;
 
             EnsureLoanPackageMenuCreated();
+            ReloadLoanStateFromDiskForCurrentCharacter();
             RefreshLoanPackageMenu();
 
             if (_loanMenu != null) _loanMenu.Visible = false;
@@ -1363,6 +1436,8 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            SyncLoanStateFromMinotaurIfNeeded();
+
             if (_loanCollateralMenu == null)
                 return;
 
@@ -1427,6 +1502,51 @@ public partial class FleecaBankLoanScript : Script
         }
     }
 
+    private void ResetLoanStateToDefaults()
+    {
+        _loanPrincipal = 0;
+        _loanRemainingDebt = 0;
+        _loanDailyDue = 0;
+        _loanActive = false;
+        _loanLastChargedDayStamp = -1;
+        _dueWindowStartHour = -1;
+        _dueWindowEndHour = -1;
+        _loanCollateralMode = false;
+        _loanStartDayStamp = -1;
+        _nextDueCheckAtGameTime = 0;
+
+        ResetQuickPayFeeRates();
+    }
+
+    private void ReloadLoanStateFromDiskForCurrentCharacter()
+    {
+        try
+        {
+            int currentHash = GetCurrentCharacterHash();
+            if (currentHash == 0)
+                return;
+
+            if (_stateOwnerHash != 0 && _stateOwnerHash != currentHash)
+                SaveStateForOwner(_stateOwnerHash);
+
+            // Luôn đọc lại từ file, không dùng state cũ trong RAM
+            LoadStateForOwner(currentHash);
+            SyncCollateralStateFromFileForCurrentCharacter();
+
+            _stateOwnerHash = currentHash;
+            _activeCharacterHash = currentHash;
+            _stateLoaded = true;
+
+            RefreshLoanMenuQuickPayText();
+            RefreshLoanMenuItems();
+            RefreshCollateralMenuText();
+        }
+        catch (Exception ex)
+        {
+            Log("ReloadLoanStateFromDiskForCurrentCharacter failed: " + ex);
+        }
+    }
+
     private void OpenCollateralDetailMenu()
     {
         try
@@ -1434,10 +1554,10 @@ public partial class FleecaBankLoanScript : Script
             if (!EnsureFleecaBankAccessAllowed())
                 return;
 
-            // Thêm hàm đồng bộ trạng thái từ file cho nhân vật hiện tại
+            EnsureCollateralMenuCreated();
+            ReloadLoanStateFromDiskForCurrentCharacter();
             SyncCollateralStateFromFileForCurrentCharacter();
 
-            EnsureCollateralMenuCreated();
             RefreshCollateralDetailMenu();
             UpdateLemonUiMouseState();
 
@@ -1461,6 +1581,9 @@ public partial class FleecaBankLoanScript : Script
         {
             if (!EnsureFleecaBankAccessAllowed())
                 return;
+
+            EnsureLoanMenuCreated();
+            ReloadLoanStateFromDiskForCurrentCharacter();
 
             if (!_loanActive || _loanRemainingDebt <= 0)
             {
@@ -1489,6 +1612,8 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            SyncLoanStateFromMinotaurIfNeeded();
+
             if (_detailDebtItem == null || _detailFeeItem == null || _detailTotalItem == null)
                 return;
 
@@ -1539,7 +1664,7 @@ public partial class FleecaBankLoanScript : Script
                 return;
 
             EnsureLoanMenuCreated();
-            SyncCollateralStateFromFileForCurrentCharacter();
+            ReloadLoanStateFromDiskForCurrentCharacter();
 
             if (_loanTypeMenu != null) _loanTypeMenu.Visible = false;
             if (_loanPackageMenu != null) _loanPackageMenu.Visible = false;
@@ -1652,6 +1777,8 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            SyncLoanStateFromMinotaurIfNeeded();
+
             if (_loanRemainingDebt <= 0)
                 return 0;
 
@@ -1697,93 +1824,58 @@ public partial class FleecaBankLoanScript : Script
             }
 
             long totalPayoff = GetQuickPayTotal();
-            long money = Math.Max(0, Game.Player.Money);
-
-            // NHÁNH 1: TRẢ ĐỦ TIỀN
-            if (money >= totalPayoff)
+            if (totalPayoff <= 0)
             {
-                DeductPlayerMoney(totalPayoff);
+                ShowFleecaNotification(
+                    L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
+                    L("Credit_NoDebt", "Bạn không có khoản nợ nào cần thanh toán."));
+                return;
+            }
 
-                _loanRemainingDebt = 0;
-                _loanActive = false;
-                _loanPrincipal = 0;
-                _loanDailyDue = 0;
-                _loanStartDayStamp = -1;
-                _loanLastChargedDayStamp = GetInGameDayStamp();
-                _nextDueCheckAtGameTime = 0;
+            // Dùng chung cơ chế thu nợ:
+            // - trừ tiền mặt trước
+            // - thiếu thì siết nhiều xe liên tiếp
+            // - nếu vẫn thiếu sau khi hết xe thì CollectDueAmount() sẽ gán 5 sao
+            long collected = CollectDueAmount(totalPayoff);
 
-                // Mở khóa xe và tắt chế độ thế chấp trước khi lưu trạng thái
-                UnlockAllCollateralVehiclesForCurrentCharacter();
-                _loanCollateralMode = false;
-                PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
+            // Tất toán trước hạn: dù đủ hay thiếu tài sản, khoản nợ vẫn được đóng
+            _loanRemainingDebt = 0;
+            ClearMinotaurStateForCurrentCharacter();
+            _loanActive = false;
+            _loanPrincipal = 0;
+            _loanDailyDue = 0;
+            _loanStartDayStamp = -1;
+            _loanLastChargedDayStamp = GetInGameDayStamp();
+            _nextDueCheckAtGameTime = 0;
 
-                SaveStateForOwner(currentHash);
-                RefreshLoanMenuQuickPayText();
-                RefreshLoanMenuItems(); // <--- Thêm ở đây để item biến mất sau khi trả đủ
+            UnlockAllCollateralVehiclesForCurrentCharacter();
+            _loanCollateralMode = false;
+            PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
 
+            SaveStateForOwner(currentHash);
+            RefreshLoanMenuQuickPayText();
+            RefreshLoanMenuItems();
+
+            if (collected >= totalPayoff)
+            {
                 ShowFleecaNotification(
                     L("Credit_QuickPaySuccessTitle", "Tất toán sớm"),
                     string.Format(
                         L("Credit_QuickPaySuccessDesc",
                         "Đã tất toán nợ trước hạn. Số tiền đã trừ: ~HUD_COLOUR_DEGEN_GREEN~${0:N0}~s~."),
                         totalPayoff));
-
-                DespawnBankerNpc();
-                return;
-            }
-
-            int allMoney = (int)Math.Max(0, Game.Player.Money);
-            if (allMoney > 0)
-                DeductPlayerMoney(allMoney);
-
-            ShowFleecaNotification(
-                L("Credit_WarningTitle", "Cảnh báo ngân hàng"),
-                L("Credit_NotEnoughMoneyQuickPay", "Bạn không đủ tiền để tất toán."));
-
-            bool seized = TrySeizeOneOwnedVehicleForCurrentCharacter(currentHash);
-
-            // NHÁNH 2: BỊ TỊCH THU XE VÀ XÓA NỢ (KHOẢN VAY ĐƯỢC ĐÓNG)
-            if (seized)
-            {
-                _loanRemainingDebt = 0;
-                _loanActive = false;
-                _loanPrincipal = 0;
-                _loanDailyDue = 0;
-                _loanLastChargedDayStamp = GetInGameDayStamp();
-                _nextDueCheckAtGameTime = 0;
-
-                // Mở khóa các xe còn lại (nếu có) và tắt chế độ thế chấp trước khi lưu trạng thái
-                UnlockAllCollateralVehiclesForCurrentCharacter();
-                _loanCollateralMode = false;
-                PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
-
-                SaveStateForOwner(currentHash);
-                RefreshLoanMenuQuickPayText();
-                RefreshLoanMenuItems(); // <--- Thêm ở đây để item biến mất sau khi siết nợ xóa nợ
-
-                ShowFleecaNotification(
-                    L("Credit_SeizureTitle", "Siết nợ"),
-                    L("Credit_SeizureDesc",
-                    "Ngân hàng đã tịch thu phương tiện để tất toán khoản nợ vì bạn không đủ khả năng trả nợ."));
-
-                DespawnBankerNpc();
             }
             else
             {
-                // NHÁNH 3: KHÔNG TỊCH THU ĐƯỢC XE
-                long stillOwe = Math.Max(0, totalPayoff - allMoney);
-                _loanRemainingDebt = stillOwe;
-                _loanActive = _loanRemainingDebt > 0;
-
-                SaveStateForOwner(currentHash);
-                RefreshLoanMenuQuickPayText();
-                RefreshLoanMenuItems(); // <--- Thêm ở đây để đồng bộ lại menu (hoặc ẩn item nếu nợ về 0)
-
                 ShowFleecaNotification(
-                    L("Credit_WarningShortTitle", "Cảnh báo"),
-                    L("Credit_NoVehicleSeized",
-                    "Không tìm thấy phương tiện nào để tịch thu. Khoản nợ ~HUD_COLOUR_REDLIGHT~vẫn còn tồn tại.~s~"));
+                    L("Credit_SeizureTitle", "Siết nợ"),
+                    string.Format(
+                        L("Credit_SeizureDesc",
+                        "Ngân hàng đã thu toàn bộ tiền mặt hiện có và tịch thu thêm phương tiện để tất toán khoản nợ. Phần thiếu còn lại bị xử lý bằng biện pháp cưỡng chế."),
+                        totalPayoff));
             }
+
+            DespawnBankerNpc();
         }
         catch (Exception ex)
         {
@@ -2262,6 +2354,9 @@ public partial class FleecaBankLoanScript : Script
             // --- Logic mới: Khóa xe và tính lãi ---
             int currentHash = GetCurrentCharacterHash();
 
+            // Xóa trạng thái Minotaur cũ để đảm bảo khoản vay mới không bị dính trạng thái cũ
+            MinotaurBankBridge.ClearMinotaurStateForOwner(currentHash);
+
             // Cố gắng khóa tối đa 3 xe ngẫu nhiên của nhân vật hiện tại
             int lockedCount = LockRandomCollateralVehiclesForCurrentCharacter(currentHash, 3);
 
@@ -2308,6 +2403,8 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            SyncLoanStateFromMinotaurIfNeeded();
+
             int currentHash = GetCurrentCharacterHash();
             if (currentHash == 0)
                 return;
@@ -2425,6 +2522,7 @@ public partial class FleecaBankLoanScript : Script
                     L("Credit_SettleTitle", "Tất toán khoản nợ"),
                     L("Credit_PaidFull", "Khoản vay đã được thanh toán đầy đủ."));
 
+                ClearMinotaurStateForCurrentCharacter(); // <--- Thêm trước SaveStateForOwner(currentHash) khi _loanRemainingDebt <= 0
                 SaveStateForOwner(currentHash);
                 RefreshLoanMenuQuickPayText();
                 RefreshLoanMenuItems();
@@ -2469,7 +2567,7 @@ public partial class FleecaBankLoanScript : Script
                 return false;
 
             object chosen = candidates[_rng.Next(candidates.Count)];
-            RemovePersistentVehicleEntry(chosen);
+            AssetLeaking.TryConfiscateVehicleEntry(chosen, ownerHash);
             RefreshCollateralStateFileForCurrentCharacter();
             PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
             return true;
@@ -2506,6 +2604,10 @@ public partial class FleecaBankLoanScript : Script
             if (due <= 0)
                 return 0;
 
+            int ownerHash = GetCurrentCharacterHash();
+            if (ownerHash == 0)
+                return 0;
+
             long money = Math.Max(0, Game.Player.Money);
             long cashTaken = Math.Min(money, due);
             if (cashTaken > 0)
@@ -2523,13 +2625,18 @@ public partial class FleecaBankLoanScript : Script
                 Shuffle(vehicles);
 
             bool seizedAny = false;
+
             foreach (var entry in vehicles)
             {
                 if (remaining <= 0)
                     break;
 
                 long estimatedValue = GetVehicleCollateralValue(entry);
-                RemovePersistentVehicleEntry(entry);
+
+                // Chuyển nguyên dòng của xe này sang confiscated_vehicles_{ownerHash}.dat
+                if (!AssetLeaking.TryConfiscateVehicleEntry(entry, ownerHash))
+                    continue;
+
                 seizedAny = true;
 
                 long covered = Math.Min(estimatedValue, remaining);
@@ -2858,6 +2965,13 @@ public partial class FleecaBankLoanScript : Script
 
     private decimal GetCurrentDailyRate()
     {
+        try
+        {
+            if (MinotaurBankBridge.TryGetOverrideRate(out decimal overrideRate) && overrideRate > 0m)
+                return overrideRate;
+        }
+        catch { }
+
         if (!_loanCollateralMode)
             return NO_COLLATERAL_DAILY_RATE;
 
@@ -2923,19 +3037,14 @@ public partial class FleecaBankLoanScript : Script
                 object value = priceField.GetValue(entry);
                 if (value is int intValue && intValue > 0)
                     return intValue;
-            }
 
-            FieldInfo modelField = t.GetField("ModelHash", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            if (modelField != null)
-            {
-                object modelValue = modelField.GetValue(entry);
-                if (modelValue is uint modelHash)
-                    return 100_000L + (modelHash % 500_000u);
+                if (value is long longValue && longValue > 0)
+                    return longValue;
             }
         }
         catch { }
 
-        return 100_000L;
+        return 0L;
     }
 
     private void RemovePersistentVehicleEntry(object entry)
@@ -3037,13 +3146,15 @@ public partial class FleecaBankLoanScript : Script
         {
             Directory.CreateDirectory(_stateRoot);
 
+            ResetLoanStateToDefaults();
+
             string file = GetStateFileForOwner(ownerHash);
             if (!File.Exists(file))
             {
                 _stateLoaded = true;
-                _stateOwnerHash = ownerHash; // Cập nhật hash cho trường hợp file không tồn tại
+                _stateOwnerHash = ownerHash;
                 RefreshLoanMenuQuickPayText();
-                RefreshLoanMenuItems(); // Refresh menu items để đúng trạng thái
+                RefreshLoanMenuItems();
                 return;
             }
 
@@ -3108,19 +3219,9 @@ public partial class FleecaBankLoanScript : Script
                 _loanStartDayStamp = _loanLastChargedDayStamp > 0 ? _loanLastChargedDayStamp : GetInGameDayStamp();
                 savedVersion = 1;
             }
-            else
-            {
-                _loanCollateralMode = false;
-                _loanStartDayStamp = -1;
-                savedVersion = 1;
-            }
 
-            // Kiểm tra phiên bản lưu trữ để quyết định có roll lại phí hay không
             if (savedVersion < QUICK_PAY_FEE_RATE_STATE_VERSION)
-            {
-                // Save cũ: ép roll lại rate theo bản mới
                 ResetQuickPayFeeRates();
-            }
 
             EnsureQuickPayFeeRatesInitialized();
 
@@ -3129,15 +3230,33 @@ public partial class FleecaBankLoanScript : Script
             _stateOwnerHash = ownerHash;
 
             RefreshLoanMenuQuickPayText();
-            RefreshLoanMenuItems(); // Thêm refresh menu items sau khi load thành công
+            RefreshLoanMenuItems();
         }
         catch (Exception ex)
         {
             Log("LoadStateForOwner failed: " + ex);
+
+            ResetLoanStateToDefaults();
             _stateLoaded = true;
-            _stateOwnerHash = ownerHash; // Đảm bảo gán cả khi có lỗi xảy ra để tránh lệch state
+            _stateOwnerHash = ownerHash;
             RefreshLoanMenuQuickPayText();
-            RefreshLoanMenuItems(); // Thêm refresh menu items ở khối catch phòng khi lỗi nửa chừng
+            RefreshLoanMenuItems();
+        }
+    }
+
+    private void ClearMinotaurStateForCurrentCharacter()
+    {
+        try
+        {
+            int currentHash = GetCurrentCharacterHash();
+            if (currentHash == 0)
+                return;
+
+            MinotaurBankBridge.ClearMinotaurStateForOwner(currentHash);
+        }
+        catch (Exception ex)
+        {
+            Log("ClearMinotaurStateForCurrentCharacter failed: " + ex);
         }
     }
 

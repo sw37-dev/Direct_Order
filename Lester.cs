@@ -13,8 +13,8 @@ using System.Windows.Forms;
 
 public class Lester : Script
 {
-    private const string LesterContactNameFallback = "Lester";
-    private const string LesterContactIconName = "HC_N_LESTER";
+    private const string LesterContactNameFallback = "Lester Crest";
+    private const string LesterContactIconName = "CHAR_LESTER";
     private const int LesterDialTimeoutMs = 2500;
 
     private const int MenuCooldownMs = 5000;
@@ -324,7 +324,7 @@ public class Lester : Script
                 return;
 
             _menu = new NativeMenu(
-                T("LesterAuctionManipulation_MenuTitle", "Lester"),
+                T("LesterAuctionManipulation_MenuTitle", "Lester Crest"),
                 T("LesterAuctionManipulation_MenuSubtitle", "CHI TIẾT THAO TÚNG ĐẤU GIÁ"));
 
             _pool.Add(_menu);

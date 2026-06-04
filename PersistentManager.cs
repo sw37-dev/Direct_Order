@@ -2,6 +2,8 @@
 using GTA.Math;
 using GTA.Native;
 using GTA.UI;
+using iFruitAddon2;
+using LemonUI.Menus;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -9,7 +11,6 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
-using iFruitAddon2;
 
 public partial class PersistentManager : Script
 {
@@ -23,6 +24,37 @@ public partial class PersistentManager : Script
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "GTA V Mods", "PersistentManager"
     );
+
+    private static readonly string FleecaCollateralStateRoot = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    "GTA V Mods", "Fleeca Bank Loan");
+
+    private static readonly string DestroyedVehiclesFile = Path.Combine(DataFolder, "persistent_destroyed_vehicles.txt");
+
+    private static readonly List<PersistentVehicle> _destroyedVehicles = new List<PersistentVehicle>();
+    private static volatile bool _destroyedVehiclesDirty = false;
+
+    private const int MAX_DESTROYED_VEHICLES_PER_CHAR = 10;
+    private const double INSURANCE_RESTORE_PERCENT = 0.60;
+
+    // --- MMI Insurance menu state ---
+    private NativeMenu _mmiInsuranceMenu;
+    private NativeMenu _mmiInsuranceCharacterMenu;
+    private NativeMenu _mmiDestroyedVehicleMenu;
+
+    private bool _mmiInsuranceMenuReady = false;
+    private bool _mmiInsuranceCharacterMenuReady = false;
+    private bool _mmiDestroyedVehicleMenuReady = false;
+
+    private NativeCheckboxItem _mmiStandardRestoreItem;
+    private NativeItem _mmiRestoreDestroyedItem;
+    private NativeItem _mmiInsuranceConfirmItem;
+    private NativeItem _mmiInsuranceCancelItem;
+
+    private int _mmiSelectedOwnerHash = 0;
+    private readonly List<PersistentVehicle> _mmiDestroyedVehicleEntries = new List<PersistentVehicle>();
+    private readonly List<NativeCheckboxItem> _mmiDestroyedVehicleCheckboxItems = new List<NativeCheckboxItem>();
+    private bool _mmiDestroyedUiSync = false;
 
     private static readonly string WeaponsFile = Path.Combine(DataFolder, "persistent_weapons.txt");
     private static readonly string VehiclesFile = Path.Combine(DataFolder, "persistent_vehicles.txt");
@@ -357,9 +389,15 @@ public partial class PersistentManager : Script
                 _dealershipMenuDirty = false;
             }
 
-            if ((_dealershipMenu != null && _dealershipMenu.Visible) ||
-                (_dealershipDetailMenu != null && _dealershipDetailMenu.Visible) ||
-                (_dealershipBulkMenu != null && _dealershipBulkMenu.Visible))
+            bool dealershipMenuOpen = (_dealershipMenu != null && _dealershipMenu.Visible) ||
+    (_dealershipDetailMenu != null && _dealershipDetailMenu.Visible) ||
+    (_dealershipBulkMenu != null && _dealershipBulkMenu.Visible);
+
+            bool mmiMenuOpen = (_mmiInsuranceMenu != null && _mmiInsuranceMenu.Visible) ||
+                (_mmiInsuranceCharacterMenu != null && _mmiInsuranceCharacterMenu.Visible) ||
+                (_mmiDestroyedVehicleMenu != null && _mmiDestroyedVehicleMenu.Visible);
+
+            if (dealershipMenuOpen || mmiMenuOpen)
             {
                 _menuPool.Process();
                 FlushUiActions();
@@ -369,11 +407,7 @@ public partial class PersistentManager : Script
                 FlushUiActions();
             }
 
-            bool dealershipMenuOpen = (_dealershipMenu != null && _dealershipMenu.Visible) ||
-                 (_dealershipDetailMenu != null && _dealershipDetailMenu.Visible) ||
-                 (_dealershipBulkMenu != null && _dealershipBulkMenu.Visible);
-
-            if (dealershipMenuOpen)
+            if (dealershipMenuOpen || mmiMenuOpen)
                 Interval = 0;
             else if (_mmiRestorePending)
                 Interval = 0;
@@ -432,7 +466,8 @@ public partial class PersistentManager : Script
                 _maintenanceClock = 0;
             }
 
-            if ((_weaponsDirty || _vehiclesDirty) && (Game.GameTime - _lastSaveTime > SAVE_BACKOFF_MS))
+            // Thay đổi điều kiện kiểm tra bao gồm cả _destroyedVehiclesDirty tại đây
+            if ((_weaponsDirty || _vehiclesDirty || _destroyedVehiclesDirty) && (Game.GameTime - _lastSaveTime > SAVE_BACKOFF_MS))
             {
                 if (Game.GameTime - _lastSaveAttempt > SAVE_BACKOFF_MS)
                 {
@@ -448,6 +483,13 @@ public partial class PersistentManager : Script
                     {
                         try { SaveVehiclesFileInternal(); }
                         catch (Exception ex) { Log("OnTick: SaveVehiclesFileInternal failed: " + ex.Message); }
+                    }
+
+                    // Thêm logic xử lý lưu xe bị hủy tại đây
+                    if (_destroyedVehiclesDirty)
+                    {
+                        try { SaveDestroyedVehiclesFileInternal(); }
+                        catch (Exception ex) { Log("OnTick: SaveDestroyedVehiclesFileInternal failed: " + ex.Message); }
                     }
 
                     _lastSaveTime = Game.GameTime;
@@ -703,8 +745,6 @@ public partial class PersistentManager : Script
 
             _mmiRestorePending = false;
 
-            RestoreForCurrentPlayer();
-
             try
             {
                 Game.Player.Character.Task.PutAwayMobilePhone();
@@ -717,6 +757,8 @@ public partial class PersistentManager : Script
                 phone?.Close(0);
             }
             catch { }
+
+            OpenMmiInsuranceMenu();
         }
         catch (Exception ex)
         {
@@ -1831,18 +1873,8 @@ public partial class PersistentManager : Script
                         {
                             try { SafeRemoveBlip(pv.MapBlip); } catch (Exception ex) { Log("UpdatePersistentVehicleState remove blip: " + ex.Message); }
 
-                            lock (_persistVehicles)
-                            {
-                                try
-                                {
-                                    var found = _persistVehicles.FirstOrDefault(x => x == pv);
-                                    if (found != null) _persistVehicles.Remove(found);
-                                    _vehiclesDirty = true;
-                                }
-                                catch (Exception ex) { Log("UpdatePersistentVehicleState remove from list: " + ex.ToString()); }
-                            }
-
-                            Log($"UpdatePersistentVehicleState: vehicle destroyed -> removed entry model 0x{pv.ModelHash:X}");
+                            MovePersistentVehicleToDestroyedStorage(pv);
+                            Log($"UpdatePersistentVehicleState: vehicle destroyed -> moved to destroyed storage model 0x{pv.ModelHash:X}");
                             continue;
                         }
 
@@ -1862,6 +1894,391 @@ public partial class PersistentManager : Script
             }
         }
         catch (Exception ex) { Log("UpdatePersistentVehicleState: " + ex.ToString()); }
+    }
+
+    private void MovePersistentVehicleToDestroyedStorage(PersistentVehicle pv)
+    {
+        try
+        {
+            if (pv == null)
+                return;
+
+            PersistentVehicle stored = CloneVehicleForStorage(pv);
+            if (stored == null)
+                return;
+
+            stored.RuntimeVehicle = null;
+            stored.MapBlip = null;
+            stored.AutoSpawnEnabled = false;
+
+            lock (_persistVehicles)
+            {
+                var found = _persistVehicles.FirstOrDefault(x => x == pv);
+                if (found != null)
+                    _persistVehicles.Remove(found);
+
+                _vehiclesDirty = true;
+            }
+
+            lock (_destroyedVehicles)
+            {
+                _destroyedVehicles.Add(stored);
+                EnforceDestroyedVehicleCaps_NoSave();
+                _destroyedVehiclesDirty = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("MovePersistentVehicleToDestroyedStorage failed: " + ex.ToString());
+        }
+    }
+
+    private void EnforceDestroyedVehicleCaps_NoSave()
+    {
+        try
+        {
+            var owners = _destroyedVehicles.Select(x => x.OwnerModelHash).Distinct().ToList();
+
+            foreach (var owner in owners)
+            {
+                while (_destroyedVehicles.Count(x => x.OwnerModelHash == owner) > MAX_DESTROYED_VEHICLES_PER_CHAR)
+                {
+                    var oldest = _destroyedVehicles.FirstOrDefault(x => x.OwnerModelHash == owner);
+                    if (oldest == null)
+                        break;
+
+                    _destroyedVehicles.Remove(oldest);
+                }
+            }
+
+            while (_destroyedVehicles.Count > 30)
+            {
+                if (_destroyedVehicles.Count == 0) break;
+                _destroyedVehicles.RemoveAt(0);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("EnforceDestroyedVehicleCaps_NoSave failed: " + ex.ToString());
+        }
+    }
+
+    private void EnforceDestroyedVehicleCaps()
+    {
+        lock (_destroyedVehicles)
+        {
+            EnforceDestroyedVehicleCaps_NoSave();
+            _destroyedVehiclesDirty = true;
+        }
+    }
+
+    private static void SaveDestroyedVehiclesFileInternal()
+    {
+        try
+        {
+            EnsureDataFolderExists();
+
+            string[] lines;
+            lock (_destroyedVehicles)
+            {
+                lines = _destroyedVehicles.Select(v =>
+                {
+                    string modsSerialized = "";
+                    if (v.Mods != null && v.Mods.Count > 0)
+                    {
+                        var parts = v.Mods.Select(kv => $"{kv.Key}:{kv.Value}");
+                        modsSerialized = string.Join(",", parts);
+                    }
+
+                    int turbo = v.TurboOn ? 1 : 0;
+
+                    string extrasSerialized = "";
+                    try
+                    {
+                        if (v.ExtrasExist != null && v.ExtrasExist.Count > 0)
+                            extrasSerialized = string.Join(",", v.ExtrasExist);
+                    }
+                    catch { }
+
+                    string tyreRgb = "";
+                    try
+                    {
+                        if (v.TyreSmokeColor != null && v.TyreSmokeColor.Length >= 3)
+                            tyreRgb = $"{v.TyreSmokeColor[0]},{v.TyreSmokeColor[1]},{v.TyreSmokeColor[2]}";
+                    }
+                    catch { }
+
+                    string neonRgb = "";
+                    try
+                    {
+                        if (v.NeonColor != null && v.NeonColor.Length >= 3)
+                            neonRgb = $"{v.NeonColor[0]},{v.NeonColor[1]},{v.NeonColor[2]}";
+                    }
+                    catch { }
+
+                    string dashStr = v.DashboardColor.HasValue ? v.DashboardColor.Value.ToString(CultureInfo.InvariantCulture) : "";
+
+                    string modelString = GetVehicleDisplayName(v.ModelHash) ?? $"0x{v.ModelHash:X}";
+                    modelString = modelString.Replace("|", "");
+                    string hexSuffix = $" (0x{v.ModelHash:X})";
+                    if (!modelString.EndsWith($"(0x{v.ModelHash:X})", StringComparison.OrdinalIgnoreCase))
+                        modelString = $"{modelString}{hexSuffix}";
+
+                    return string.Format(CultureInfo.InvariantCulture,
+                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}",
+                        modelString,
+                        v.Position.X, v.Position.Y, v.Position.Z,
+                        v.Heading,
+                        (v.Plate ?? "").Replace("|", ""),
+                        v.OwnerModelHash,
+                        v.AutoSpawnEnabled ? 1 : 0,
+                        modsSerialized,
+                        turbo,
+                        v.PurchasePrice,
+                        (v.SavedLivery.HasValue ? v.SavedLivery.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.PrimaryColor.HasValue ? v.PrimaryColor.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.SecondaryColor.HasValue ? v.SecondaryColor.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.PearlColor.HasValue ? v.PearlColor.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.WheelColor.HasValue ? v.WheelColor.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        (v.WindowTint.HasValue ? v.WindowTint.Value.ToString(CultureInfo.InvariantCulture) : ""),
+                        tyreRgb,
+                        extrasSerialized,
+                        neonRgb,
+                        dashStr,
+                        v.IsCollateralLocked ? 1 : 0
+                    );
+                }).ToArray();
+            }
+
+            WriteLinesAtomic(DestroyedVehiclesFile, lines);
+            _destroyedVehiclesDirty = false;
+        }
+        catch (Exception ex)
+        {
+            Log("SaveDestroyedVehiclesFileInternal failed: " + ex.ToString());
+        }
+    }
+
+    private bool TryParsePersistentVehicleLine(string line, out PersistentVehicle vehicle)
+    {
+        vehicle = null;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return false;
+
+            var p = line.Split('|');
+            if (p.Length < 7)
+                return false;
+
+            int ownerH = 0;
+            if (p.Length > 6)
+                int.TryParse(p[6], out ownerH);
+
+            uint modelHash = 0;
+            string modelField = p[0].Trim();
+
+            bool parsed = false;
+            try
+            {
+                int idx = modelField.IndexOf("0x", StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    string hexPart = modelField.Substring(idx + 2).Trim();
+                    if (uint.TryParse(hexPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out modelHash))
+                        parsed = true;
+                }
+
+                if (!parsed)
+                {
+                    if (uint.TryParse(modelField, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out modelHash))
+                        parsed = true;
+                }
+            }
+            catch
+            {
+                parsed = false;
+            }
+
+            if (!parsed)
+            {
+                if (!TryGetModelHashFromName(modelField, out modelHash))
+                    return false;
+            }
+
+            float x = 0f, y = 0f, z = 0f, heading = 0f;
+            float.TryParse(p[1], NumberStyles.Float, CultureInfo.InvariantCulture, out x);
+            float.TryParse(p[2], NumberStyles.Float, CultureInfo.InvariantCulture, out y);
+            float.TryParse(p[3], NumberStyles.Float, CultureInfo.InvariantCulture, out z);
+            float.TryParse(p[4], NumberStyles.Float, CultureInfo.InvariantCulture, out heading);
+
+            bool autoSpawn = false;
+            if (p.Length > 7)
+            {
+                int a = 0;
+                int.TryParse(p[7], out a);
+                autoSpawn = (a != 0);
+            }
+
+            Dictionary<int, int> modsDict = new Dictionary<int, int>();
+            if (p.Length > 8 && !string.IsNullOrEmpty(p[8]))
+            {
+                var parts = p[8].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var part in parts)
+                {
+                    try
+                    {
+                        var kv = part.Split(':');
+                        if (kv.Length != 2) continue;
+
+                        int mt = 0, mi = 0;
+                        if (int.TryParse(kv[0], out mt) && int.TryParse(kv[1], out mi))
+                            modsDict[mt] = mi;
+                    }
+                    catch { }
+                }
+            }
+
+            int turbo = 0;
+            if (p.Length > 9) int.TryParse(p[9], out turbo);
+
+            int purchasePrice = 0;
+            if (p.Length > 10) int.TryParse(p[10], out purchasePrice);
+
+            int? savedLivery = null;
+            int? primary = null;
+            int? secondary = null;
+            int? pearl = null;
+            int? wheel = null;
+            int? windowTint = null;
+            int[] tyreRgb = new int[3] { 0, 0, 0 };
+            List<int> extrasExist = new List<int>();
+            int[] neonRgb = null;
+            int? dashColor = null;
+            bool collateralLocked = false;
+
+            try
+            {
+                if (p.Length > 11 && !string.IsNullOrEmpty(p[11])) { int tmp; if (int.TryParse(p[11], out tmp)) savedLivery = tmp; }
+                if (p.Length > 12 && !string.IsNullOrEmpty(p[12])) { int tmp; if (int.TryParse(p[12], out tmp)) primary = tmp; }
+                if (p.Length > 13 && !string.IsNullOrEmpty(p[13])) { int tmp; if (int.TryParse(p[13], out tmp)) secondary = tmp; }
+                if (p.Length > 14 && !string.IsNullOrEmpty(p[14])) { int tmp; if (int.TryParse(p[14], out tmp)) pearl = tmp; }
+                if (p.Length > 15 && !string.IsNullOrEmpty(p[15])) { int tmp; if (int.TryParse(p[15], out tmp)) wheel = tmp; }
+                if (p.Length > 16 && !string.IsNullOrEmpty(p[16])) { int tmp; if (int.TryParse(p[16], out tmp)) windowTint = tmp; }
+
+                if (p.Length > 17 && !string.IsNullOrEmpty(p[17]))
+                {
+                    var rr = p[17].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (rr.Length >= 3)
+                    {
+                        int.TryParse(rr[0], out tyreRgb[0]);
+                        int.TryParse(rr[1], out tyreRgb[1]);
+                        int.TryParse(rr[2], out tyreRgb[2]);
+                    }
+                }
+
+                if (p.Length > 18 && !string.IsNullOrEmpty(p[18]))
+                {
+                    foreach (var s in p[18].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        int ei = 0;
+                        if (int.TryParse(s, out ei)) extrasExist.Add(ei);
+                    }
+                }
+
+                if (p.Length > 19 && !string.IsNullOrEmpty(p[19]))
+                {
+                    var rr = p[19].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (rr.Length >= 3)
+                    {
+                        int nr = 0, ng = 0, nb = 0;
+                        int.TryParse(rr[0], out nr);
+                        int.TryParse(rr[1], out ng);
+                        int.TryParse(rr[2], out nb);
+                        neonRgb = new int[] { nr, ng, nb };
+                    }
+                }
+
+                if (p.Length > 20 && !string.IsNullOrEmpty(p[20]))
+                {
+                    int tmp;
+                    if (int.TryParse(p[20], out tmp)) dashColor = tmp;
+                }
+
+                if (p.Length > 21)
+                {
+                    int tmp;
+                    if (int.TryParse(p[21], out tmp))
+                        collateralLocked = tmp != 0;
+                }
+            }
+            catch { }
+
+            vehicle = new PersistentVehicle
+            {
+                ModelHash = modelHash,
+                Position = new Vector3(x, y, z),
+                Heading = heading,
+                Plate = p.Length > 5 ? p[5] : "",
+                OwnerModelHash = ownerH,
+                MapBlip = null,
+                RuntimeVehicle = null,
+                StopCounter = 0,
+                AutoSpawnEnabled = autoSpawn,
+                Mods = modsDict,
+                TurboOn = turbo != 0,
+                PurchasePrice = purchasePrice,
+                SavedLivery = savedLivery,
+                PrimaryColor = primary,
+                SecondaryColor = secondary,
+                PearlColor = pearl,
+                WheelColor = wheel,
+                WindowTint = windowTint,
+                TyreSmokeColor = tyreRgb ?? new int[3] { 0, 0, 0 },
+                ExtrasExist = extrasExist ?? new List<int>(),
+                NeonColor = neonRgb,
+                DashboardColor = dashColor,
+                IsCollateralLocked = collateralLocked
+            };
+
+            return true;
+        }
+        catch
+        {
+            vehicle = null;
+            return false;
+        }
+    }
+
+    private void LoadDestroyedVehiclesFileInternal()
+    {
+        try
+        {
+            var lines = ReadAllLinesSafeTryBackups(DestroyedVehiclesFile);
+
+            foreach (var line in lines)
+            {
+                try
+                {
+                    if (TryParsePersistentVehicleLine(line, out PersistentVehicle pv) && pv != null)
+                    {
+                        lock (_destroyedVehicles)
+                        {
+                            _destroyedVehicles.Add(pv);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("LoadDestroyedVehiclesFileInternal line failed: " + ex.ToString());
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("LoadDestroyedVehiclesFileInternal failed: " + ex.ToString());
+        }
     }
 
     private void SpawnPersistentVehicle(PersistentVehicle pv)
@@ -2759,6 +3176,17 @@ public partial class PersistentManager : Script
                 catch (Exception ex) { Log("TryLoadAll(vehicles-line) failed: " + ex.ToString()); }
             }
 
+            // --- LOAD DESTROYED VEHICLES (Thêm theo hướng dẫn) ---
+            try
+            {
+                LoadDestroyedVehiclesFileInternal();
+                EnforceDestroyedVehicleCaps();
+            }
+            catch (Exception ex)
+            {
+                Log("TryLoadAll(destroyed-vehicles) failed: " + ex.ToString());
+            }
+
             // --- SAU KHI LOAD: TRIM PER-CHARACTER (Giới hạn xe mỗi nhân vật)
             // Chỉ trim xe KHÔNG khóa; nếu không còn xe không khóa thì bỏ qua và log.
             try
@@ -2829,6 +3257,614 @@ public partial class PersistentManager : Script
         catch (Exception ex)
         {
             Log("TryLoadAll failed: " + ex.ToString());
+        }
+    }
+
+    private void EnsureMmiInsuranceMenuCreated()
+    {
+        try
+        {
+            if (_mmiInsuranceMenuReady)
+                return;
+
+            _mmiInsuranceMenu = new NativeMenu("Insurance", "DỊCH VỤ BẢO HIỂM");
+            _menuPool.Add(_mmiInsuranceMenu);
+            _mmiInsuranceMenu.Visible = false;
+            ConfigureKeyboardOnlyMmiMenu(_mmiInsuranceMenu);
+
+            _mmiInsuranceMenuReady = true;
+        }
+        catch { }
+    }
+
+    private void EnsureMmiInsuranceCharacterMenuCreated()
+    {
+        try
+        {
+            if (_mmiInsuranceCharacterMenuReady)
+                return;
+
+            _mmiInsuranceCharacterMenu = new NativeMenu("Insurance", "CHỌN NHÂN VẬT");
+            _menuPool.Add(_mmiInsuranceCharacterMenu);
+            _mmiInsuranceCharacterMenu.Visible = false;
+            ConfigureKeyboardOnlyMmiMenu(_mmiInsuranceCharacterMenu);
+
+            _mmiInsuranceCharacterMenuReady = true;
+        }
+        catch { }
+    }
+
+    private void EnsureMmiDestroyedVehicleMenuCreated()
+    {
+        try
+        {
+            if (_mmiDestroyedVehicleMenuReady)
+                return;
+
+            _mmiDestroyedVehicleMenu = new NativeMenu("Insurance", "PHƯƠNG TIỆN ĐÃ HỎNG");
+            _menuPool.Add(_mmiDestroyedVehicleMenu);
+            _mmiDestroyedVehicleMenu.Visible = false;
+            ConfigureKeyboardOnlyMmiMenu(_mmiDestroyedVehicleMenu);
+
+            _mmiDestroyedVehicleMenuReady = true;
+        }
+        catch { }
+    }
+
+    private void ConfigureKeyboardOnlyMmiMenu(NativeMenu menu)
+    {
+        if (menu == null) return;
+
+        // Tắt điều hướng bằng chuột trong menu để chuột dùng camera như bình thường
+        menu.MouseBehavior = MenuMouseBehavior.Disabled;
+
+        // Không kéo con trỏ về menu khi mở
+        menu.ResetCursorWhenOpened = false;
+
+        // Không đóng menu do click lệch
+        menu.CloseOnInvalidClick = false;
+
+        // Cho phép camera/mouse của game hoạt động bình thường khi menu đang mở
+        menu.RotateCamera = true;
+    }
+
+    private void OpenMmiInsuranceMenu()
+    {
+        try
+        {
+            EnsureMmiInsuranceMenuCreated();
+            BuildMmiInsuranceMenu();
+            ConfigureKeyboardOnlyMmiMenu(_mmiInsuranceMenu);
+
+            if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false;
+            if (_mmiDestroyedVehicleMenu != null) _mmiDestroyedVehicleMenu.Visible = false;
+
+            if (_mmiInsuranceMenu != null)
+            {
+                _mmiInsuranceMenu.Visible = true;
+                Interval = 0;
+            }
+        }
+        catch { }
+    }
+
+    private void OpenMmiInsuranceCharacterMenu()
+    {
+        try
+        {
+            EnsureMmiInsuranceCharacterMenuCreated();
+            BuildMmiInsuranceCharacterMenu();
+            ConfigureKeyboardOnlyMmiMenu(_mmiInsuranceCharacterMenu);
+
+            if (_mmiInsuranceMenu != null) _mmiInsuranceMenu.Visible = false;
+            if (_mmiDestroyedVehicleMenu != null) _mmiDestroyedVehicleMenu.Visible = false;
+
+            if (_mmiInsuranceCharacterMenu != null)
+            {
+                _mmiInsuranceCharacterMenu.Visible = true;
+                Interval = 0;
+            }
+        }
+        catch { }
+    }
+
+    private void OpenMmiDestroyedVehicleMenu(int ownerHash)
+    {
+        try
+        {
+            _mmiSelectedOwnerHash = ownerHash;
+
+            EnsureMmiDestroyedVehicleMenuCreated();
+            BuildMmiDestroyedVehicleMenu(ownerHash);
+            ConfigureKeyboardOnlyMmiMenu(_mmiDestroyedVehicleMenu);
+
+            if (_mmiInsuranceMenu != null) _mmiInsuranceMenu.Visible = false;
+            if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false;
+
+            if (_mmiDestroyedVehicleMenu != null)
+            {
+                _mmiDestroyedVehicleMenu.Visible = true;
+                Interval = 0;
+            }
+        }
+        catch { }
+    }
+
+    private void CloseAllMmiInsuranceMenus()
+    {
+        try
+        {
+            if (_mmiInsuranceMenu != null) _mmiInsuranceMenu.Visible = false;
+            if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false;
+            if (_mmiDestroyedVehicleMenu != null) _mmiDestroyedVehicleMenu.Visible = false;
+
+            _mmiDestroyedVehicleEntries.Clear();
+            _mmiDestroyedVehicleCheckboxItems.Clear();
+            _mmiSelectedOwnerHash = 0;
+        }
+        catch { }
+
+        Interval = 1000;
+    }
+
+    private void BuildMmiInsuranceMenu()
+    {
+        if (_mmiInsuranceMenu == null)
+            return;
+
+        _mmiInsuranceMenu.Clear();
+
+        _mmiStandardRestoreItem = new NativeCheckboxItem(
+            "1. Khôi phục phương tiện và vũ khí", false);
+
+        _mmiRestoreDestroyedItem = new NativeItem(
+            "2. Khôi phục phương tiện đã hỏng");
+        _mmiRestoreDestroyedItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+
+        _mmiInsuranceConfirmItem = new NativeItem("Xác nhận dịch vụ");
+        _mmiInsuranceCancelItem = new NativeItem("Hủy dịch vụ bảo hiểm MMI");
+
+        _mmiRestoreDestroyedItem.Activated += (s, e) =>
+        {
+            if (_mmiInsuranceMenu != null) _mmiInsuranceMenu.Visible = false;
+            OpenMmiInsuranceCharacterMenu();
+        };
+
+        _mmiInsuranceConfirmItem.Activated += (s, e) =>
+        {
+            try
+            {
+                if (_mmiStandardRestoreItem != null && _mmiStandardRestoreItem.Checked)
+                {
+                    RestoreForCurrentPlayer();
+                }
+                else
+                {
+                    GTA.UI.Screen.ShowSubtitle("Hãy chọn một dịch vụ trước.", 2500);
+                    return;
+                }
+            }
+            finally
+            {
+                CloseAllMmiInsuranceMenus();
+            }
+        };
+
+        _mmiInsuranceCancelItem.Activated += (s, e) =>
+        {
+            CloseAllMmiInsuranceMenus();
+        };
+
+        _mmiInsuranceMenu.Add(_mmiStandardRestoreItem);
+        _mmiInsuranceMenu.Add(_mmiRestoreDestroyedItem);
+        _mmiInsuranceMenu.Add(_mmiInsuranceConfirmItem);
+        _mmiInsuranceMenu.Add(_mmiInsuranceCancelItem);
+    }
+
+    private void BuildMmiInsuranceCharacterMenu()
+    {
+        if (_mmiInsuranceCharacterMenu == null)
+            return;
+
+        _mmiInsuranceCharacterMenu.Clear();
+
+        var f = new NativeItem("1. Franklin Clinton");
+        f.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+
+        var m = new NativeItem("2. Michael De Santa");
+        m.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+
+        var t = new NativeItem("3. Trevor Philips");
+        t.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
+        var cancel = new NativeItem("Hủy chọn nhân vật");
+
+        f.Activated += (s, e) => { if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false; OpenMmiDestroyedVehicleMenu(-1692214353); };
+        m.Activated += (s, e) => { if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false; OpenMmiDestroyedVehicleMenu(225514697); };
+        t.Activated += (s, e) => { if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false; OpenMmiDestroyedVehicleMenu(-1686040670); };
+
+        cancel.Activated += (s, e) =>
+        {
+            if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false;
+            OpenMmiInsuranceMenu();
+        };
+
+        _mmiInsuranceCharacterMenu.Add(f);
+        _mmiInsuranceCharacterMenu.Add(m);
+        _mmiInsuranceCharacterMenu.Add(t);
+        _mmiInsuranceCharacterMenu.Add(cancel);
+    }
+
+    private void BuildMmiDestroyedVehicleMenu(int ownerHash)
+    {
+        if (_mmiDestroyedVehicleMenu == null)
+            return;
+
+        _mmiDestroyedVehicleMenu.Clear();
+        _mmiDestroyedVehicleEntries.Clear();
+        _mmiDestroyedVehicleCheckboxItems.Clear();
+
+        List<PersistentVehicle> ownedDestroyed;
+        lock (_destroyedVehicles)
+        {
+            ownedDestroyed = _destroyedVehicles
+                .Where(v => v != null && v.OwnerModelHash == ownerHash)
+                .ToList();
+        }
+
+        if (ownedDestroyed.Count == 0)
+        {
+            _mmiDestroyedVehicleMenu.Add(new NativeItem("Chưa có xe đang chờ bảo hiểm."));
+        }
+        else
+        {
+            int index = 1;
+            foreach (var pv in ownedDestroyed)
+            {
+                var captured = pv;
+
+                string name = GetVehicleDisplayName(captured.ModelHash);
+                var item = new NativeCheckboxItem($"{index}. {name}", false);
+
+                int fee = ComputeInsuranceFee(captured);
+                item.Description = $"{captured.Plate}\nPhí bảo hiểm: ${fee:N0}";
+
+                item.CheckboxChanged += (s, e) =>
+                {
+                    if (_mmiDestroyedUiSync)
+                        return;
+
+                    try
+                    {
+                        _mmiDestroyedUiSync = true;
+
+                        if (item.Checked)
+                        {
+                            for (int i = 0; i < _mmiDestroyedVehicleCheckboxItems.Count; i++)
+                            {
+                                if (!ReferenceEquals(_mmiDestroyedVehicleCheckboxItems[i], item))
+                                    _mmiDestroyedVehicleCheckboxItems[i].Checked = false;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        _mmiDestroyedUiSync = false;
+                    }
+                };
+
+                _mmiDestroyedVehicleEntries.Add(captured);
+                _mmiDestroyedVehicleCheckboxItems.Add(item);
+                _mmiDestroyedVehicleMenu.Add(item);
+                index++;
+            }
+        }
+
+        var confirm = new NativeItem("Xác nhận lấy lại phương tiện");
+        var cancel = new NativeItem("Hủy bỏ bảo hiểm");
+
+        confirm.Activated += (s, e) =>
+        {
+            ConfirmDestroyedVehicleRecovery(ownerHash);
+        };
+
+        cancel.Activated += (s, e) =>
+        {
+            if (_mmiDestroyedVehicleMenu != null) _mmiDestroyedVehicleMenu.Visible = false;
+            OpenMmiInsuranceCharacterMenu();
+        };
+
+        _mmiDestroyedVehicleMenu.Add(confirm);
+        _mmiDestroyedVehicleMenu.Add(cancel);
+    }
+
+    private static int ComputeInsuranceFee(PersistentVehicle pv)
+    {
+        try
+        {
+            if (pv == null || pv.PurchasePrice <= 0)
+                return 0;
+
+            decimal fee = (decimal)pv.PurchasePrice * (decimal)INSURANCE_RESTORE_PERCENT;
+            return (int)Math.Round(fee, MidpointRounding.AwayFromZero);
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static bool CollateralStateLineMatchesVehicle(string line, PersistentVehicle pv)
+    {
+        try
+        {
+            if (pv == null || string.IsNullOrWhiteSpace(line))
+                return false;
+
+            var p = line.Split('|');
+            if (p.Length < 6)
+                return false;
+
+            uint modelHash = 0;
+            string modelField = p[0].Trim();
+
+            bool parsed = false;
+            try
+            {
+                int idx = modelField.IndexOf("0x", StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    string hexPart = modelField.Substring(idx + 2).Trim();
+                    if (uint.TryParse(hexPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out modelHash))
+                        parsed = true;
+                }
+
+                if (!parsed)
+                {
+                    if (uint.TryParse(modelField, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out modelHash))
+                        parsed = true;
+                }
+            }
+            catch
+            {
+                parsed = false;
+            }
+
+            if (!parsed)
+                return false;
+
+            float x = 0f, y = 0f, z = 0f;
+            float.TryParse(p[2], NumberStyles.Float, CultureInfo.InvariantCulture, out x);
+            float.TryParse(p[3], NumberStyles.Float, CultureInfo.InvariantCulture, out y);
+            float.TryParse(p[4], NumberStyles.Float, CultureInfo.InvariantCulture, out z);
+
+            string linePlate = (p[1] ?? "").Trim();
+            string pvPlate = (pv.Plate ?? "").Trim();
+
+            string Normalize(string plate)
+            {
+                if (string.IsNullOrWhiteSpace(plate))
+                    return "";
+
+                return new string(plate.Trim().Where(ch => !char.IsWhiteSpace(ch)).ToArray()).ToUpperInvariant();
+            }
+
+            string BuildKey(uint h, string plate, Vector3 pos)
+            {
+                string normalizedPlate = Normalize(plate);
+
+                if (!string.IsNullOrEmpty(normalizedPlate))
+                    return $"{h:X}|PLATE|{normalizedPlate}";
+
+                return string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0:X}|POS|{1:0.0}|{2:0.0}|{3:0.0}",
+                    h, pos.X, pos.Y, pos.Z);
+            }
+
+            string lineKey = BuildKey(modelHash, linePlate, new Vector3(x, y, z));
+            string vehicleKey = BuildKey(pv.ModelHash, pvPlate, pv.Position);
+
+            if (string.Equals(lineKey, vehicleKey, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (modelHash == pv.ModelHash &&
+                Normalize(linePlate) == Normalize(pvPlate))
+                return true;
+
+            if (modelHash == pv.ModelHash)
+            {
+                Vector3 linePos = new Vector3(x, y, z);
+                if (linePos.DistanceTo2D(pv.Position) < 5f)
+                    return true;
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void RemoveCollateralStateRecordForRecoveredVehicle(PersistentVehicle pv)
+    {
+        try
+        {
+            if (pv == null || pv.OwnerModelHash == 0)
+                return;
+
+            Directory.CreateDirectory(FleecaCollateralStateRoot);
+
+            string file = Path.Combine(FleecaCollateralStateRoot, $"collateral_state_{pv.OwnerModelHash}.dat");
+            if (!File.Exists(file))
+                return;
+
+            var kept = new List<string>();
+            var lines = File.ReadAllLines(file);
+
+            foreach (var line in lines)
+            {
+                try
+                {
+                    if (CollateralStateLineMatchesVehicle(line, pv))
+                        continue;
+
+                    kept.Add(line);
+                }
+                catch
+                {
+                    kept.Add(line);
+                }
+            }
+
+            File.WriteAllLines(file, kept.ToArray());
+        }
+        catch (Exception ex)
+        {
+            Log("RemoveCollateralStateRecordForRecoveredVehicle failed: " + ex.ToString());
+        }
+    }
+
+    private PersistentVehicle CloneVehicleForStorage(PersistentVehicle src)
+    {
+        if (src == null) return null;
+
+        return new PersistentVehicle
+        {
+            ModelHash = src.ModelHash,
+            Position = src.Position,
+            Heading = src.Heading,
+            Plate = src.Plate,
+            RuntimeVehicle = null,
+            MapBlip = null,
+            StopCounter = 0,
+            OwnerModelHash = src.OwnerModelHash,
+            AutoSpawnEnabled = src.AutoSpawnEnabled,
+            Mods = src.Mods != null ? new Dictionary<int, int>(src.Mods) : new Dictionary<int, int>(),
+            TurboOn = src.TurboOn,
+            PurchasePrice = src.PurchasePrice,
+            IsCollateralLocked = src.IsCollateralLocked,
+            SavedLivery = src.SavedLivery,
+            PrimaryColor = src.PrimaryColor,
+            SecondaryColor = src.SecondaryColor,
+            PearlColor = src.PearlColor,
+            WheelColor = src.WheelColor,
+            WindowTint = src.WindowTint,
+            TyreSmokeColor = src.TyreSmokeColor != null ? (int[])src.TyreSmokeColor.Clone() : new int[3] { 0, 0, 0 },
+            ExtrasExist = src.ExtrasExist != null ? new List<int>(src.ExtrasExist) : new List<int>(),
+            NeonColor = src.NeonColor != null ? (int[])src.NeonColor.Clone() : null,
+            DashboardColor = src.DashboardColor
+        };
+    }
+
+    private void ConfirmDestroyedVehicleRecovery(int ownerHash)
+    {
+        try
+        {
+            var selected = new List<PersistentVehicle>();
+
+            for (int i = 0; i < _mmiDestroyedVehicleCheckboxItems.Count && i < _mmiDestroyedVehicleEntries.Count; i++)
+            {
+                if (_mmiDestroyedVehicleCheckboxItems[i].Checked)
+                    selected.Add(_mmiDestroyedVehicleEntries[i]);
+            }
+
+            if (selected.Count == 0)
+            {
+                GTA.UI.Screen.ShowSubtitle("Hãy chọn ít nhất một phương tiện.", 2500);
+                return;
+            }
+
+            int totalFee = 0;
+            foreach (var pv in selected)
+                totalFee += ComputeInsuranceFee(pv);
+
+            if (Game.Player.Money < totalFee)
+            {
+                GTA.UI.Screen.ShowSubtitle($"Không đủ tiền bảo hiểm. Cần ${totalFee:N0}.", 3000);
+                return;
+            }
+
+            Game.Player.Money -= totalFee;
+
+            int restoredCount = 0;
+
+            foreach (var src in selected)
+            {
+                try
+                {
+                    PersistentVehicle restored = CloneVehicleForStorage(src);
+                    if (restored == null)
+                        continue;
+
+                    restored.OwnerModelHash = ownerHash;
+                    restored.IsCollateralLocked = false;   // xe khôi phục không còn là xe thế chấp
+                    restored.AutoSpawnEnabled = false;
+                    restored.RuntimeVehicle = null;
+                    restored.MapBlip = null;
+
+                    // Quan trọng: xóa dấu vết thế chấp cũ của xe này khỏi file collateral
+                    // để Fleeca không đồng bộ lại thành xe đỏ nữa.
+                    RemoveCollateralStateRecordForRecoveredVehicle(src);
+
+                    lock (_destroyedVehicles)
+                    {
+                        var found = _destroyedVehicles.FirstOrDefault(x => x == src);
+                        if (found != null)
+                            _destroyedVehicles.Remove(found);
+                    }
+
+                    lock (_persistVehicles)
+                    {
+                        EnforceActiveVehicleCapForOwner(ownerHash);
+
+                        _persistVehicles.Add(restored);
+                        _vehiclesDirty = true;
+                    }
+
+                    SpawnPersistentVehicle(restored);
+                    restoredCount++;
+                }
+                catch (Exception ex)
+                {
+                    Log("ConfirmDestroyedVehicleRecovery item failed: " + ex.ToString());
+                }
+            }
+
+            _destroyedVehiclesDirty = true;
+            SaveVehiclesFileInternal();
+            SaveDestroyedVehiclesFileInternal();
+
+            ShowFeedMessage(
+                "Mors Mutual",
+                "Bảo hiểm",
+                $"Đã khôi phục {restoredCount} phương tiện. Phí bảo hiểm: ${totalFee:N0}.");
+
+            CloseAllMmiInsuranceMenus();
+        }
+        catch (Exception ex)
+        {
+            Log("ConfirmDestroyedVehicleRecovery failed: " + ex.ToString());
+            GTA.UI.Notification.Show("Khôi phục phương tiện đã hỏng thất bại.");
+        }
+    }
+
+    private void EnforceActiveVehicleCapForOwner(int ownerHash)
+    {
+        try
+        {
+            while (_persistVehicles.Count(x => x.OwnerModelHash == ownerHash) >= MAX_VEHICLES_PER_CHAR)
+            {
+                var oldestUnlocked = _persistVehicles.FirstOrDefault(x => x.OwnerModelHash == ownerHash && !x.IsCollateralLocked);
+                if (oldestUnlocked == null)
+                    break;
+
+                RemovePersistentVehicleSafe(oldestUnlocked);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("EnforceActiveVehicleCapForOwner failed: " + ex.ToString());
         }
     }
 

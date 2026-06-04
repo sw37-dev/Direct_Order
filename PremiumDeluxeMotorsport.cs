@@ -11,8 +11,24 @@ public class SimeonsShowroomFix : Script
     public static bool PdmEnabledForCurrentSession => PdmShowroomBridge.IsActive;
 
     private static readonly Vector3 PdmShowroomPos = new Vector3(-45.8048f, -1095.530f, 26.3272f);
+
+    // NPC Simeon: tọa độ đúng theo yêu cầu
+    // NPC Simeon: tọa độ đúng theo yêu cầu
+    private static readonly Vector3 PdmNpcPos = new Vector3(-42.214610f, -1094.355000f, 26.422350f);
+    private const float PdmNpcHeading = 125.4078f;
+    private const float PdmNpcMenuRadius = 4.0f;
+
+    private int _simeonNpcSpawnRequestedAt = -1;
+    private const int PdmNpcSpawnWarmupMs = 800;
+
     private const float PdmActivationRadius = 12.0f;
     private const int PdmSessionLifetimeMs = 200000; // 200 giây
+
+    // NEW: Simeon có thể từ chối nếu đang cúp điện
+    private const int PdmBlackoutRejectChancePercent = 70;
+    private const int PdmBlackoutRejectNoticeDelayMs = 3000;
+    private const string PdmBlackoutRejectMessage =
+        "Do hiện tại không có điện để sử dụng cho hoạt động kinh doanh nên cửa hàng sẽ tạm đóng cửa! Hãy quay lại sau nhé!";
 
     // PATCH: thêm 20 giây cảnh báo trước khi tự đóng
     private const int PdmCloseGraceDelayMs = 20000;
@@ -62,10 +78,19 @@ public class SimeonsShowroomFix : Script
     private int _trackedSessionStartedAt = -1;
     private bool _closeNoticeShownForSession = false;
 
+    // NEW: thông báo từ chối do cúp điện hiển thị trễ 3 giây
+    private int _pendingSimeonRejectNoticeAt = -1;
+    private bool _pendingSimeonRejectNotice = false;
+
+    // NPC Simeon đang đứng tại showroom
+    private Ped _simeonNpc;
+
+    private readonly Random _rng = new Random();
+
     public SimeonsShowroomFix()
     {
         Tick += OnTick;
-        Interval = 1000; // tối ưu nhẹ tài nguyên hơn: không cần tick quá dày
+        Interval = 1000; // giữ nhẹ tài nguyên
     }
 
     private void OnTick(object sender, EventArgs e)
@@ -76,10 +101,12 @@ public class SimeonsShowroomFix : Script
                 return;
 
             EnsurePdmContactRegistered();
+            ProcessPendingSimeonRejectNotice();
 
             bool canOpenNow = IsPdmOpenNow(out _);
 
-            // PATCH: khi hết phiên 200 giây, báo trước rồi gia hạn thêm 20 giây trước khi đóng thật
+            // Nếu phiên đang mở và đã tới ngưỡng hết hạn thì bắn cảnh báo 1 lần
+            // rồi gia hạn thêm 20 giây trước khi đóng thật.
             if (PdmShowroomBridge.IsActive &&
                 Game.GameTime >= PdmShowroomBridge.ExpiresAtGameTime &&
                 !PdmShowroomBridge.IsCloseGracePeriodArmed)
@@ -88,8 +115,16 @@ public class SimeonsShowroomFix : Script
                 PdmShowroomBridge.StartCloseGracePeriod(PdmCloseGraceDelayMs);
             }
 
+            // Hết thời gian gia hạn thì đóng thật
+            if (PdmShowroomBridge.IsActive &&
+                PdmShowroomBridge.IsCloseGracePeriodArmed &&
+                Game.GameTime >= PdmShowroomBridge.CloseGraceUntilGameTime)
+            {
+                DeactivatePdmShowroom();
+            }
+
             // Giữ logic cũ: ngoài giờ thì PDM không cho hoạt động
-            // PATCH: nhưng không ép đóng ngay trong 20 giây cảnh báo cuối phiên
+            // nhưng không ép đóng ngay trong 20 giây cảnh báo cuối phiên
             if (PdmShowroomBridge.IsActive && !canOpenNow && !PdmShowroomBridge.IsCloseGracePeriodArmed)
             {
                 DeactivatePdmShowroom();
@@ -108,9 +143,16 @@ public class SimeonsShowroomFix : Script
                 if (!_pdmIplAppliedOpen)
                     ApplyPdmOpenState();
 
+                EnsureSimeonNpcSpawned();
+                UpdateSimeonMenuState();
+
                 _wasPdmActive = true;
                 return;
             }
+
+            // Phiên đã tắt: dọn NPC và menu request
+            PdmShowroomBridge.ClearOpenMenuRequest();
+            DeleteSimeonNpc();
 
             if (_wasPdmActive && !_closeNoticeShownForSession)
             {
@@ -124,7 +166,9 @@ public class SimeonsShowroomFix : Script
             _wasPdmActive = false;
             _trackedSessionStartedAt = -1;
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private bool IsPdmOpenNow(out string reason)
@@ -181,13 +225,8 @@ public class SimeonsShowroomFix : Script
 
             bool canOpenNow = IsPdmOpenNow(out _);
 
-            if (!ReferenceEquals(_contactAdded, true))
-            {
-                // không làm gì ở đây, chỉ giữ logic cũ
-            }
-
             var existing = phone.Contacts.FirstOrDefault(c =>
-                string.Equals(c.Name, "PDM", StringComparison.OrdinalIgnoreCase));
+                string.Equals(c.Name, "Simeon", StringComparison.OrdinalIgnoreCase));
 
             if (existing != null)
             {
@@ -199,38 +238,29 @@ public class SimeonsShowroomFix : Script
             if (_contactAdded)
                 return;
 
-            var contact = new iFruitContact("PDM")
+            var contact = new iFruitContact("Simeon")
             {
                 Active = canOpenNow,
                 DialTimeout = 2500,
                 Bold = false,
-                Icon = new ContactIcon("WEB_PREMIUMDELUXEMOTORSPORT")
+                Icon = ContactIcon.Simeon
             };
 
             contact.Answered += OnPdmAnswered;
             phone.Contacts.Add(contact);
             _contactAdded = true;
         }
-        catch { }
+        catch
+        {
+        }
     }
 
-    // Thông báo dạng tin nhắn của PDM
+    // Thay toàn bộ thông báo sang Notification.Show theo kiểu mẫu bạn đưa
     private void ShowPdmNotification(string title, string message, int timeout = 3000)
     {
         try
         {
-            Function.Call(Hash.BEGIN_TEXT_COMMAND_THEFEED_POST, "STRING");
-            Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, message);
-
-            Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_MESSAGETEXT,
-                "WEB_PREMIUMDELUXEMOTORSPORT",
-                "WEB_PREMIUMDELUXEMOTORSPORT",
-                false,
-                0,
-                "PDM",
-                title);
-
-            Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_TICKER, false, true);
+            Notification.Show(NotificationIcon.Simeon, "Premium Deluxe Motorsport", title, message);
         }
         catch
         {
@@ -267,21 +297,85 @@ public class SimeonsShowroomFix : Script
                 return;
             }
 
-            ActivatePdmShowroom();
+            // NEW: nếu đang cúp điện thì 70% từ chối, dù vẫn đang trong khung giờ hoạt động
+            if (IsCityBlackoutActive() && _rng.Next(100) < PdmBlackoutRejectChancePercent)
+            {
+                try
+                {
+                    sender.Active = false;
+                }
+                catch
+                {
+                }
 
-            if (IsPlayerNearPdmShowroom())
-            {
-                PdmShowroomBridge.RequestOpenMenu();
-                ShowPdmNotification("Mua xe", "Premium Deluxe Motorsport đang mở cửa! Hãy lựa phương tiện đi!");
+                ScheduleSimeonRejectNotification();
+                return;
             }
-            else
+
+            ActivatePdmShowroom();
+            UpdateSimeonMenuState();
+
+            // Nếu chưa đứng gần Simeon thì vẫn nhắc đi tới showroom,
+            // còn nếu đã gần rồi thì không hiện thông báo này nữa.
+            if (!IsPlayerNearSimeonNpc())
             {
-                ShowPdmNotification("Đến showroom", "Cửa hàng đã mở cửa rồi, bạn đi đến cửa hàng nha!");
+                ShowPdmNotification("Đến showroom", "Cửa hàng đã mở rồi, bạn đi đến cửa hàng nha!");
             }
         }
         finally
         {
-            try { CustomiFruit.GetCurrentInstance()?.Close(0); } catch { }
+            try
+            {
+                CustomiFruit.GetCurrentInstance()?.Close(0);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private bool IsCityBlackoutActive()
+    {
+        try
+        {
+            return CityBlackoutHackerState.GetWorldPriceStateForCurrentCharacter()
+                   != CityBlackoutHackerState.WorldPriceState.Normal;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ScheduleSimeonRejectNotification()
+    {
+        try
+        {
+            _pendingSimeonRejectNoticeAt = Game.GameTime + PdmBlackoutRejectNoticeDelayMs;
+            _pendingSimeonRejectNotice = true;
+        }
+        catch
+        {
+        }
+    }
+
+    private void ProcessPendingSimeonRejectNotice()
+    {
+        try
+        {
+            if (!_pendingSimeonRejectNotice)
+                return;
+
+            if (Game.GameTime < _pendingSimeonRejectNoticeAt)
+                return;
+
+            _pendingSimeonRejectNotice = false;
+            _pendingSimeonRejectNoticeAt = -1;
+
+            ShowPdmNotification(PdmCloseFeedTitle, PdmBlackoutRejectMessage);
+        }
+        catch
+        {
         }
     }
 
@@ -296,11 +390,16 @@ public class SimeonsShowroomFix : Script
         if (!PdmShowroomBridge.IsActive)
             PdmShowroomBridge.Activate(PdmSessionLifetimeMs);
 
+        _simeonNpcSpawnRequestedAt = -1;
         ApplyPdmOpenState();
+        EnsureSimeonNpcSpawned();
+        UpdateSimeonMenuState();
     }
 
     private void DeactivatePdmShowroom()
     {
+        PdmShowroomBridge.ClearOpenMenuRequest();
+        DeleteSimeonNpc();
         ApplyPdmClosedState();
         PdmShowroomBridge.Deactivate();
     }
@@ -355,6 +454,10 @@ public class SimeonsShowroomFix : Script
     {
         Function.Call(Hash.REQUEST_COLLISION_AT_COORD, PdmShowroomPos.X, PdmShowroomPos.Y, PdmShowroomPos.Z);
         Function.Call(Hash.REQUEST_ADDITIONAL_COLLISION_AT_COORD, PdmShowroomPos.X, PdmShowroomPos.Y, PdmShowroomPos.Z);
+
+        // Chỉ request collision tại đúng tọa độ NPC, không chỉnh Z
+        Function.Call(Hash.REQUEST_COLLISION_AT_COORD, PdmNpcPos.X, PdmNpcPos.Y, PdmNpcPos.Z);
+        Function.Call(Hash.REQUEST_ADDITIONAL_COLLISION_AT_COORD, PdmNpcPos.X, PdmNpcPos.Y, PdmNpcPos.Z);
     }
 
     private static void RefreshInterior()
@@ -373,7 +476,7 @@ public class SimeonsShowroomFix : Script
         }
     }
 
-    private bool IsPlayerNearPdmShowroom()
+    private bool IsPlayerNearSimeonNpc()
     {
         try
         {
@@ -381,11 +484,134 @@ public class SimeonsShowroomFix : Script
             if (p == null || !p.Exists() || p.IsDead)
                 return false;
 
-            return p.Position.DistanceTo(PdmShowroomPos) <= PdmActivationRadius;
+            return p.Position.DistanceTo(PdmNpcPos) <= PdmNpcMenuRadius;
         }
         catch
         {
             return false;
+        }
+    }
+
+    private void EnsureSimeonNpcSpawned()
+    {
+        try
+        {
+            if (!PdmShowroomBridge.IsActive)
+                return;
+
+            if (_simeonNpc != null && _simeonNpc.Exists())
+                return;
+
+            // Lần đầu thấy cần spawn thì chỉ request collision trước
+            if (_simeonNpcSpawnRequestedAt < 0)
+            {
+                _simeonNpcSpawnRequestedAt = Game.GameTime;
+                RequestCollision();
+                return;
+            }
+
+            // Chờ một chút để collision/interior ổn định rồi mới spawn
+            if (Game.GameTime - _simeonNpcSpawnRequestedAt < PdmNpcSpawnWarmupMs)
+            {
+                RequestCollision();
+                return;
+            }
+
+            var model = new Model("ig_siemonyetarian");
+            if (!model.IsLoaded)
+                model.Request(250);
+
+            if (!model.IsLoaded)
+                return;
+
+            Ped ped = World.CreatePed(model, PdmNpcPos, PdmNpcHeading);
+            if (ped == null || !ped.Exists())
+                return;
+
+            Function.Call(
+                Hash.SET_ENTITY_COORDS_NO_OFFSET,
+                ped.Handle,
+                PdmNpcPos.X, PdmNpcPos.Y, PdmNpcPos.Z,
+                false, false, false
+            );
+
+            Function.Call(Hash.SET_ENTITY_HEADING, ped.Handle, PdmNpcHeading);
+
+            ped.IsPersistent = true;
+            ped.BlockPermanentEvents = true;
+            ped.IsInvincible = true;
+            ped.CanRagdoll = false;
+
+            Function.Call(Hash.FREEZE_ENTITY_POSITION, ped.Handle, true);
+
+            try
+            {
+                ped.Task.StandStill(-1);
+            }
+            catch
+            {
+            }
+
+            _simeonNpc = ped;
+            _simeonNpcSpawnRequestedAt = -1;
+        }
+        catch
+        {
+        }
+    }
+
+    private void DeleteSimeonNpc()
+    {
+        try
+        {
+            PdmShowroomBridge.ClearOpenMenuRequest();
+
+            if (_simeonNpc != null && _simeonNpc.Exists())
+            {
+                try
+                {
+                    _simeonNpc.MarkAsNoLongerNeeded();
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    _simeonNpc.Delete();
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _simeonNpc = null;
+            _simeonNpcSpawnRequestedAt = -1;
+        }
+    }
+
+    private void UpdateSimeonMenuState()
+    {
+        try
+        {
+            if (!PdmShowroomBridge.IsActive)
+            {
+                PdmShowroomBridge.ClearOpenMenuRequest();
+                return;
+            }
+
+            if (IsPlayerNearSimeonNpc())
+                PdmShowroomBridge.RequestOpenMenu();
+            else
+                PdmShowroomBridge.ClearOpenMenuRequest();
+        }
+        catch
+        {
         }
     }
 }
@@ -456,13 +682,13 @@ internal static class PdmShowroomBridge
             }
 
             if (!open)
-                reason = "PDM hiện không hoạt động trong khung giờ này.";
+                reason = "Premium Deluxe Motorsport hiện không hoạt động trong khung giờ này.";
 
             return open;
         }
         catch
         {
-            reason = "Không thể xác định giờ hoạt động của PDM.";
+            reason = "Không thể xác định giờ hoạt động của Premium Deluxe Motorsport.";
             return false;
         }
     }
@@ -653,6 +879,12 @@ internal static class PdmShowroomBridge
         }
     }
 
+    // Nếu bên xử lý mua xe muốn gọi rõ ràng sau khi mua xong
+    public static void NotifyVehiclePurchased()
+    {
+        Deactivate();
+    }
+
     public static void RequestOpenMenu()
     {
         lock (SyncRoot)
@@ -662,19 +894,19 @@ internal static class PdmShowroomBridge
         }
     }
 
-    public static bool HasOpenMenuRequest()
-    {
-        lock (SyncRoot)
-        {
-            return _openMenuRequested;
-        }
-    }
-
     public static void ClearOpenMenuRequest()
     {
         lock (SyncRoot)
         {
             _openMenuRequested = false;
+        }
+    }
+
+    public static bool HasOpenMenuRequest()
+    {
+        lock (SyncRoot)
+        {
+            return _openMenuRequested;
         }
     }
 }
