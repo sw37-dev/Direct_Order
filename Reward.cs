@@ -973,7 +973,7 @@ public partial class InstantRefill : Script
                 _luiSmugglerDetailMenu.Visible = false;
 
             Notification.Show(
-                NotificationIcon.Milsite,
+                NotificationIcon.HumanDefault,
                 "Notorious Smuggler",
                 T("RewardSmuggler_Name", "Smuggler"),
                 T("RewardSmugglerGoToNpc", "Tao chấp nhận cuộc giao dịch của mày! Đến đây mà lấy tiền đi!!")
@@ -1902,62 +1902,12 @@ public partial class InstantRefill : Script
           () => SpawnVehiclePreview(chosen)
         );
 
-        var plateItem = new NativeItem(
-          T("RewardVehiclePlateLabel", "Biển số xe: {plate}", "{plate}", plate)
+        AddReadOnlyMenuLine(
+            _luiRewardDetailMenu,
+            T("RewardVehiclePlateLabel", "Biển số xe: {plate}", "{plate}", plate),
+            null,
+            () => SpawnVehiclePreview(chosen)
         );
-        plateItem.Description = _rewardPlateEdited
-          ? T("RewardPlateHintAfterEdit", "Đây là biển số mới sẽ được dùng, có thể đổi lại.")
-          : T("RewardPlateHintBeforeEdit", "Nhấn Enter để điều chỉnh biển số theo ý muốn.");
-
-        plateItem.Selected += (s, e) =>
-        {
-            SpawnVehiclePreview(chosen);
-        };
-
-        plateItem.Activated += (s, e) =>
-        {
-            try
-            {
-                // Chặn dội Enter từ bàn phím ảo / LemonUI
-                BlockRewardMenuInput(500);
-
-                string currentPlate = string.IsNullOrWhiteSpace(_rewardDetailPlate)
-                    ? GenerateRandomPlate()
-                    : _rewardDetailPlate;
-
-                string typed = PromptPlateText(currentPlate);
-                string normalized = SanitizePlateText(typed);
-
-                if (string.IsNullOrWhiteSpace(normalized))
-                {
-                    GTA.UI.Screen.ShowSubtitle(
-                        T("RewardInvalidPlate", "~y~Biển số không hợp lệ."),
-                        2500
-                    );
-                    BlockRewardMenuInput(350);
-                    return;
-                }
-
-                _rewardPlateEdited = true;
-                _rewardDetailPlate = normalized;
-
-                // Chỉ cập nhật trực tiếp item hiện tại, KHÔNG rebuild cả menu
-                plateItem.Title = T("RewardVehiclePlateLabel", "Biển số xe: {plate}", "{plate}", _rewardDetailPlate);
-                plateItem.Description = GetRewardPlateDescription();
-
-                _luiRewardDetailMenu.Visible = true;
-                SpawnVehiclePreview(chosen);
-                PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-
-                BlockRewardMenuInput(350);
-            }
-            catch
-            {
-                BlockRewardMenuInput(350);
-            }
-        };
-
-        _luiRewardDetailMenu.Add(plateItem);
 
         var confirm = new NativeItem(T("RewardConfirmButton", "Xác nhận nhận phần quà"));
         confirm.Activated += (s, e) =>

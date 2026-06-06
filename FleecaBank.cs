@@ -401,7 +401,7 @@ public partial class FleecaBankLoanScript : Script
 
         return string.Format(
             CultureInfo.InvariantCulture,
-            "{0}:00 mỗi ngày (+{1}h)",
+            "{0}:00 (+{1}h)",
             _dueWindowStartHour,
             DueWindowHours);
     }

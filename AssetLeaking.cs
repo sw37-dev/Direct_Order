@@ -18,11 +18,25 @@ using System.Windows.Forms;
 
 public partial class AssetLeaking : Script
 {
+    private static string T(string key, string fallback)
+    {
+        return Language.Get(key, fallback);
+    }
+
+    private static string TF(string key, string fallback, params object[] args)
+    {
+        return string.Format(CultureInfo.InvariantCulture, T(key, fallback), args);
+    }
+
     private const int FRANKLIN_HASH = -1692214353;
     private const int MICHAEL_HASH = 225514697;
     private const int TREVOR_HASH = -1686040670;
 
     private const int MOLE_CALL_DURATION_MS = 2000;
+    private const int WANTED_PENALTY_DELAY_MS = 20000;
+    private const int WANTED_PENALTY_CHANCE_PERCENT = 70;
+    private const int WANTED_PENALTY_ADD_STARS = 3;
+    private const int WANTED_PENALTY_MAX_STARS = 5;
     private const int MAX_CONFISCATED_PER_CHAR = 10;
     private const decimal REDEEM_PERCENT = 0.80m;
 
@@ -37,8 +51,11 @@ public partial class AssetLeaking : Script
     private bool _moleRestorePending = false;
     private int _moleRestoreDueTime = 0;
 
+    private readonly List<int> _wantedPenaltyDueTimes = new List<int>();
+
     private readonly List<ConfiscatedVehicleRecord> _moleEntries = new List<ConfiscatedVehicleRecord>();
     private readonly List<NativeCheckboxItem> _moleCheckboxItems = new List<NativeCheckboxItem>();
+    private NativeItem _moleRedeemTotalItem = null;
     private bool _moleUiSync = false;
 
     private static readonly string ConfiscatedRoot = Path.Combine(
@@ -69,9 +86,12 @@ public partial class AssetLeaking : Script
 
             EnsureMoleContactRegistered();
             UpdateMolePendingCall();
+            UpdateWantedPenaltyPending();
+            AssetLeakingWantedState.ClearIfWantedLevelZero();
 
             if (_moleMenu != null && _moleMenu.Visible)
             {
+                UpdateMoleRedeemTotalItem();
                 _uiPool.Process();
                 Interval = 0;
             }
@@ -118,7 +138,7 @@ public partial class AssetLeaking : Script
             if (_moleContactAdded)
                 return;
 
-            string contactName = "Mole";
+            string contactName = T("AssetLeaking.ContactName", "Mole");
 
             if (phone.Contacts.Any(c =>
                 c != null &&
@@ -187,7 +207,10 @@ public partial class AssetLeaking : Script
             if (_moleMenuReady)
                 return;
 
-            _moleMenu = new NativeMenu("Confiscated Vehicles", "CÁC PHƯƠNG TIỆN TỊCH THU");
+            _moleMenu = new NativeMenu(
+                T("AssetLeaking.MenuTitle", "Confiscated Vehicles"),
+                T("AssetLeaking.MenuSubtitle", "CÁC PHƯƠNG TIỆN TỊCH THU"));
+
             _uiPool.Add(_moleMenu);
             ConfigureKeyboardOnlyMenu(_moleMenu);
             _moleMenu.Visible = false;
@@ -275,12 +298,13 @@ public partial class AssetLeaking : Script
             _moleMenu.Clear();
             _moleEntries.Clear();
             _moleCheckboxItems.Clear();
+            _moleRedeemTotalItem = null;
             _moleUiSync = false;
 
             int ownerHash = GetCurrentCharacterHash();
             if (ownerHash == 0)
             {
-                _moleMenu.Add(new NativeItem("Không xác định được nhân vật hiện tại."));
+                _moleMenu.Add(new NativeItem(T("AssetLeaking.UnknownCharacter", "Không xác định được nhân vật hiện tại.")));
             }
             else
             {
@@ -288,7 +312,7 @@ public partial class AssetLeaking : Script
 
                 if (records.Count == 0)
                 {
-                    _moleMenu.Add(new NativeItem("Chưa có phương tiện nào bị tịch thu."));
+                    _moleMenu.Add(new NativeItem(T("AssetLeaking.NoConfiscatedVehicles", "Chưa có phương tiện nào bị tịch thu.")));
                 }
                 else
                 {
@@ -303,13 +327,13 @@ public partial class AssetLeaking : Script
                         long redeemCost = GetRedeemCost(captured.PurchasePrice);
 
                         var item = new NativeCheckboxItem(
-                            $"{index}. {name}: {FormatMoney(redeemCost)}",
+                            TF("AssetLeaking.VehicleItemTitle", "{0}. {1}: {2}", index, name, FormatMoney(redeemCost)),
                             false);
 
                         item.Description =
-                            $"Biển số: {captured.Plate}\n" +
-                            $"Giá gốc: {FormatMoney(captured.PurchasePrice)}\n" +
-                            $"Phí chuộc: {FormatMoney(redeemCost)}";
+                            TF("AssetLeaking.PlateLabel", "Biển số: {0}", captured.Plate) + "\n" +
+                            TF("AssetLeaking.OriginalPriceLabel", "Giá gốc: {0}", FormatMoney(captured.PurchasePrice)) + "\n" +
+                            TF("AssetLeaking.RedeemFeeLabel", "Phí chuộc: {0}", FormatMoney(redeemCost));
 
                         _moleEntries.Add(captured);
                         _moleCheckboxItems.Add(item);
@@ -317,11 +341,14 @@ public partial class AssetLeaking : Script
 
                         index++;
                     }
+
+                    _moleRedeemTotalItem = new NativeItem(T("AssetLeaking.RedeemTotalNA", "Tổng số tiền cần chuộc: N/A"));
+                    _moleMenu.Add(_moleRedeemTotalItem);
                 }
             }
 
-            var confirm = new NativeItem("Xác nhận chuộc lại phương tiện");
-            var cancel = new NativeItem("Hủy giao dịch ngầm nguy hiểm");
+            var confirm = new NativeItem(T("AssetLeaking.ConfirmRedeem", "Xác nhận chuộc lại phương tiện"));
+            var cancel = new NativeItem(T("AssetLeaking.CancelDangerousDeal", "Hủy giao dịch ngầm nguy hiểm"));
 
             confirm.Activated += (s, e) =>
             {
@@ -336,9 +363,43 @@ public partial class AssetLeaking : Script
             _moleMenu.Add(confirm);
             _moleMenu.Add(cancel);
             _moleUiSync = true;
+
+            UpdateMoleRedeemTotalItem();
         }
         catch
         {
+        }
+    }
+
+    private void UpdateMoleRedeemTotalItem()
+    {
+        try
+        {
+            if (_moleRedeemTotalItem == null)
+                return;
+
+            long totalCost = 0L;
+            bool anySelected = false;
+
+            for (int i = 0; i < _moleCheckboxItems.Count && i < _moleEntries.Count; i++)
+            {
+                var cb = _moleCheckboxItems[i];
+                var record = _moleEntries[i];
+
+                if (cb != null && cb.Checked && record != null)
+                {
+                    anySelected = true;
+                    totalCost += GetRedeemCost(record.PurchasePrice);
+                }
+            }
+
+            _moleRedeemTotalItem.Title = anySelected
+                ? TF("AssetLeaking.RedeemTotal", "Tổng số tiền cần chuộc: {0}", FormatMoney(totalCost))
+                : T("AssetLeaking.RedeemTotalNA", "Tổng số tiền cần chuộc: N/A");
+        }
+        catch
+        {
+            // Có thể thêm log lỗi ở đây nếu cần thiết
         }
     }
 
@@ -348,7 +409,7 @@ public partial class AssetLeaking : Script
         {
             if (ownerHash == 0)
             {
-                GTA.UI.Screen.ShowSubtitle("Không xác định được nhân vật hiện tại.", 2500);
+                GTA.UI.Screen.ShowSubtitle(T("AssetLeaking.UnknownCharacter", "Không xác định được nhân vật hiện tại."), 2500);
                 return;
             }
 
@@ -362,7 +423,7 @@ public partial class AssetLeaking : Script
 
             if (selected.Count == 0)
             {
-                GTA.UI.Screen.ShowSubtitle("Hãy chọn ít nhất một phương tiện.", 2500);
+                GTA.UI.Screen.ShowSubtitle(T("AssetLeaking.SelectAtLeastOneVehicle", "Hãy chọn ít nhất một phương tiện."), 2500);
                 return;
             }
 
@@ -372,11 +433,14 @@ public partial class AssetLeaking : Script
 
             if (Game.Player.Money < totalCost)
             {
-                GTA.UI.Screen.ShowSubtitle($"Không đủ tiền. Cần {FormatMoney(totalCost)}.", 3000);
+                GTA.UI.Screen.ShowSubtitle(
+                    TF("AssetLeaking.InsufficientMoney", "Không đủ tiền. Cần ~HUD_COLOUR_REDLIGHT~{0}.~s~", FormatMoney(totalCost)),
+                    3000);
                 return;
             }
 
             DeductMoney(totalCost);
+            ScheduleWantedPenaltyAfterRedeem();
 
             int restored = 0;
 
@@ -421,15 +485,15 @@ public partial class AssetLeaking : Script
             }
 
             ShowMoleNotification(
-                "Mole",
-                $"Đã chuộc lại {restored} phương tiện. Tổng phí: {FormatMoney(totalCost)}.");
+                T("AssetLeaking.ContactName", "Mole"),
+                TF("AssetLeaking.RedeemSuccess", "Đã chuộc lại {0} phương tiện. Tổng phí: {1}.", restored, FormatMoney(totalCost)));
 
             CloseMoleMenu();
         }
         catch (Exception ex)
         {
-            Log("ConfirmRedeemSelectedVehicles failed: " + ex);
-            GTA.UI.Notification.Show("Chuộc phương tiện thất bại.");
+            Log(T("AssetLeaking.RedeemFailedLogPrefix", "ConfirmRedeemSelectedVehicles failed: ") + ex);
+            GTA.UI.Notification.Show(T("AssetLeaking.RedeemFailed", "Chuộc phương tiện thất bại."));
         }
     }
 
@@ -457,11 +521,89 @@ public partial class AssetLeaking : Script
     {
         try
         {
-            GTA.UI.Notification.Show(GTA.UI.NotificationIcon.BankFleeca, title, "Mole", message);
+            GTA.UI.Notification.Show(
+                GTA.UI.NotificationIcon.LesterDeathwish,
+                title,
+                T("AssetLeaking.NotificationSubtitle", "Mole"),
+                message);
         }
         catch
         {
             try { GTA.UI.Notification.Show(message); } catch { }
+        }
+    }
+
+    private void ScheduleWantedPenaltyAfterRedeem()
+    {
+        try
+        {
+            _wantedPenaltyDueTimes.Add(Game.GameTime + WANTED_PENALTY_DELAY_MS);
+        }
+        catch
+        {
+        }
+    }
+
+    private void UpdateWantedPenaltyPending()
+    {
+        try
+        {
+            if (_wantedPenaltyDueTimes.Count == 0)
+                return;
+
+            int now = Game.GameTime;
+
+            for (int i = _wantedPenaltyDueTimes.Count - 1; i >= 0; i--)
+            {
+                if (now < _wantedPenaltyDueTimes[i])
+                    continue;
+
+                _wantedPenaltyDueTimes.RemoveAt(i);
+
+                // 70% cơ hội cộng 3 sao
+                if (_rng.Next(100) >= WANTED_PENALTY_CHANCE_PERCENT)
+                    continue;
+
+                ApplyWantedPenalty(WANTED_PENALTY_ADD_STARS);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void ApplyWantedPenalty(int addStars)
+    {
+        try
+        {
+            if (addStars <= 0)
+                return;
+
+            int current = 0;
+            try
+            {
+                current = Game.Player.WantedLevel;
+            }
+            catch
+            {
+                current = 0;
+            }
+
+            int next = Math.Min(WANTED_PENALTY_MAX_STARS, current + addStars);
+            if (next > current)
+            {
+                try
+                {
+                    Game.Player.WantedLevel = next;
+                    AssetLeakingWantedState.MarkAssetLeakingWantedActive();
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
         }
     }
 
@@ -1726,36 +1868,6 @@ public partial class AssetLeaking : Script
         }
     }
 
-    private static Vector3 GetSafeSpawnPosition()
-    {
-        try
-        {
-            Ped p = Game.Player.Character;
-            if (p != null && p.Exists())
-                return p.Position + (p.ForwardVector * 5f);
-        }
-        catch
-        {
-        }
-
-        return new Vector3(0f, 0f, 72f);
-    }
-
-    private static float GetSafeHeading()
-    {
-        try
-        {
-            Ped p = Game.Player.Character;
-            if (p != null && p.Exists())
-                return p.Heading;
-        }
-        catch
-        {
-        }
-
-        return 0f;
-    }
-
     private static void Log(string message)
     {
         try
@@ -1791,5 +1903,44 @@ public partial class AssetLeaking : Script
         public int[] NeonColor;
         public int? DashboardColor;
         public bool IsCollateralLocked;
+    }
+
+    public static class AssetLeakingWantedState
+    {
+        private static readonly object _sync = new object();
+        private static bool _lockedByAssetLeaking = false;
+
+        public static bool IsLockedByAssetLeaking
+        {
+            get
+            {
+                lock (_sync)
+                    return _lockedByAssetLeaking;
+            }
+        }
+
+        public static void MarkAssetLeakingWantedActive()
+        {
+            lock (_sync)
+                _lockedByAssetLeaking = true;
+        }
+
+        public static void ClearIfWantedLevelZero()
+        {
+            try
+            {
+                if (Game.Player == null)
+                    return;
+
+                if (Game.Player.WantedLevel <= 0)
+                {
+                    lock (_sync)
+                        _lockedByAssetLeaking = false;
+                }
+            }
+            catch
+            {
+            }
+        }
     }
 }

@@ -361,7 +361,7 @@ public class MinotaurScript : Script
             if (IsMinotaurStateActiveForCurrentCharacter())
             {
                 ShowMinotaurNotification(
-                    L("Minotaur_ErrorTitle", "Lỗi"),
+                    L("Minotaur_ErrorTitle", "Đang hoạt động"),
                     L("Minotaur_AlreadyActive", "Minotaur đang tác động lên khoản vay này rồi. Bạn không thể kích hoạt lại."));
                 TryClosePhone();
                 return;
@@ -370,7 +370,7 @@ public class MinotaurScript : Script
             if (!TryGetCurrentLoanState(out MinotaurState state))
             {
                 ShowMinotaurNotification(
-                    L("Minotaur_ErrorTitle", "Lỗi"),
+                    L("Minotaur_ErrorTitle", "Thất bại"),
                     L("Minotaur_NoLoan", "Bạn không có khoản vay Fleeca đang hoạt động."));
                 TryClosePhone();
                 return;
@@ -379,7 +379,7 @@ public class MinotaurScript : Script
             if (state.CurrentDebt <= 0)
             {
                 ShowMinotaurNotification(
-                    L("Minotaur_ErrorTitle", "Lỗi"),
+                    L("Minotaur_ErrorTitle", "Thông báo"),
                     L("Minotaur_NoDebt", "Không tìm thấy khoản nợ hợp lệ để xử lý."));
                 TryClosePhone();
                 return;
@@ -419,7 +419,7 @@ public class MinotaurScript : Script
 
             string text = L(
                 "Minotaur_Prompt",
-                "Chúng tôi sẽ ~y~mua lại và điều chỉnh khoản nợ~s~ tại Fleeca mà bạn đang gặp phải. Bạn có chắc sẽ nhờ chúng tôi không?\n{0} để đồng ý\n{1} để hủy");
+                "Công ty sẽ ~y~mua lại và điều chỉnh khoản nợ~s~ tại Fleeca. Bạn chắc sẽ nhờ công ty chứ?\n{0} để đồng ý\n{1} để hủy");
 
             GTA.UI.Screen.ShowHelpTextThisFrame(string.Format(
                 CultureInfo.InvariantCulture,
@@ -569,11 +569,7 @@ public class MinotaurScript : Script
             _rateItem.Description = string.Format(
                 CultureInfo.InvariantCulture,
                 L("Minotaur_NewRateDesc",
-                "Cơ chế Minotaur chỉ thay đổi lãi của Fleeca khi đang tác động. Bảng lãi suất hiện tại:\n" +
-                "3 xe thế chấp: 0.58%/ngày\n" +
-                "2 xe thế chấp: 1.45%/ngày\n" +
-                "1 xe thế chấp: 3.63%/ngày\n" +
-                "0 xe thế chấp: 10.00%/ngày"));
+                "Cơ chế Minotaur chỉ thay đổi lãi của Fleeca khi đang tác động."));
 
             _feeItem.Description = L(
                 "Minotaur_ProcessingFeeDesc",
@@ -877,12 +873,6 @@ public class MinotaurScript : Script
         if (collateralCount == 2) return 0.0145m;
         if (collateralCount == 1) return 0.0363m;
         return 0.10m;
-    }
-
-    private static decimal RoundRate(decimal rate)
-    {
-        if (rate < 0m) rate = 0m;
-        return Math.Round(rate, 4, MidpointRounding.AwayFromZero);
     }
 
     private static long ParseLong(string value)
@@ -1269,12 +1259,6 @@ public static class MinotaurBankBridge
             return RATE_1_COLLATERAL;
 
         return RATE_0_COLLATERAL;
-    }
-
-    private static decimal RoundRate(decimal rate)
-    {
-        if (rate < 0m) rate = 0m;
-        return Math.Round(rate, 4, MidpointRounding.AwayFromZero);
     }
 
     private static long ParseLong(string value)

@@ -7,6 +7,7 @@ using System;
 using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
+using static AssetLeaking;
 
 public partial class InstantRefill
 {
@@ -76,10 +77,10 @@ public partial class InstantRefill
 
             var contact = new iFruitContact(SteveContactName)
             {
-                Active = GetCurrentWantedLevel() <= 4,
+                Active = GetCurrentWantedLevel() <= 4 && !IsSteveHainesBlockedByAssetLeaking(),
                 DialTimeout = DaveyContactDialTimeoutMs,
                 Bold = false,
-                Icon = new ContactIcon("CHAR_STEVE")
+                Icon = ContactIcon.Steve
             };
 
             contact.Answered += OnSteveHainesContactAnswered;
@@ -100,7 +101,8 @@ public partial class InstantRefill
             if (_steveContact == null)
                 return;
 
-            _steveContact.Active = GetCurrentWantedLevel() <= 4;
+            AssetLeakingWantedState.ClearIfWantedLevelZero();
+            _steveContact.Active = GetCurrentWantedLevel() <= 4 && !AssetLeakingWantedState.IsLockedByAssetLeaking;
         }
         catch
         {
@@ -196,6 +198,16 @@ public partial class InstantRefill
                 GTA.UI.Screen.ShowSubtitle(
                     T("RewardAnotherMenuOpen", "~HUD_COLOUR_DEGEN_YELLOW~Hiện có menu khác đang mở. Hãy đóng nó trước."),
                     3000);
+                return;
+            }
+
+            // Chèn đoạn mã kiểm tra Asset Leaking trước khi kiểm tra wanted >= 5
+            if (IsSteveHainesBlockedByAssetLeaking())
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("SteveBribeBlockedByAssetLeaking", "~HUD_COLOUR_DEGEN_RED~Steve Haines từ chối vì truy nã hiện tại đến từ việc bạn mua chuộc lậu tài sản từ ngân hàng Fleeca."),
+                    3000);
+                PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                 return;
             }
 
@@ -469,6 +481,19 @@ public partial class InstantRefill
         catch
         {
             CloseSteveHainesBribeMenu(false);
+        }
+    }
+
+    private bool IsSteveHainesBlockedByAssetLeaking()
+    {
+        try
+        {
+            AssetLeakingWantedState.ClearIfWantedLevelZero();
+            return AssetLeakingWantedState.IsLockedByAssetLeaking;
+        }
+        catch
+        {
+            return false;
         }
     }
 

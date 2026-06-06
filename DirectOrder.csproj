@@ -89,6 +89,7 @@
     <Compile Include="MoneyTruckEvent.cs" />
     <Compile Include="PersistentManager.cs" />
     <Compile Include="PlaneDeliveryContractEvent.cs" />
+    <Compile Include="Icebreaker.cs" />
     <Compile Include="PrimeAutoHandover.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Refinance.cs" />

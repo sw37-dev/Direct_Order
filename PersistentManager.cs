@@ -70,6 +70,31 @@ public partial class PersistentManager : Script
     private static string ASSET_RECOVERY_CONTACT_NAME => L("ARC_ContactName", "Asset Recovery Center");
     private const int ASSET_RECOVERY_CALL_DURATION_MS = 2000;
 
+    private static string PM_MenuInsuranceTitle => L("PM_MenuInsuranceTitle", "Insurance");
+    private static string PM_MenuInsuranceSubtitle => L("PM_MenuInsuranceSubtitle", "DỊCH VỤ BẢO HIỂM");
+    private static string PM_MenuCharacterSubtitle => L("PM_MenuCharacterSubtitle", "CHỌN NHÂN VẬT");
+    private static string PM_MenuDestroyedSubtitle => L("PM_MenuDestroyedSubtitle", "PHƯƠNG TIỆN ĐÃ HỎNG");
+    private static string PM_MenuNoDestroyedVehicles => L("PM_MenuNoDestroyedVehicles", "Chưa có xe đang chờ bảo hiểm.");
+    private static string PM_MenuConfirmService => L("PM_MenuConfirmService", "Xác nhận dịch vụ");
+    private static string PM_MenuCancelInsurance => L("PM_MenuCancelInsurance", "Hủy dịch vụ bảo hiểm MMI");
+    private static string PM_MenuRestoreWeapons => L("PM_MenuRestoreWeapons", "1. Khôi phục phương tiện và vũ khí");
+    private static string PM_MenuRestoreDestroyed => L("PM_MenuRestoreDestroyed", "2. Khôi phục phương tiện đã hỏng");
+    private static string PM_MenuFranklin => L("PM_MenuFranklin", "1. Franklin Clinton");
+    private static string PM_MenuMichael => L("PM_MenuMichael", "2. Michael De Santa");
+    private static string PM_MenuTrevor => L("PM_MenuTrevor", "3. Trevor Philips");
+    private static string PM_MenuCancelCharacter => L("PM_MenuCancelCharacter", "Hủy chọn nhân vật");
+    private static string PM_MenuConfirmRecoverVehicle => L("PM_MenuConfirmRecoverVehicle", "Xác nhận lấy lại phương tiện");
+    private static string PM_MenuCancelDestroyed => L("PM_MenuCancelDestroyed", "Hủy bỏ bảo hiểm MMI");
+    private static string PM_MenuInsuranceDescFormat => L("PM_MenuInsuranceDescFormat", "{0} với Phí bảo hiểm là ${1:N0}");
+    private static string PM_FeedInsuranceSender => L("PM_FeedInsuranceSender", "Mors Mutual");
+    private static string PM_FeedInsuranceSubject => L("PM_FeedInsuranceSubject", "Bảo hiểm");
+    private static string PM_FeedInsuranceBody => L("PM_FeedInsuranceBody", "Đã khôi phục {0} phương tiện. Phí bảo hiểm: ${1:N0}.");
+    private static string PM_InsuranceNotEnoughMoney => L("PM_InsuranceNotEnoughMoney", "Không đủ tiền bảo hiểm. Cần ${0:N0}.");
+    private static string PM_InsuranceRecoveryFailed => L("PM_InsuranceRecoveryFailed", "Khôi phục phương tiện đã hỏng thất bại.");
+    private static string PM_InsuranceChooseOne => L("PM_InsuranceChooseOne", "Hãy chọn một dịch vụ trước.");
+    private static string PM_InsuranceChooseAtLeastOne => L("PM_InsuranceChooseAtLeastOne", "Hãy chọn ít nhất một phương tiện.");
+    private static string PM_VehicleRestoredName => L("PM_VehicleRestoredName", "Phương tiện đã khôi phục");
+
     private static bool _assetRecoveryRestorePending = false;
     private static int _assetRecoveryRestoreDueTime = 0;
     private bool _assetRecoveryContactAdded = false;
@@ -426,13 +451,21 @@ public partial class PersistentManager : Script
                 _lastPedHandle = currentHandle;
             }
 
+            // --- KHỐI KIỂM TRA LÊN/XUỐNG XE ĐÃ ĐƯỢC THAY THẾ ---
             try
             {
                 bool currentlyInVehicle = (player != null && player.Exists() && player.IsInVehicle());
+                Vehicle currentVehicle = currentlyInVehicle ? player.CurrentVehicle : null;
 
                 if (currentlyInVehicle)
                 {
-                    _lastPlayerVehicle = player.CurrentVehicle;
+                    // Vừa mới lên xe, hoặc xe hiện tại khác với xe lưu trước đó
+                    if (!_playerWasInVehicle || _lastPlayerVehicle == null || _lastPlayerVehicle.Handle != currentVehicle.Handle)
+                    {
+                        OnPlayerEnteredVehicle(currentVehicle);
+                    }
+
+                    _lastPlayerVehicle = currentVehicle;
                     _playerWasInVehicle = true;
                 }
                 else
@@ -449,7 +482,7 @@ public partial class PersistentManager : Script
                     }
                 }
             }
-            catch (Exception ex) { Log("OnTick: vehicle-exit detect error: " + ex.Message); }
+            catch (Exception ex) { Log("OnTick: vehicle enter/exit detect error: " + ex.Message); }
 
             UpdateVehiclePositionsLogic();
             UpdateCurrentWeaponState();
@@ -1427,10 +1460,73 @@ public partial class PersistentManager : Script
                     catch (Exception ex) { Log("OnPlayerExitedVehicle update failed: " + ex.Message); }
                 }
             }
+
+            SetPersistentVehicleOccupiedState(veh, false);
         }
         catch (Exception ex)
         {
             Log("OnPlayerExitedVehicle failed: " + ex.ToString());
+        }
+    }
+
+    private PersistentVehicle FindPersistentVehicleByRuntimeHandle(int handle)
+    {
+        try
+        {
+            lock (_persistVehicles)
+            {
+                return _persistVehicles.FirstOrDefault(p =>
+                    p.RuntimeVehicle != null &&
+                    p.RuntimeVehicle.Exists() &&
+                    p.RuntimeVehicle.Handle == handle);
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void SetPersistentVehicleOccupiedState(Vehicle veh, bool occupied)
+    {
+        try
+        {
+            if (veh == null || !veh.Exists())
+                return;
+
+            PersistentVehicle pv = FindPersistentVehicleByRuntimeHandle(veh.Handle);
+            if (pv == null)
+                return;
+
+            pv.SuppressBlipWhileOccupied = occupied;
+
+            if (occupied)
+            {
+                // Ẩn ngay blip hiện tại
+                SafeRemoveBlip(pv.MapBlip);
+                pv.MapBlip = null;
+            }
+            else
+            {
+                // Khi rời xe thì dựng lại blip theo logic hiện có
+                RefreshSinglePersistentVehicleBlip(pv);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("SetPersistentVehicleOccupiedState failed: " + ex.ToString());
+        }
+    }
+
+    private void OnPlayerEnteredVehicle(Vehicle veh)
+    {
+        try
+        {
+            SetPersistentVehicleOccupiedState(veh, true);
+        }
+        catch (Exception ex)
+        {
+            Log("OnPlayerEnteredVehicle failed: " + ex.ToString());
         }
     }
 
@@ -1836,6 +1932,7 @@ public partial class PersistentManager : Script
                     catch (Exception ex) { Log("HandleEngineDeletionForVehicle inner delete: " + ex.ToString()); }
 
                     pv.AutoSpawnEnabled = false;
+                    pv.SuppressBlipWhileOccupied = false; // <-- Thêm vào đây trước khi cập nhật trạng thái dirty và log
 
                     _vehiclesDirty = true;
                     Log($"HandleEngineDeletionForVehicle: engine removed runtime vehicle for model 0x{pv.ModelHash:X} at {pv.Position} owner=0x{pv.OwnerModelHash:X}");
@@ -2497,6 +2594,7 @@ public partial class PersistentManager : Script
             try
             {
                 pv.RuntimeVehicle = v;
+                pv.SuppressBlipWhileOccupied = false; // <-- Thêm vào đây trước khi gọi RefreshSinglePersistentVehicleBlip
                 RefreshSinglePersistentVehicleBlip(pv);
 
                 lock (_persistVehicles)
@@ -2510,7 +2608,7 @@ public partial class PersistentManager : Script
                         b.IsShortRange = false;
                         b.Sprite = GetVehicleBlipSprite(v);
                         b.Color = GetBlipColorForPersistentVehicle(pv);
-                        b.Name = L("PM_VehicleRestoredBlip", "Phương tiện đã khôi phục");
+                        b.Name = L("PM_VehicleRestoredBlip", PM_VehicleRestoredName);
                         pv.MapBlip = b;
                     }
                 }
@@ -2646,6 +2744,13 @@ public partial class PersistentManager : Script
 
             // Chỉ hiện xe của nhân vật hiện tại.
             if (!ShouldShowVehicleOnMapForCurrentCharacter(pv))
+            {
+                SafeRemoveBlip(pv.MapBlip);
+                pv.MapBlip = null;
+                return;
+            }
+
+            if (pv.SuppressBlipWhileOccupied)
             {
                 SafeRemoveBlip(pv.MapBlip);
                 pv.MapBlip = null;
@@ -3267,7 +3372,7 @@ public partial class PersistentManager : Script
             if (_mmiInsuranceMenuReady)
                 return;
 
-            _mmiInsuranceMenu = new NativeMenu("Insurance", "DỊCH VỤ BẢO HIỂM");
+            _mmiInsuranceMenu = new NativeMenu(PM_MenuInsuranceTitle, PM_MenuInsuranceSubtitle);
             _menuPool.Add(_mmiInsuranceMenu);
             _mmiInsuranceMenu.Visible = false;
             ConfigureKeyboardOnlyMmiMenu(_mmiInsuranceMenu);
@@ -3284,7 +3389,7 @@ public partial class PersistentManager : Script
             if (_mmiInsuranceCharacterMenuReady)
                 return;
 
-            _mmiInsuranceCharacterMenu = new NativeMenu("Insurance", "CHỌN NHÂN VẬT");
+            _mmiInsuranceCharacterMenu = new NativeMenu(PM_MenuInsuranceTitle, PM_MenuCharacterSubtitle);
             _menuPool.Add(_mmiInsuranceCharacterMenu);
             _mmiInsuranceCharacterMenu.Visible = false;
             ConfigureKeyboardOnlyMmiMenu(_mmiInsuranceCharacterMenu);
@@ -3301,7 +3406,7 @@ public partial class PersistentManager : Script
             if (_mmiDestroyedVehicleMenuReady)
                 return;
 
-            _mmiDestroyedVehicleMenu = new NativeMenu("Insurance", "PHƯƠNG TIỆN ĐÃ HỎNG");
+            _mmiDestroyedVehicleMenu = new NativeMenu(PM_MenuInsuranceTitle, PM_MenuDestroyedSubtitle);
             _menuPool.Add(_mmiDestroyedVehicleMenu);
             _mmiDestroyedVehicleMenu.Visible = false;
             ConfigureKeyboardOnlyMmiMenu(_mmiDestroyedVehicleMenu);
@@ -3414,15 +3519,13 @@ public partial class PersistentManager : Script
 
         _mmiInsuranceMenu.Clear();
 
-        _mmiStandardRestoreItem = new NativeCheckboxItem(
-            "1. Khôi phục phương tiện và vũ khí", false);
+        _mmiStandardRestoreItem = new NativeCheckboxItem(PM_MenuRestoreWeapons, false);
 
-        _mmiRestoreDestroyedItem = new NativeItem(
-            "2. Khôi phục phương tiện đã hỏng");
+        _mmiRestoreDestroyedItem = new NativeItem(PM_MenuRestoreDestroyed);
         _mmiRestoreDestroyedItem.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
 
-        _mmiInsuranceConfirmItem = new NativeItem("Xác nhận dịch vụ");
-        _mmiInsuranceCancelItem = new NativeItem("Hủy dịch vụ bảo hiểm MMI");
+        _mmiInsuranceConfirmItem = new NativeItem(PM_MenuConfirmService);
+        _mmiInsuranceCancelItem = new NativeItem(PM_MenuCancelInsurance);
 
         _mmiRestoreDestroyedItem.Activated += (s, e) =>
         {
@@ -3440,7 +3543,7 @@ public partial class PersistentManager : Script
                 }
                 else
                 {
-                    GTA.UI.Screen.ShowSubtitle("Hãy chọn một dịch vụ trước.", 2500);
+                    GTA.UI.Screen.ShowSubtitle(PM_InsuranceChooseOne, 2500);
                     return;
                 }
             }
@@ -3468,15 +3571,15 @@ public partial class PersistentManager : Script
 
         _mmiInsuranceCharacterMenu.Clear();
 
-        var f = new NativeItem("1. Franklin Clinton");
+        var f = new NativeItem(PM_MenuFranklin);
         f.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
 
-        var m = new NativeItem("2. Michael De Santa");
+        var m = new NativeItem(PM_MenuMichael);
         m.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
 
-        var t = new NativeItem("3. Trevor Philips");
+        var t = new NativeItem(PM_MenuTrevor);
         t.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
-        var cancel = new NativeItem("Hủy chọn nhân vật");
+        var cancel = new NativeItem(PM_MenuCancelCharacter);
 
         f.Activated += (s, e) => { if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false; OpenMmiDestroyedVehicleMenu(-1692214353); };
         m.Activated += (s, e) => { if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false; OpenMmiDestroyedVehicleMenu(225514697); };
@@ -3513,7 +3616,7 @@ public partial class PersistentManager : Script
 
         if (ownedDestroyed.Count == 0)
         {
-            _mmiDestroyedVehicleMenu.Add(new NativeItem("Chưa có xe đang chờ bảo hiểm."));
+            _mmiDestroyedVehicleMenu.Add(new NativeItem(PM_MenuNoDestroyedVehicles));
         }
         else
         {
@@ -3526,7 +3629,7 @@ public partial class PersistentManager : Script
                 var item = new NativeCheckboxItem($"{index}. {name}", false);
 
                 int fee = ComputeInsuranceFee(captured);
-                item.Description = $"{captured.Plate}\nPhí bảo hiểm: ${fee:N0}";
+                item.Description = string.Format(CultureInfo.InvariantCulture, PM_MenuInsuranceDescFormat, captured.Plate, fee);
 
                 item.CheckboxChanged += (s, e) =>
                 {
@@ -3559,8 +3662,8 @@ public partial class PersistentManager : Script
             }
         }
 
-        var confirm = new NativeItem("Xác nhận lấy lại phương tiện");
-        var cancel = new NativeItem("Hủy bỏ bảo hiểm");
+        var confirm = new NativeItem(PM_MenuConfirmRecoverVehicle);
+        var cancel = new NativeItem(PM_MenuCancelDestroyed);
 
         confirm.Activated += (s, e) =>
         {
@@ -3753,7 +3856,8 @@ public partial class PersistentManager : Script
             TyreSmokeColor = src.TyreSmokeColor != null ? (int[])src.TyreSmokeColor.Clone() : new int[3] { 0, 0, 0 },
             ExtrasExist = src.ExtrasExist != null ? new List<int>(src.ExtrasExist) : new List<int>(),
             NeonColor = src.NeonColor != null ? (int[])src.NeonColor.Clone() : null,
-            DashboardColor = src.DashboardColor
+            DashboardColor = src.DashboardColor,
+            SuppressBlipWhileOccupied = false // <-- Thêm vào đây (cuối danh sách khởi tạo đối tượng)
         };
     }
 
@@ -3771,7 +3875,7 @@ public partial class PersistentManager : Script
 
             if (selected.Count == 0)
             {
-                GTA.UI.Screen.ShowSubtitle("Hãy chọn ít nhất một phương tiện.", 2500);
+                GTA.UI.Screen.ShowSubtitle(PM_InsuranceChooseAtLeastOne, 2500);
                 return;
             }
 
@@ -3781,7 +3885,7 @@ public partial class PersistentManager : Script
 
             if (Game.Player.Money < totalFee)
             {
-                GTA.UI.Screen.ShowSubtitle($"Không đủ tiền bảo hiểm. Cần ${totalFee:N0}.", 3000);
+                GTA.UI.Screen.ShowSubtitle(string.Format(CultureInfo.InvariantCulture, PM_InsuranceNotEnoughMoney, totalFee), 3000);
                 return;
             }
 
@@ -3836,16 +3940,16 @@ public partial class PersistentManager : Script
             SaveDestroyedVehiclesFileInternal();
 
             ShowFeedMessage(
-                "Mors Mutual",
-                "Bảo hiểm",
-                $"Đã khôi phục {restoredCount} phương tiện. Phí bảo hiểm: ${totalFee:N0}.");
+                PM_FeedInsuranceSender,
+                PM_FeedInsuranceSubject,
+                string.Format(CultureInfo.InvariantCulture, PM_FeedInsuranceBody, restoredCount, totalFee));
 
             CloseAllMmiInsuranceMenus();
         }
         catch (Exception ex)
         {
             Log("ConfirmDestroyedVehicleRecovery failed: " + ex.ToString());
-            GTA.UI.Notification.Show("Khôi phục phương tiện đã hỏng thất bại.");
+            GTA.UI.Notification.Show(PM_InsuranceRecoveryFailed);
         }
     }
 
@@ -3999,6 +4103,8 @@ public partial class PersistentManager : Script
         public bool TurboOn;
         public int PurchasePrice;
         public bool IsCollateralLocked;
+        // Transient runtime state: ẩn blip khi player đang ngồi trong chính xe này
+        public bool SuppressBlipWhileOccupied;
 
         // Visual / extra state
         public int? SavedLivery;
@@ -4029,6 +4135,7 @@ public partial class PersistentManager : Script
             NeonColor = null;
             PurchasePrice = 0;
             IsCollateralLocked = false;
+            SuppressBlipWhileOccupied = false;
         }
     }
 

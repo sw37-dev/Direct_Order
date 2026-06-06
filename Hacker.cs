@@ -11,7 +11,6 @@ using System.Linq;
 using LemonUI;
 using LemonUI.Menus;
 using System.Reflection;
-using System.Text;
 
 public class Hacker : Script
 {

@@ -6,36 +6,58 @@ using iFruitAddon2;
 using System;
 using System.Linq;
 
+internal static class PdmLang
+{
+    public static string T(string key, string fallback)
+    {
+        return Language.Get(key, fallback);
+    }
+}
+
 public class SimeonsShowroomFix : Script
 {
+    public static string T(string key, string fallback)
+    {
+        return PdmLang.T(key, fallback);
+    }
+
+    private static string PdmContactName => T("PdmContactName", "Simeon Yetarian");
+    private static string PdmArrivalTitle => T("PdmArrivalTitle", "Đến showroom");
+    private static string PdmArrivalMessage => T("PdmArrivalMessage", "Cửa hàng đã mở rồi, bạn đi đến cửa hàng nha!");
+    private static string PdmBlackoutRejectMessage => T(
+        "PdmBlackoutRejectMessage",
+        "Do hiện tại không có điện để sử dụng cho hoạt động kinh doanh nên cửa hàng sẽ tạm đóng cửa! Hãy quay lại sau nhé!"
+    );
+    private static string PdmClosingSoonNotice => T(
+        "PdmClosingSoonNotice",
+        "Premium Deluxe Motorsprot sắp đóng cửa rồi, nếu bạn đang bên trong thì hãy ra ngoài ngay!"
+    );
+    private static string PdmCloseFeedTitle => T("PdmCloseFeedTitle", "Thông báo");
+    private static string PdmCloseFeedMessage => T(
+        "PdmCloseFeedMessage",
+        "Premium Deluxe Motorsport đã đóng cửa hàng lại rồi!"
+    );
+
     public static bool PdmEnabledForCurrentSession => PdmShowroomBridge.IsActive;
 
     private static readonly Vector3 PdmShowroomPos = new Vector3(-45.8048f, -1095.530f, 26.3272f);
 
     // NPC Simeon: tọa độ đúng theo yêu cầu
-    // NPC Simeon: tọa độ đúng theo yêu cầu
     private static readonly Vector3 PdmNpcPos = new Vector3(-42.214610f, -1094.355000f, 26.422350f);
     private const float PdmNpcHeading = 125.4078f;
-    private const float PdmNpcMenuRadius = 4.0f;
+    private const float PdmNpcMenuRadius = 6.0f;
 
     private int _simeonNpcSpawnRequestedAt = -1;
     private const int PdmNpcSpawnWarmupMs = 800;
 
-    private const float PdmActivationRadius = 12.0f;
-    private const int PdmSessionLifetimeMs = 200000; // 200 giây
+    private const int PdmSessionLifetimeMs = 300000; // 300 giây
 
     // NEW: Simeon có thể từ chối nếu đang cúp điện
     private const int PdmBlackoutRejectChancePercent = 70;
     private const int PdmBlackoutRejectNoticeDelayMs = 3000;
-    private const string PdmBlackoutRejectMessage =
-        "Do hiện tại không có điện để sử dụng cho hoạt động kinh doanh nên cửa hàng sẽ tạm đóng cửa! Hãy quay lại sau nhé!";
 
     // PATCH: thêm 20 giây cảnh báo trước khi tự đóng
     private const int PdmCloseGraceDelayMs = 20000;
-
-    // PATCH: thông báo khi sắp đóng cửa sau 200 giây
-    private const string PdmClosingSoonNotice =
-        "Premium Deluxe Motorsprot sắp đóng cửa rồi, nếu bạn đang bên trong thì hãy ra ngoài ngay!";
 
     public static readonly Vector3[] PdmDeliverySpawnPoints =
     {
@@ -66,9 +88,6 @@ public class SimeonsShowroomFix : Script
         "v_carshowroom",
         "shr_int"
     };
-
-    private const string PdmCloseFeedTitle = "Thông báo";
-    private const string PdmCloseFeedMessage = "Premium Deluxe Motorsport đã đóng cửa hàng lại rồi!";
 
     private bool _pdmIplAppliedOpen = false;
     private bool _contactAdded = false;
@@ -226,7 +245,7 @@ public class SimeonsShowroomFix : Script
             bool canOpenNow = IsPdmOpenNow(out _);
 
             var existing = phone.Contacts.FirstOrDefault(c =>
-                string.Equals(c.Name, "Simeon", StringComparison.OrdinalIgnoreCase));
+                string.Equals(c.Name, PdmContactName, StringComparison.OrdinalIgnoreCase));
 
             if (existing != null)
             {
@@ -238,7 +257,7 @@ public class SimeonsShowroomFix : Script
             if (_contactAdded)
                 return;
 
-            var contact = new iFruitContact("Simeon")
+            var contact = new iFruitContact(PdmContactName)
             {
                 Active = canOpenNow,
                 DialTimeout = 2500,
@@ -255,12 +274,11 @@ public class SimeonsShowroomFix : Script
         }
     }
 
-    // Thay toàn bộ thông báo sang Notification.Show theo kiểu mẫu bạn đưa
     private void ShowPdmNotification(string title, string message, int timeout = 3000)
     {
         try
         {
-            Notification.Show(NotificationIcon.Simeon, "Premium Deluxe Motorsport", title, message);
+            Notification.Show(NotificationIcon.Simeon, PdmContactName, title, message);
         }
         catch
         {
@@ -319,7 +337,7 @@ public class SimeonsShowroomFix : Script
             // còn nếu đã gần rồi thì không hiện thông báo này nữa.
             if (!IsPlayerNearSimeonNpc())
             {
-                ShowPdmNotification("Đến showroom", "Cửa hàng đã mở rồi, bạn đi đến cửa hàng nha!");
+                ShowPdmNotification(PdmArrivalTitle, PdmArrivalMessage);
             }
         }
         finally
@@ -682,13 +700,13 @@ internal static class PdmShowroomBridge
             }
 
             if (!open)
-                reason = "Premium Deluxe Motorsport hiện không hoạt động trong khung giờ này.";
+                reason = PdmLang.T("PdmNotOpenInThisTime", "Premium Deluxe Motorsport hiện không hoạt động trong khung giờ này.");
 
             return open;
         }
         catch
         {
-            reason = "Không thể xác định giờ hoạt động của Premium Deluxe Motorsport.";
+            reason = PdmLang.T("PdmCannotDetermineOpenHours", "Không thể xác định giờ hoạt động của Premium Deluxe Motorsport.");
             return false;
         }
     }
@@ -766,8 +784,11 @@ internal static class PdmShowroomBridge
                     Kind = PdmOfferKind.Discount,
                     ChancePercent = 2,
                     Multiplier = 0.80,
-                    ItemTitle = "Nhận sự ưu đãi",
-                    ItemDescription = "Bạn nhận được sự ưu đãi hiếm từ Premium Deluxe Motorsport có thể giảm 20% giá trị phương tiện!!!!"
+                    ItemTitle = PdmLang.T("PdmOfferMondayTitle", "Nhận sự ưu đãi"),
+                    ItemDescription = PdmLang.T(
+                        "PdmOfferMondayDescription",
+                        "Bạn nhận được sự ưu đãi hiếm từ Premium Deluxe Motorsport có thể giảm 20% giá trị phương tiện!!!!"
+                    )
                 };
 
             case 3: // Thứ 4
@@ -776,8 +797,11 @@ internal static class PdmShowroomBridge
                     Kind = PdmOfferKind.Discount,
                     ChancePercent = 1,
                     Multiplier = 0.70,
-                    ItemTitle = "Nhận sự ưu đãi",
-                    ItemDescription = "Bạn đã nhận được sự ưu đãi cực hiếm từ Premium Deluxe Motorsport, giảm mạnh 30% giá trị của phương tiện!!!!"
+                    ItemTitle = PdmLang.T("PdmOfferWednesdayTitle", "Nhận sự ưu đãi"),
+                    ItemDescription = PdmLang.T(
+                        "PdmOfferWednesdayDescription",
+                        "Bạn đã nhận được sự ưu đãi cực hiếm từ Premium Deluxe Motorsport, giảm mạnh 30% giá trị của phương tiện!!!!"
+                    )
                 };
 
             case 5: // Thứ 6
@@ -786,8 +810,11 @@ internal static class PdmShowroomBridge
                     Kind = PdmOfferKind.Discount,
                     ChancePercent = 10,
                     Multiplier = 0.875,
-                    ItemTitle = "Nhận sự ưu đãi",
-                    ItemDescription = "Premium Deluxe Motorsport có ưu đãi 12.5% dành cho bạn!!!"
+                    ItemTitle = PdmLang.T("PdmOfferFridayTitle", "Nhận sự ưu đãi"),
+                    ItemDescription = PdmLang.T(
+                        "PdmOfferFridayDescription",
+                        "Premium Deluxe Motorsport có ưu đãi 12.5% dành cho bạn!!!"
+                    )
                 };
 
             case 0: // Chủ Nhật
@@ -797,8 +824,11 @@ internal static class PdmShowroomBridge
                     Kind = PdmOfferKind.Discount,
                     ChancePercent = 13,
                     Multiplier = 0.87,
-                    ItemTitle = "Nhận sự ưu đãi",
-                    ItemDescription = "Đây là sự ưu đãi của Premium Deluxe Motorsport dành cho bạn cho dịp cuối tuần, Premium Deluxe Motorsport giảm đến 13% giá trị đấy nhé!!!"
+                    ItemTitle = PdmLang.T("PdmOfferWeekendTitle", "Nhận sự ưu đãi"),
+                    ItemDescription = PdmLang.T(
+                        "PdmOfferWeekendDescription",
+                        "Đây là sự ưu đãi của Premium Deluxe Motorsport dành cho bạn cho dịp cuối tuần, Premium Deluxe Motorsport giảm đến 13% giá trị đấy nhé!!!"
+                    )
                 };
 
             case 2: // Thứ 3
@@ -810,10 +840,11 @@ internal static class PdmShowroomBridge
                         Kind = PdmOfferKind.PriceIncrease,
                         ChancePercent = chance,
                         Multiplier = 1.25,
-                        ItemTitle = "Chính sách tăng giá",
-                        ItemDescription = string.Format(
-                            "Do Premium Deluxe Motorsport nhập hàng khan hiếm nên hiện tại Premium Deluxe Motorsport tăng nhẹ giá trị của chiếc phương tiện này. Mong quý khách thông cảm!!!",
-                            chance)
+                        ItemTitle = PdmLang.T("PdmPriceIncreaseTitle", "Chính sách tăng giá"),
+                        ItemDescription = PdmLang.T(
+                            "PdmPriceIncreaseDescription",
+                            "Do Premium Deluxe Motorsport nhập hàng khan hiếm nên hiện tại Premium Deluxe Motorsport tăng nhẹ giá trị của chiếc phương tiện này. Mong quý khách thông cảm!!!"
+                        )
                     };
                 }
 

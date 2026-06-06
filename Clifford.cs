@@ -40,6 +40,10 @@ public class Clifford : Script
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "GTA V Mods", "Lom Bank");
 
+    private static readonly string HackerStateRoot = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    "GTA V Mods", "Hacker");
+
     private readonly ObjectPool _uiPool = new ObjectPool();
 
     private NativeMenu _cliffordMenu;
@@ -107,16 +111,24 @@ public class Clifford : Script
     private sealed class SummarySnapshot
     {
         public int OwnerHash;
-        public string CustomerName; // NEW
+        public string CustomerName = T("Clifford_CustomerNameNA", "N/A");
         public long CurrentCash;
         public int VehicleCount;
         public long VehicleValueTotal;
         public long RewardPoints;
         public long IllegalMoney;
+
         public long FleecaDebt;
+        public string FleecaDueWindowText = T("Clifford_TimeWindowNA", "--:--");
+        public long FleecaDailyDue = 0L;
+        public string FleecaBankStatusText = T("Clifford_StatusActive", "Đang hoạt động");
+
         public int CollateralVehicleCount;
         public long CollateralVehicleValue;
+
         public long LombankDebt;
+        public long LombankTotalLimit;
+        public string LombankStatusText = T("Clifford_StatusActive", "Đang hoạt động");
     }
 
     private SummarySnapshot _snapshot = new SummarySnapshot();
@@ -348,13 +360,13 @@ public class Clifford : Script
         {
             int h = GetCurrentCharacterHash();
 
-            if (h == FRANKLIN_HASH) return "Franklin Clinton";
-            if (h == MICHAEL_HASH) return "Michael De Santa";
-            if (h == TREVOR_HASH) return "Trevor Philips";
+            if (h == FRANKLIN_HASH) return T("Clifford_Character_Franklin", "Franklin Clinton");
+            if (h == MICHAEL_HASH) return T("Clifford_Character_Michael", "Michael De Santa");
+            if (h == TREVOR_HASH) return T("Clifford_Character_Trevor", "Trevor Philips");
         }
         catch { }
 
-        return "N/A";
+        return T("Clifford_CustomerNameNA", "N/A");
     }
 
     private void OnKeyDown(object sender, KeyEventArgs e)
@@ -433,7 +445,7 @@ public class Clifford : Script
             if (_cliffordMainMenuInitialized)
                 return;
 
-            _cliffordMainMenu = new NativeMenu("Clifford", "CÁC THÔNG TIN CẦN XEM");
+            _cliffordMainMenu = new NativeMenu(T("Clifford_MainMenuTitle", "Clifford"), T("Clifford_MainMenuSubtitle", "CÁC THÔNG TIN CẦN XEM"));
             _uiPool.Add(_cliffordMainMenu);
             ConfigureKeyboardOnlyMenu(_cliffordMainMenu);
             _cliffordMainMenu.Visible = false;
@@ -453,7 +465,7 @@ public class Clifford : Script
 
             _cliffordMainMenu.Clear();
 
-            var financial = new NativeItem("1. Thống kê tài chính");
+            var financial = new NativeItem(T("Clifford_Menu_Financial", "1. Thống kê tài chính"));
             financial.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
             financial.Activated += (s, e) =>
             {
@@ -461,7 +473,7 @@ public class Clifford : Script
             };
             _cliffordMainMenu.Add(financial);
 
-            var forecast = new NativeItem("2. Dự báo cúp điện");
+            var forecast = new NativeItem(T("Clifford_Menu_Forecast", "2. Dự báo cúp điện"));
             forecast.AltTitle = "~HUD_COLOUR_YELLOWLIGHT~>~s~";
             forecast.Activated += (s, e) =>
             {
@@ -469,7 +481,7 @@ public class Clifford : Script
             };
             _cliffordMainMenu.Add(forecast);
 
-            var close = new NativeItem("Hủy bỏ dịch vụ");
+            var close = new NativeItem(T("Clifford_Menu_Exit", "Hủy bỏ dịch vụ"));
             close.Activated += (s, e) => CloseCliffordMenu();
             _cliffordMainMenu.Add(close);
         }
@@ -612,7 +624,7 @@ public class Clifford : Script
             if (HasForecastForToday(dayKey))
             {
                 ShowCliffordNotification(
-                    "Dự báo cúp điện",
+                    T("Clifford_ForecastTitle", "Dự báo cúp điện"),
                     FormatRepeatedForecastMessage(_cliffordForecastPercent, _cliffordForecastSuccess));
                 CloseCliffordMenu();
                 return;
@@ -622,8 +634,8 @@ public class Clifford : Script
             if (HasBlackoutObservedToday(dayKey))
             {
                 ShowCliffordNotification(
-                    "Dự báo cúp điện",
-                    "Hôm nay đã có cúp điện rồi nên tui không dự báo nữa đâu.");
+                    T("Clifford_ForecastTitle", "Dự báo cúp điện"),
+                    T("Clifford_ForecastAlreadyBlackoutToday", "Hôm nay đã có cúp điện rồi nên tui không dự báo nữa đâu."));
                 CloseCliffordMenu();
                 return;
             }
@@ -641,10 +653,10 @@ public class Clifford : Script
 
             _cliffordForecastMessage = success
                 ? string.Format(CultureInfo.InvariantCulture,
-                    "Hôm nay có khả năng {0}% cúp điện thành công (tui đoán lụi).",
+                    T("Clifford_ForecastSuccessMessage", "Hôm nay có khả năng {0}% cúp điện thành công (tui đoán lụi)."),
                     roll)
                 : string.Format(CultureInfo.InvariantCulture,
-                    "Hôm nay khả năng {0}% không có cúp điện (tui đoán lụi).",
+                    T("Clifford_ForecastFailMessage", "Hôm nay khả năng {0}% không có cúp điện (tui đoán lụi)."),
                     roll);
 
             _cliffordForecastDueGameTime = Game.GameTime + CLIFFORD_FORECAST_DELAY_MS;
@@ -663,9 +675,9 @@ public class Clifford : Script
         percent = Math.Max(0, Math.Min(100, percent));
         return success
             ? string.Format(CultureInfo.InvariantCulture,
-                "Tui đã dự đoán {0}% khả năng cúp điện hôm nay rồi mà?", percent)
+                T("Clifford_ForecastRepeatedSuccess", "Tui đã dự đoán {0}% khả năng cúp điện hôm nay rồi mà?"), percent)
             : string.Format(CultureInfo.InvariantCulture,
-                "Tui đã dự đoán {0}% không có cúp điện hôm nay rồi mà?", percent);
+                T("Clifford_ForecastRepeatedFail", "Tui đã dự đoán {0}% không có cúp điện hôm nay rồi mà?"), percent);
     }
 
     private void ProcessPendingCliffordForecastNotification()
@@ -696,7 +708,7 @@ public class Clifford : Script
             _cliffordForecastMessage = string.Empty;
 
             ShowCliffordNotification(
-                "Dự báo cúp điện",
+                T("Clifford_ForecastTitle", "Dự báo cúp điện"),
                 message);
         }
         catch
@@ -819,7 +831,7 @@ public class Clifford : Script
             if (_cliffordMenuInitialized)
                 return;
 
-            _cliffordMenu = new NativeMenu("Clifford Analytics", "THÔNG TIN NHÂN VẬT");
+            _cliffordMenu = new NativeMenu(T("Clifford_AnalyticsTitle", "Clifford Analytics"), T("Clifford_AnalyticsSubtitle", "THÔNG TIN NHÂN VẬT"));
             _uiPool.Add(_cliffordMenu);
             ConfigureKeyboardOnlyMenu(_cliffordMenu);
             _cliffordMenu.Visible = false;
@@ -837,21 +849,36 @@ public class Clifford : Script
             if (_cliffordMenu == null)
                 return;
 
+            // Luôn đọc lại dữ liệu từ file khi mở menu để số liệu không bị cũ
+            RefreshSummarySnapshot();
+
             _cliffordMenu.Clear();
             _staticItems.Clear();
 
-            AddInfoItem("Tên khách hàng", _snapshot.CustomerName);
-            AddInfoItem("Số tiền hiện tại", FormatMoney(_snapshot.CurrentCash));
-            AddActionInfoItem("Số phương tiện sở hữu", FormatInt(_snapshot.VehicleCount), OpenVehiclesOwnedMenu);
-            AddActionInfoItem("Tổng giá trị kho phương tiện", FormatMoney(_snapshot.VehicleValueTotal), OpenVehiclesValueMenu);
-            AddInfoItem("Số điểm thưởng", FormatMoney(_snapshot.RewardPoints));
-            AddInfoItem("Số tiền bất hợp pháp", FormatMoney(_snapshot.IllegalMoney));
-            AddInfoItem("Dư nợ ngân hàng Lom", FormatMoney(_snapshot.LombankDebt));
-            AddInfoItem("Khoản nợ ngân hàng Fleeca", FormatMoney(_snapshot.FleecaDebt));
-            AddActionInfoItem("Số phương tiện thế chấp", FormatInt(_snapshot.CollateralVehicleCount), OpenCollateralMenu);
-            AddActionInfoItem("Tổng giá trị xe thế chấp", FormatMoney(_snapshot.CollateralVehicleValue), OpenCollateralValueMenu);
+            AddInfoItem(T("Clifford_LabelCustomerName", "Tên khách hàng"), _snapshot.CustomerName);
+            AddInfoItem(T("Clifford_LabelCurrentCash", "Số tiền hiện tại"), FormatMoney(_snapshot.CurrentCash));
+            AddInfoItem(T("Clifford_LabelRewardPoints", "Số điểm thưởng"), FormatMoney(_snapshot.RewardPoints));
+            AddInfoItem(T("Clifford_LabelIllegalMoney", "Số tiền bất hợp pháp"), FormatMoney(_snapshot.IllegalMoney));
 
-            var close = new NativeItem("Đóng báo cáo tài chính");
+            AddActionInfoItem(T("Clifford_LabelOwnedVehicles", "Số phương tiện sở hữu"), FormatInt(_snapshot.VehicleCount), OpenVehiclesOwnedMenu);
+            AddActionInfoItem(T("Clifford_LabelVehicleTotalValue", "Tổng giá trị phương tiện"), FormatMoney(_snapshot.VehicleValueTotal), OpenVehiclesValueMenu);
+
+            AddInfoItem(T("Clifford_LabelLombankStatus", "Trạng thái ở Lom"), _snapshot.LombankStatusText);
+            AddInfoItem(T("Clifford_LabelLombankLimit", "Tổng hạn mức ở Lom"), FormatMoney(_snapshot.LombankTotalLimit));
+            AddInfoItem(T("Clifford_LabelLombankDebt", "Dư nợ ngân hàng Lom"), FormatMoney(_snapshot.LombankDebt));
+
+            AddInfoItem(T("Clifford_LabelFleecaStatus", "Trạng thái ở Fleeca"), _snapshot.FleecaBankStatusText);
+            AddInfoItem(T("Clifford_LabelFleecaDebt", "Khoản nợ Fleeca"), FormatMoney(_snapshot.FleecaDebt));
+            AddInfoItem(T("Clifford_LabelFleecaDueWindow", "Thời gian thu nợ"), _snapshot.FleecaDueWindowText);
+            AddInfoItem(
+                T("Clifford_LabelFleecaDailyDue", "Số tiền thu mỗi ngày"),
+                _snapshot.FleecaDailyDue > 0 ? FormatMoney(_snapshot.FleecaDailyDue) : T("Clifford_NA", "N/A")
+            );
+
+            AddActionInfoItem(T("Clifford_LabelCollateralVehicles", "Số phương tiện thế chấp"), FormatInt(_snapshot.CollateralVehicleCount), OpenCollateralMenu);
+            AddActionInfoItem(T("Clifford_LabelCollateralValue", "Tổng giá trị xe thế chấp"), FormatMoney(_snapshot.CollateralVehicleValue), OpenCollateralValueMenu);
+
+            var close = new NativeItem(T("Clifford_CloseFinancialReport", "Đóng báo cáo tài chính"));
             close.Activated += (s, e) => CloseCliffordMenu();
             _cliffordMenu.Add(close);
 
@@ -873,7 +900,7 @@ public class Clifford : Script
     private void AddActionInfoItem(string label, string value, Action onActivated)
     {
         var item = new NativeItem($"{label}: {value}");
-        item.Description = "Xem chi tiết thông tin này!";
+        item.Description = T("Clifford_ViewDetailDescription", "Xem chi tiết thông tin này!");
         item.Activated += (s, e) =>
         {
             onActivated?.Invoke();
@@ -890,7 +917,7 @@ public class Clifford : Script
             if (_vehiclesOwnedMenuInitialized)
                 return;
 
-            _vehiclesOwnedMenu = new NativeMenu("Vehicles", "CÁC PHƯƠNG TIỆN SỞ HỮU");
+            _vehiclesOwnedMenu = new NativeMenu(T("Clifford_VehiclesMenuTitle", "Vehicles"), T("Clifford_VehiclesMenuSubtitle", "CÁC PHƯƠNG TIỆN SỞ HỮU"));
             _uiPool.Add(_vehiclesOwnedMenu);
             ConfigureKeyboardOnlyMenu(_vehiclesOwnedMenu);
             _vehiclesOwnedMenu.Visible = false;
@@ -908,7 +935,7 @@ public class Clifford : Script
             if (_vehiclesOwnedValueMenuInitialized)
                 return;
 
-            _vehiclesOwnedValueMenu = new NativeMenu("Vehicles Value", "CHI TIẾT GIÁ TRỊ PHƯƠNG TIỆN");
+            _vehiclesOwnedValueMenu = new NativeMenu(T("Clifford_VehiclesValueMenuTitle", "Vehicles Value"), T("Clifford_VehiclesValueMenuSubtitle", "CHI TIẾT GIÁ TRỊ PHƯƠNG TIỆN"));
             _uiPool.Add(_vehiclesOwnedValueMenu);
             ConfigureKeyboardOnlyMenu(_vehiclesOwnedValueMenu);
             _vehiclesOwnedValueMenu.Visible = false;
@@ -926,7 +953,7 @@ public class Clifford : Script
             if (_collateralMenuInitialized)
                 return;
 
-            _collateralMenu = new NativeMenu("Collateral", "CHI TIẾT PHƯƠNG TIỆN THẾ CHẤP");
+            _collateralMenu = new NativeMenu(T("Clifford_CollateralMenuTitle", "Collateral"), T("Clifford_CollateralMenuSubtitle", "CHI TIẾT PHƯƠNG TIỆN THẾ CHẤP"));
             _uiPool.Add(_collateralMenu);
             ConfigureKeyboardOnlyMenu(_collateralMenu);
             _collateralMenu.Visible = false;
@@ -944,7 +971,7 @@ public class Clifford : Script
             if (_collateralValueMenuInitialized)
                 return;
 
-            _collateralValueMenu = new NativeMenu("Collateral Value", "GIÁ TRỊ PHƯƠNG TIỆN THẾ CHẤP");
+            _collateralValueMenu = new NativeMenu(T("Clifford_CollateralValueMenuTitle", "Collateral Value"), T("Clifford_CollateralValueMenuSubtitle", "GIÁ TRỊ PHƯƠNG TIỆN THẾ CHẤP"));
             _uiPool.Add(_collateralValueMenu);
             ConfigureKeyboardOnlyMenu(_collateralValueMenu);
             _collateralValueMenu.Visible = false;
@@ -955,7 +982,7 @@ public class Clifford : Script
         }
     }
 
-    private NativeCheckboxItem CreateLockedCheckboxItem(string title, string description)
+    private NativeCheckboxItem CreateReadOnlyCheckedItem(string title, string description)
     {
         bool suppress = false;
         var item = new NativeCheckboxItem(title, description, true);
@@ -1046,6 +1073,7 @@ public class Clifford : Script
             if (_vehiclesOwnedMenu == null)
                 return;
 
+            RefreshSummarySnapshot();
             _vehiclesOwnedMenu.Clear();
 
             int ownerHash = _snapshot.OwnerHash;
@@ -1053,21 +1081,21 @@ public class Clifford : Script
 
             if (vehicles.Count == 0)
             {
-                _vehiclesOwnedMenu.Add(new NativeItem("Không có phương tiện sở hữu."));
+                _vehiclesOwnedMenu.Add(new NativeItem(T("Clifford_NoOwnedVehicles", "Không có phương tiện sở hữu.")));
             }
             else
             {
                 int index = 1;
                 foreach (var v in vehicles)
                 {
-                    string name = string.IsNullOrWhiteSpace(v.DisplayName) ? "N/A" : v.DisplayName;
-                    var item = CreateLockedCheckboxItem($"{index}. {name}", "Xe đang hoạt động");
+                    string name = string.IsNullOrWhiteSpace(v.DisplayName) ? T("Clifford_NA", "N/A") : v.DisplayName;
+                    var item = CreateReadOnlyCheckedItem($"{index}. {name}", T("Clifford_VehicleActive", "Xe đang hoạt động"));
                     _vehiclesOwnedMenu.Add(item);
                     index++;
                 }
             }
 
-            var back = new NativeItem("Quay lại trang trước");
+            var back = new NativeItem(T("Clifford_Back", "Quay lại trang trước"));
             back.Activated += (s, e) => ReturnToCliffordMenu();
             _vehiclesOwnedMenu.Add(back);
         }
@@ -1083,6 +1111,7 @@ public class Clifford : Script
             if (_vehiclesOwnedValueMenu == null)
                 return;
 
+            RefreshSummarySnapshot();
             _vehiclesOwnedValueMenu.Clear();
 
             int ownerHash = _snapshot.OwnerHash;
@@ -1090,21 +1119,21 @@ public class Clifford : Script
 
             if (vehicles.Count == 0)
             {
-                _vehiclesOwnedValueMenu.Add(new NativeItem("Không có phương tiện sở hữu."));
+                _vehiclesOwnedValueMenu.Add(new NativeItem(T("Clifford_NoOwnedVehicles", "Không có phương tiện sở hữu.")));
             }
             else
             {
                 int index = 1;
                 foreach (var v in vehicles)
                 {
-                    string name = string.IsNullOrWhiteSpace(v.DisplayName) ? "N/A" : v.DisplayName;
+                    string name = string.IsNullOrWhiteSpace(v.DisplayName) ? T("Clifford_NA", "N/A") : v.DisplayName;
                     var item = new NativeItem($"{index}. {name}: {FormatMoney(v.PurchasePrice)}");
                     _vehiclesOwnedValueMenu.Add(item);
                     index++;
                 }
             }
 
-            var back = new NativeItem("Quay lại trang trước");
+            var back = new NativeItem(T("Clifford_Back", "Quay lại trang trước"));
             back.Activated += (s, e) => ReturnToCliffordMenu();
             _vehiclesOwnedValueMenu.Add(back);
         }
@@ -1120,13 +1149,14 @@ public class Clifford : Script
             if (_collateralMenu == null)
                 return;
 
+            RefreshSummarySnapshot();
             _collateralMenu.Clear();
 
             int ownerHash = _snapshot.OwnerHash;
             var ownedVehicles = LoadOwnedVehicles(ownerHash);
             var collateralStates = LoadCollateralStates(ownerHash);
 
-            var matchedNames = new List<string>();
+            var matchedVehicles = new List<VehicleSnapshot>();
 
             foreach (var state in collateralStates)
             {
@@ -1134,23 +1164,30 @@ public class Clifford : Script
                 if (match == null)
                     continue;
 
-                string name = string.IsNullOrWhiteSpace(match.DisplayName) ? "N/A" : match.DisplayName;
-                matchedNames.Add(name);
+                matchedVehicles.Add(match);
             }
 
-            if (matchedNames.Count == 0)
+            if (matchedVehicles.Count == 0)
             {
-                _collateralMenu.Add(new NativeItem("Không có phương tiện thế chấp."));
+                _collateralMenu.Add(new NativeItem(T("Clifford_NoCollateralVehicles", "Không có phương tiện thế chấp.")));
             }
             else
             {
-                for (int i = 0; i < matchedNames.Count; i++)
+                int index = 1;
+                foreach (var v in matchedVehicles)
                 {
-                    _collateralMenu.Add(new NativeItem($"{i + 1}. {matchedNames[i]}"));
+                    string name = string.IsNullOrWhiteSpace(v.DisplayName) ? T("Clifford_NA", "N/A") : v.DisplayName;
+
+                    var item = CreateReadOnlyCheckedItem(
+                        $"{index}. {name}",
+                        T("Clifford_VehicleCollateral", "Xe đang thế chấp"));
+
+                    _collateralMenu.Add(item);
+                    index++;
                 }
             }
 
-            var back = new NativeItem("Quay lại trang trước");
+            var back = new NativeItem(T("Clifford_Back", "Quay lại trang trước"));
             back.Activated += (s, e) => ReturnToCliffordMenu();
             _collateralMenu.Add(back);
         }
@@ -1166,6 +1203,7 @@ public class Clifford : Script
             if (_collateralValueMenu == null)
                 return;
 
+            RefreshSummarySnapshot();
             _collateralValueMenu.Clear();
 
             int ownerHash = _snapshot.OwnerHash;
@@ -1180,14 +1218,14 @@ public class Clifford : Script
                 if (match == null)
                     continue;
 
-                string name = string.IsNullOrWhiteSpace(match.DisplayName) ? "N/A" : match.DisplayName;
+                string name = string.IsNullOrWhiteSpace(match.DisplayName) ? T("Clifford_NA", "N/A") : match.DisplayName;
                 long price = Math.Max(0L, match.PurchasePrice);
                 matchedLines.Add(Tuple.Create(name, price));
             }
 
             if (matchedLines.Count == 0)
             {
-                _collateralValueMenu.Add(new NativeItem("Không có phương tiện thế chấp."));
+                _collateralValueMenu.Add(new NativeItem(T("Clifford_NoCollateralVehicles", "Không có phương tiện thế chấp.")));
             }
             else
             {
@@ -1198,7 +1236,7 @@ public class Clifford : Script
                 }
             }
 
-            var back = new NativeItem("Quay lại trang trước");
+            var back = new NativeItem(T("Clifford_Back", "Quay lại trang trước"));
             back.Activated += (s, e) => ReturnToCliffordMenu();
             _collateralValueMenu.Add(back);
         }
@@ -1267,14 +1305,14 @@ public class Clifford : Script
         try
         {
             int ownerHash = GetCurrentCharacterHash();
+
             _snapshot = new SummarySnapshot
             {
                 OwnerHash = ownerHash,
-                CustomerName = GetCurrentCharacterName(), // NEW
+                CustomerName = GetCurrentCharacterName(),
                 CurrentCash = GetStoryCashByCharacterHash(ownerHash)
             };
 
-            // Đọc trực tiếp từ persistent_vehicles.txt theo ownerHash hiện tại
             var vehicles = LoadOwnedVehicles(ownerHash);
             _snapshot.VehicleCount = vehicles.Count;
             _snapshot.VehicleValueTotal = vehicles.Sum(v => Math.Max(0L, v.PurchasePrice));
@@ -1283,10 +1321,12 @@ public class Clifford : Script
             _snapshot.RewardPoints = TryGetRewardPoints();
 
             _snapshot.IllegalMoney = CityBlackoutHackerState.GetDirtyMoneyBalanceForCurrentCharacter();
-            _snapshot.FleecaDebt = ReadFleecaDebt(ownerHash);
 
-            // Đọc collateral state của đúng nhân vật hiện tại,
-            // rồi truy ngược sang persistent_vehicles.txt để lấy giá mua
+            _snapshot.FleecaDebt = ReadFleecaDebt(ownerHash);
+            ReadFleecaLoanDetails(ownerHash, out string fleecaDueWindow, out long fleecaDailyDue);
+            _snapshot.FleecaDueWindowText = fleecaDueWindow;
+            _snapshot.FleecaDailyDue = fleecaDailyDue;
+
             var collateralStates = LoadCollateralStates(ownerHash);
             _snapshot.CollateralVehicleCount = collateralStates.Count;
             _snapshot.CollateralVehicleValue = 0L;
@@ -1299,10 +1339,121 @@ public class Clifford : Script
             }
 
             _snapshot.LombankDebt = ReadLombankDebt(ownerHash);
+            _snapshot.LombankTotalLimit = ReadLombankTotalLimit(ownerHash);
+
+            // Thêm logic cập nhật trạng thái khóa ngân hàng dựa trên file và thời gian in-game hiện tại
+            _snapshot.LombankStatusText = GetBankStatusTextForCurrentCharacter("atmLockedUntil");
+            _snapshot.FleecaBankStatusText = GetBankStatusTextForCurrentCharacter("fleecaLockedUntil");
         }
         catch
         {
             _snapshot = new SummarySnapshot();
+        }
+    }
+
+    private static DateTime GetCurrentInGameDateTime()
+    {
+        try
+        {
+            int year = Function.Call<int>(Hash.GET_CLOCK_YEAR);
+            int month = Function.Call<int>(Hash.GET_CLOCK_MONTH);
+            int day = Function.Call<int>(Hash.GET_CLOCK_DAY_OF_MONTH);
+            int hour = Function.Call<int>(Hash.GET_CLOCK_HOURS);
+            int minute = Function.Call<int>(Hash.GET_CLOCK_MINUTES);
+
+            if (month < 1 || month > 12)
+                month += 1;
+
+            if (year < 1) year = 1;
+            if (month < 1) month = 1;
+            if (month > 12) month = 12;
+
+            int maxDay = DateTime.DaysInMonth(year, month);
+            if (day < 1) day = 1;
+            if (day > maxDay) day = maxDay;
+
+            if (hour < 0) hour = 0;
+            if (hour > 23) hour = 23;
+
+            if (minute < 0) minute = 0;
+            if (minute > 59) minute = 59;
+
+            return new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Unspecified);
+        }
+        catch
+        {
+            return new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
+        }
+    }
+
+    private static DateTime? ParseNullableDateTime(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        if (DateTime.TryParseExact(
+            value,
+            "o",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out DateTime parsed))
+        {
+            return parsed;
+        }
+
+        if (DateTime.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeLocal,
+            out parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private string GetBankStatusTextForCurrentCharacter(string lockFieldName)
+    {
+        try
+        {
+            int ownerHash = GetCurrentCharacterHash();
+            if (ownerHash == 0)
+                return T("Clifford_StatusActive", "Đang hoạt động");
+
+            string file = Path.Combine(HackerStateRoot, $"hacker_state_{ownerHash}.dat");
+            if (!File.Exists(file))
+                return T("Clifford_StatusActive", "Đang hoạt động");
+
+            DateTime? lockedUntil = null;
+
+            foreach (string raw in File.ReadAllLines(file, Encoding.UTF8))
+            {
+                if (string.IsNullOrWhiteSpace(raw))
+                    continue;
+
+                int idx = raw.IndexOf('=');
+                if (idx <= 0)
+                    continue;
+
+                string key = raw.Substring(0, idx).Trim();
+                string val = raw.Substring(idx + 1).Trim();
+
+                if (!key.Equals(lockFieldName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                lockedUntil = ParseNullableDateTime(val);
+                break;
+            }
+
+            if (lockedUntil.HasValue && GetCurrentInGameDateTime() < lockedUntil.Value)
+                return T("Clifford_StatusFrozen", "Đóng băng tài khoản");
+
+            return T("Clifford_StatusActive", "Đang hoạt động");
+        }
+        catch
+        {
+            return T("Clifford_StatusActive", "Đang hoạt động");
         }
     }
 
@@ -1391,7 +1542,7 @@ public class Clifford : Script
         try
         {
             if (string.IsNullOrWhiteSpace(raw))
-                return "N/A";
+                return T("Clifford_NA", "N/A");
 
             raw = raw.Trim();
 
@@ -1407,7 +1558,7 @@ public class Clifford : Script
         }
         catch
         {
-            return raw ?? "N/A";
+            return raw ?? T("Clifford_NA", "N/A");
         }
     }
 
@@ -1678,6 +1829,104 @@ public class Clifford : Script
 
                 if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long debt))
                     return Math.Max(0L, debt);
+            }
+        }
+        catch
+        {
+        }
+
+        return 0L;
+    }
+
+    private void ReadFleecaLoanDetails(int ownerHash, out string dueWindowText, out long dailyDue)
+    {
+        dueWindowText = T("Clifford_TimeWindowNA", "--:--");
+        dailyDue = 0L;
+
+        try
+        {
+            if (ownerHash == 0)
+                return;
+
+            string file = Path.Combine(FleecaStateRoot, $"loan_state_{ownerHash}.dat");
+            if (!File.Exists(file))
+                return;
+
+            string text = File.ReadAllText(file, Encoding.UTF8).Trim();
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+
+            string[] p = text.Split('|');
+            if (p.Length < 7)
+                return;
+
+            long remainingDebt = 0L;
+            if (p.Length > 1)
+                long.TryParse(p[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out remainingDebt);
+
+            if (remainingDebt <= 0)
+                return;
+
+            if (p.Length > 2)
+            {
+                long tmp;
+                if (long.TryParse(p[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out tmp))
+                    dailyDue = Math.Max(0L, tmp);
+            }
+
+            int startHour = -1;
+            int endHour = -1;
+
+            if (p.Length > 5)
+                int.TryParse(p[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out startHour);
+
+            if (p.Length > 6)
+                int.TryParse(p[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out endHour);
+
+            if (startHour >= 0 && startHour < 24 && endHour >= 0 && endHour < 24)
+            {
+                dueWindowText = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0:00}:00~{1:00}:00",
+                    startHour,
+                    endHour);
+            }
+        }
+        catch
+        {
+            dueWindowText = T("Clifford_TimeWindowNA", "--:--");
+            dailyDue = 0L;
+        }
+    }
+
+    private long ReadLombankTotalLimit(int ownerHash)
+    {
+        try
+        {
+            if (ownerHash == 0)
+                return 0L;
+
+            string file = Path.Combine(LombankStateRoot, $"lombank_state_{ownerHash}.dat");
+            if (!File.Exists(file))
+                return 0L;
+
+            foreach (string line in File.ReadAllLines(file, Encoding.UTF8))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                int idx = line.IndexOf('=');
+                if (idx <= 0)
+                    continue;
+
+                string key = line.Substring(0, idx).Trim();
+                string value = line.Substring(idx + 1).Trim();
+
+                if (!key.Equals("limit", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long limit))
+                    return Math.Max(0L, limit);
             }
         }
         catch

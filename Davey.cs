@@ -8,6 +8,7 @@ using System;
 using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
+using static AssetLeaking;
 
 public partial class InstantRefill : Script
 {
@@ -25,10 +26,13 @@ public partial class InstantRefill : Script
 
     private bool _rewardBribeLevelFocused = false;
     private int _rewardBribeStars = 0;
+    private bool _rewardBribeAssetLeakingMode = false;
 
-    // 1,000,000 reward points per wanted star
+    // Normal mode: 1,000,000 reward points per wanted star
     private const long RewardBribeCostPerStar = 1_000_000L;
     private const int RewardBribeMaxStars = 5;
+    private const long AssetLeakingRewardBribeCostPerStar = 5_000_000L;
+    private const int AssetLeakingRewardBribeMaxStars = 4;
 
     private const int DaveyContactDialTimeoutMs = 2000;
 
@@ -62,7 +66,7 @@ public partial class InstantRefill : Script
                 Active = true,
                 DialTimeout = DaveyContactDialTimeoutMs,
                 Bold = false,
-                Icon = new ContactIcon("CHAR_DAVE")
+                Icon = ContactIcon.Dave
             };
 
             contact.Answered += OnDaveyContactAnswered;
@@ -107,6 +111,44 @@ public partial class InstantRefill : Script
             _luiRewardBribeMenu.Visible = false;
         }
         catch { }
+    }
+
+    private bool IsRewardBribeAssetLeakingMode()
+    {
+        try
+        {
+            AssetLeakingWantedState.ClearIfWantedLevelZero();
+            return AssetLeakingWantedState.IsLockedByAssetLeaking;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private int GetRewardBribeMaxStars()
+    {
+        return _rewardBribeAssetLeakingMode
+            ? AssetLeakingRewardBribeMaxStars
+            : RewardBribeMaxStars;
+    }
+
+    private long GetRewardBribeCostPerStar()
+    {
+        return _rewardBribeAssetLeakingMode
+            ? AssetLeakingRewardBribeCostPerStar
+            : RewardBribeCostPerStar;
+    }
+
+    private string GetRewardBribeServiceDescription()
+    {
+        return _rewardBribeAssetLeakingMode
+            ? T(
+                "RewardBribeServiceDescAssetLeaking",
+                "Trạng thái hiện tại đến từ việc mua chuộc phương tiện từ Fleeca. Dave Norton chỉ hỗ trợ tối đa 4 sao, giá 5.000.000 điểm mỗi sao.")
+            : T(
+                "RewardBribeServiceDescNormal",
+                "Trạng thái hiện tại là truy nã bình thường. Dave Norton hỗ trợ tối đa 5 sao, giá 1.000.000 điểm mỗi sao.");
     }
 
     private bool HandleAnyMenuInput(KeyEventArgs e)
@@ -176,7 +218,8 @@ public partial class InstantRefill : Script
         int wantedLevel = Math.Max(0, Game.Player.WantedLevel);
 
         _rewardBribeLevelFocused = false;
-        _rewardBribeStars = Math.Min(RewardBribeMaxStars, wantedLevel);
+        _rewardBribeAssetLeakingMode = IsRewardBribeAssetLeakingMode();
+        _rewardBribeStars = Math.Min(GetRewardBribeMaxStars(), wantedLevel);
 
         var infoPoints = new NativeItem(
             string.Format(CultureInfo.InvariantCulture,
@@ -186,6 +229,7 @@ public partial class InstantRefill : Script
 
         _luiRewardBribeServiceItem = new NativeItem(
             T("RewardBribeServiceLabel", "Dịch vụ: Hối lộ giảm tội"));
+        _luiRewardBribeServiceItem.Description = GetRewardBribeServiceDescription();
         _luiRewardBribeMenu.Add(_luiRewardBribeServiceItem);
 
         var infoWanted = new NativeItem(
@@ -227,27 +271,36 @@ public partial class InstantRefill : Script
         {
             if (_luiRewardBribeLevelItem != null)
             {
+                int maxStars = GetRewardBribeMaxStars();
+                long costPerStar = GetRewardBribeCostPerStar();
+
                 _luiRewardBribeLevelItem.AltTitle = string.Format(
                     CultureInfo.InvariantCulture,
                     "\u2190 {0} \u2192",
-                    Math.Max(0, _rewardBribeStars));
+                    Math.Max(0, Math.Min(_rewardBribeStars, maxStars)));
 
                 _luiRewardBribeLevelItem.Description = string.Format(
                     CultureInfo.InvariantCulture,
                     T("RewardBribeLevelDesc",
-                      "Số sao truy nã muốn giảm là {0} và chi phí thanh toán là {1} điểm."),
+                      "Số sao truy nã muốn giảm là {0}. Giới hạn hiện tại là {1} sao. Chi phí thanh toán là {2} điểm/sao."),
                     Math.Max(0, _rewardBribeStars),
-                    FormatML(Math.Max(0, _rewardBribeStars) * RewardBribeCostPerStar));
+                    maxStars,
+                    FormatML(costPerStar));
             }
 
             if (_luiRewardBribeConfirmItem != null)
             {
-                long cost = Math.Max(0, _rewardBribeStars) * RewardBribeCostPerStar;
+                long cost = Math.Max(0, _rewardBribeStars) * GetRewardBribeCostPerStar();
                 _luiRewardBribeConfirmItem.Description = string.Format(
                     CultureInfo.InvariantCulture,
                     T("RewardBribeConfirmDesc",
                       "Chi phí thanh toán là {0} điểm. Có chắc không?"),
                     FormatML(cost));
+            }
+
+            if (_luiRewardBribeServiceItem != null)
+            {
+                _luiRewardBribeServiceItem.Description = GetRewardBribeServiceDescription();
             }
         }
         catch { }
@@ -257,9 +310,10 @@ public partial class InstantRefill : Script
     {
         try
         {
+            int maxStars = GetRewardBribeMaxStars();
             _rewardBribeStars += delta;
             if (_rewardBribeStars < 0) _rewardBribeStars = 0;
-            if (_rewardBribeStars > RewardBribeMaxStars) _rewardBribeStars = RewardBribeMaxStars;
+            if (_rewardBribeStars > maxStars) _rewardBribeStars = maxStars;
 
             UpdateRewardBribeMenuVisuals();
             PlayFrontendSound("NAV_UP_DOWN", "HUD_FRONTEND_DEFAULT_SOUNDSET");
@@ -306,7 +360,8 @@ public partial class InstantRefill : Script
         try
         {
             int currentWanted = GetCurrentWantedLevel();
-            int reduceStars = Math.Min(currentWanted, Math.Max(0, _rewardBribeStars));
+            int maxStars = GetRewardBribeMaxStars();
+            int reduceStars = Math.Min(currentWanted, Math.Min(maxStars, Math.Max(0, _rewardBribeStars)));
 
             if (reduceStars <= 0)
             {
@@ -319,7 +374,8 @@ public partial class InstantRefill : Script
 
             ReloadSpendingAccumulatorFromDisk();
 
-            long cost = (long)reduceStars * RewardBribeCostPerStar;
+            long costPerStar = GetRewardBribeCostPerStar();
+            long cost = (long)reduceStars * costPerStar;
             if (_spendingAccumulator.Total < cost)
             {
                 GTA.UI.Screen.ShowSubtitle(

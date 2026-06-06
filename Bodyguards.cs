@@ -318,6 +318,9 @@ public class Bodyguards : Script
 
         // NEW: chống xử lý lặp khi clone đã chết
         public bool WeaponCleanupDone = false;
+
+        // NEW: lưu nhân vật đã thuê vệ sĩ để set màu blip đúng
+        public uint OwnerPlayerModelHash = 0u;
     }
 
     private List<CloneData> _clones = new List<CloneData>();
@@ -984,6 +987,63 @@ public class Bodyguards : Script
     // -------------------------
     // State-specific helpers
     // -------------------------
+    private uint GetCurrentPlayerModelHash()
+    {
+        try
+        {
+            var player = Game.Player.Character;
+            if (player == null || !player.Exists())
+                return 0u;
+
+            return (uint)player.Model.Hash;
+        }
+        catch
+        {
+            return 0u;
+        }
+    }
+
+    private int ResolveBlipColourByPlayerModel(uint modelHash)
+    {
+        // Mặc định: Franklin = xanh lá
+        switch (unchecked((int)modelHash))
+        {
+            case -1692214353: // Franklin
+                return 2;      // green
+
+            case 225514697:   // Michael
+                return 3;      // blue
+
+            case -1686040670: // Trevor
+                return 17;     // orange
+
+            default:
+                return 2;      // fallback xanh lá
+        }
+    }
+
+    private void ApplyCloneBlipStyle(CloneData cd)
+    {
+        try
+        {
+            if (cd == null)
+                return;
+
+            var blip = cd.MapBlip;
+            if (blip == null || !blip.Exists())
+                return;
+
+            int colour = ResolveBlipColourByPlayerModel(cd.OwnerPlayerModelHash);
+
+            // giữ nguyên kiểu blip hiện tại, chỉ đổi màu
+            Function.Call(Hash.SET_BLIP_SPRITE, blip.Handle, 1);
+            Function.Call(Hash.SET_BLIP_COLOUR, blip.Handle, colour);
+            Function.Call(Hash.SET_BLIP_SCALE, blip.Handle, 0.85f);
+            Function.Call(Hash.SET_BLIP_AS_SHORT_RANGE, blip.Handle, false);
+        }
+        catch { }
+    }
+
     private void EnsureFollowOnce(CloneData cd, Ped player, int index)
     {
         try
@@ -1732,6 +1792,9 @@ public class Bodyguards : Script
                 return false;
             }
 
+            // NEW: lấy model hash của nhân vật đang gọi vệ sĩ
+            uint ownerModelHash = GetCurrentPlayerModelHash();
+
             Vector3 spawnPos = player.GetOffsetPosition(new Vector3((_clones.Count + 1) * 0.6f, -1.2f - (_clones.Count * 0.6f), 0f));
 
             Ped clone = null;
@@ -1778,7 +1841,10 @@ public class Bodyguards : Script
                 LastFollowIssuedMs = Game.GameTime,
                 LastVehicleSyncMs = Game.GameTime,
                 LastHealth = clone.Health,
-                LastSeenEnemyMs = -1
+                LastSeenEnemyMs = -1,
+
+                // NEW
+                OwnerPlayerModelHash = ownerModelHash
             };
 
             AssignRandomWeaponOnce(cd);
@@ -2013,17 +2079,16 @@ public class Bodyguards : Script
 
             // already exists
             if (cd.MapBlip != null && cd.MapBlip.Exists())
+            {
+                ApplyCloneBlipStyle(cd); // NEW: luôn ép lại màu đúng
                 return;
+            }
 
             cd.MapBlip = ped.AddBlip();
             if (cd.MapBlip == null || !cd.MapBlip.Exists())
                 return;
 
-            // green round blip
-            try { Function.Call(Hash.SET_BLIP_SPRITE, cd.MapBlip.Handle, 1); } catch { }
-            try { Function.Call(Hash.SET_BLIP_COLOUR, cd.MapBlip.Handle, 2); } catch { } // green
-            try { Function.Call(Hash.SET_BLIP_SCALE, cd.MapBlip.Handle, 0.85f); } catch { }
-            try { Function.Call(Hash.SET_BLIP_AS_SHORT_RANGE, cd.MapBlip.Handle, false); } catch { }
+            ApplyCloneBlipStyle(cd); // NEW: set màu theo Franklin/Michael/Trevor
         }
         catch { }
     }
