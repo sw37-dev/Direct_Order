@@ -1,4 +1,4 @@
-README: Direct Order Script  (v1.6)
+README: Direct Order Script
 Author: SW37
 
 ------------------------------------------
