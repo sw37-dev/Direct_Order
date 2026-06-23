@@ -5,7 +5,10 @@ using GTA.UI;
 using iFruitAddon2;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Windows.Forms;
 
 public partial class FleecaBankLoanScript : Script
@@ -83,7 +86,11 @@ public partial class FleecaBankLoanScript : Script
 
             if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Return)
             {
-                BeginLoanDialog();
+                if (_activeBankerServiceMode == FleecaServiceMode.Savings)
+                    BeginSavingsDialog();
+                else
+                    BeginLoanDialog();
+
                 return;
             }
 
@@ -122,7 +129,12 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
-            DespawnBankerNpc();
+            // Giữ lại mode dịch vụ hiện tại (Loan / Savings) trong lúc respawn NPC.
+            // Nếu gọi DespawnBankerNpc() kiểu cũ ở đây thì nó sẽ reset mode về None,
+            // làm prompt + Enter luôn rơi về logic vay tiền.
+            FleecaServiceMode serviceMode = _activeBankerServiceMode;
+            DespawnBankerNpc(false);
+            _activeBankerServiceMode = serviceMode;
 
             if (BankerSpawnPoints == null || BankerSpawnPoints.Length == 0)
             {
@@ -177,7 +189,7 @@ public partial class FleecaBankLoanScript : Script
             }
             catch (Exception ex)
             {
-                Notification.Show("Tạo blip lỗi.");
+                Notification.Show(L("Credit_ErrorCreateBlip", "Tạo blip lỗi."));
                 Log("Create banker blip failed: " + ex);
             }
 
@@ -198,7 +210,7 @@ public partial class FleecaBankLoanScript : Script
         }
         catch (Exception ex)
         {
-            Notification.Show("Spawn NPC lỗi.");
+            Notification.Show(L("Credit_ErrorSpawnNpc", "Spawn NPC lỗi."));
             Log("SpawnBankerNpc failed: " + ex);
         }
     }
@@ -489,37 +501,46 @@ public partial class FleecaBankLoanScript : Script
 
             string help;
 
-            if (_loanPackageFlowPending && _selectedLoanPackageAmount > 0)
+            if (_activeBankerServiceMode == FleecaServiceMode.Savings)
             {
-                help = string.Format(
-                    L("Credit_Help_PackageLoan",
-                    "~b~~h~VAY NGÂN HÀNG~h~~s~\nBạn đã chọn gói vay {0} và có thực sự muốn vay khoản này không?\n{1} để vay\n{2} để hủy"),
-                    FormatMoney(_selectedLoanPackageAmount),
-                    "~INPUT_FRONTEND_ACCEPT~",
-                    "~INPUT_FRONTEND_LEFT~");
+                help = L(
+                    "Credit_Help_Savings",
+                    "~b~~h~GỬI TIỀN TIẾT KIỆM~h~~s~\nBạn hãy nhập số tiền cần gửi vào Ngân hàng Fleeca để sinh lời mỗi ngày nhé!\n~INPUT_FRONTEND_ACCEPT~ để nhập\n~INPUT_FRONTEND_LEFT~ để hủy");
             }
             else
             {
-                long creditPoints = GetCreditPoints();
-                long maxLoan = GetLoanLimitFromPoints(creditPoints);
-
-                if (maxLoan <= 0)
+                if (_loanPackageFlowPending && _selectedLoanPackageAmount > 0)
                 {
                     help = string.Format(
-                        L("Credit_Help_NoLoan",
-                        "Bạn chưa đủ điều kiện vay.\nCần chi tầm {0}.\n{1} để đóng thông báo\n{2} để hủy"),
-                        FormatMoney(1000000),
+                        L("Credit_Help_PackageLoan",
+                        "~b~~h~VAY NGÂN HÀNG~h~~s~\nBạn đã chọn gói vay {0} và có thực sự muốn vay khoản này không?\n{1} để vay\n{2} để hủy"),
+                        FormatMoney(_selectedLoanPackageAmount),
                         "~INPUT_FRONTEND_ACCEPT~",
                         "~INPUT_FRONTEND_LEFT~");
                 }
                 else
                 {
-                    help = string.Format(
-                        L("Credit_Help_CanLoan",
-                        "Bạn muốn vay tiền ngân hàng à?\nHạn mức vay tiền là {0} nha!!!\n{1} để vay tiền\n{2} để hủy"),
-                        FormatMoney(maxLoan),
-                        "~INPUT_FRONTEND_ACCEPT~",
-                        "~INPUT_FRONTEND_LEFT~");
+                    long creditPoints = GetCreditPoints();
+                    long maxLoan = GetLoanLimitFromPoints(creditPoints);
+
+                    if (maxLoan <= 0)
+                    {
+                        help = string.Format(
+                            L("Credit_Help_NoLoan",
+                            "Bạn chưa đủ điều kiện vay.\nCần chi tầm {0}.\n{1} để đóng thông báo\n{2} để hủy"),
+                            FormatMoney(1000000),
+                            "~INPUT_FRONTEND_ACCEPT~",
+                            "~INPUT_FRONTEND_LEFT~");
+                    }
+                    else
+                    {
+                        help = string.Format(
+                            L("Credit_Help_CanLoan",
+                            "Bạn muốn vay tiền ngân hàng à?\nHạn mức vay tiền là {0} nha!!!\n{1} để vay tiền\n{2} để hủy"),
+                            FormatMoney(maxLoan),
+                            "~INPUT_FRONTEND_ACCEPT~",
+                            "~INPUT_FRONTEND_LEFT~");
+                    }
                 }
             }
 
@@ -531,7 +552,70 @@ public partial class FleecaBankLoanScript : Script
         }
     }
 
-    private void DespawnBankerNpc()
+    private void BeginSavingsDialog()
+    {
+        try
+        {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
+            if (_savingsDialogActive)
+                return;
+
+            if (_loanActive && _loanRemainingDebt > 0)
+            {
+                ShowFleecaNotification(
+                    L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
+                    L("Credit_ActiveLoanDebt", "Bạn đang có khoản vay chưa thanh toán...."));
+                return;
+            }
+
+            _savingsDialogActive = true;
+
+            string input = Game.GetUserInput(string.Empty);
+            if (string.IsNullOrWhiteSpace(input))
+                return;
+
+            var sb = new StringBuilder();
+            foreach (char ch in input)
+            {
+                if (char.IsDigit(ch))
+                    sb.Append(ch);
+            }
+
+            string digitsOnly = sb.ToString();
+            if (string.IsNullOrWhiteSpace(digitsOnly) ||
+                !long.TryParse(digitsOnly, NumberStyles.Integer, CultureInfo.InvariantCulture, out long amount))
+            {
+                GTA.UI.Screen.ShowSubtitle(L("Credit_InvalidAmount", "Số tiền không hợp lệ."), 2500);
+                return;
+            }
+
+            if (amount < SAVINGS_MIN_DEPOSIT)
+            {
+                GTA.UI.Screen.ShowSubtitle(L("Credit_MinSavingsDeposit", "Số tiền gửi tối thiểu là $1,000,000."), 2500);
+                return;
+            }
+
+            if (amount > Math.Max(0, Game.Player.Money))
+            {
+                GTA.UI.Screen.ShowSubtitle(L("Credit_NotEnoughMoneyToDeposit", "Bạn không đủ tiền để gửi khoản này."), 2500);
+                return;
+            }
+
+            StartSavingsDeposit(amount);
+        }
+        catch (Exception ex)
+        {
+            Log("BeginSavingsDialog failed: " + ex);
+        }
+        finally
+        {
+            _savingsDialogActive = false;
+        }
+    }
+
+    private void DespawnBankerNpc(bool resetServiceMode = true)
     {
         try
         {
@@ -559,6 +643,9 @@ public partial class FleecaBankLoanScript : Script
             _bankerNpcs.Clear();
             _bankerNpc = null;
             _activeBankerSpawnPoint = null;
+
+            if (resetServiceMode)
+                _activeBankerServiceMode = FleecaServiceMode.None;
         }
         catch (Exception ex)
         {

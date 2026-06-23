@@ -204,6 +204,7 @@ public class PlaneDeliveryContractEvent : Script
         if (!PrimeAutoHandoverBridge.CanTriggerDeliveryContractsForCurrentCharacter())
             return;
 
+        DeliveryContractBridge.CurrentKind = DeliveryContractMissionKind.Plane;
         DeliveryContractBridge.PlanePendingStart = true;
     }
 

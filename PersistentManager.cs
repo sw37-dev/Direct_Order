@@ -35,7 +35,7 @@ public partial class PersistentManager : Script
     private static volatile bool _destroyedVehiclesDirty = false;
 
     private const int MAX_DESTROYED_VEHICLES_PER_CHAR = 10;
-    private const double INSURANCE_RESTORE_PERCENT = 0.60;
+    private const double INSURANCE_RESTORE_PERCENT = 0.07;
 
     // --- MMI Insurance menu state ---
     private NativeMenu _mmiInsuranceMenu;
@@ -62,7 +62,7 @@ public partial class PersistentManager : Script
     private const bool ENABLE_LOG = false;
     private static string MMI_CONTACT_NAME => L("MMI_ContactName", "Mors Mutual Insurance");
     private const int MMI_CALL_DURATION_MS = 2000;
-
+    
     private static bool _mmiRestorePending = false;
     private static int _mmiRestoreDueTime = 0;
     private bool _mmiContactAdded = false;
@@ -1415,6 +1415,75 @@ public partial class PersistentManager : Script
         }
     }
 
+    private bool TryFindSafeInsuranceSpawnPoint(Vector3 origin, out Vector3 spawnPos, out float heading)
+    {
+        spawnPos = Vector3.Zero;
+        heading = 0f;
+
+        try
+        {
+            // Ưu tiên node rất gần trước, rồi mở rộng dần
+            float[] radii = new float[] { 2f, 4f, 6f, 10f, 14f, 20f, 30f, 45f };
+            const int samplesPerRing = 12;
+
+            for (int r = 0; r < radii.Length; r++)
+            {
+                float radius = radii[r];
+
+                for (int i = 0; i < samplesPerRing; i++)
+                {
+                    double angle = (Math.PI * 2.0 * i) / samplesPerRing;
+
+                    Vector3 guess = origin + new Vector3(
+                        (float)Math.Cos(angle) * radius,
+                        (float)Math.Sin(angle) * radius,
+                        0f);
+
+                    OutputArgument posArg = new OutputArgument();
+                    OutputArgument headArg = new OutputArgument();
+
+                    bool found = Function.Call<bool>(
+                        Hash.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING,
+                        guess.X, guess.Y, guess.Z + 50f,
+                        posArg, headArg,
+                        1, 3.0f, 0);
+
+                    if (!found)
+                        continue;
+
+                    Vector3 p = posArg.GetResult<Vector3>();
+                    float h = headArg.GetResult<float>();
+
+                    // kéo xuống mặt đất nếu native hỗ trợ
+                    float groundZ = p.Z;
+                    try
+                    {
+                        OutputArgument zArg = new OutputArgument();
+                        if (Function.Call<bool>(Hash.GET_GROUND_Z_FOR_3D_COORD, p.X, p.Y, p.Z + 100f, zArg, false))
+                            groundZ = zArg.GetResult<float>();
+                    }
+                    catch { }
+
+                    spawnPos = new Vector3(p.X, p.Y, groundZ + 0.5f);
+                    heading = h;
+                    return true;
+                }
+            }
+
+            // Fallback cuối cùng: node đường gần nhất
+            Vector3 street = World.GetNextPositionOnStreet(origin);
+            if (street != Vector3.Zero)
+            {
+                spawnPos = street;
+                heading = 0f;
+                return true;
+            }
+        }
+        catch { }
+
+        return false;
+    }
+
     // NEW: called when we detect the player just exited a vehicle
     private void OnPlayerExitedVehicle(Vehicle veh)
     {
@@ -1618,6 +1687,15 @@ public partial class PersistentManager : Script
                 AutoSpawnEnabled = false
             };
 
+            // Ngay sau đoạn khởi tạo pv, thêm patch Hao:
+            if (explicitMeta != null)
+            {
+                if (explicitMeta.HaoUpgradeBranch.HasValue)
+                    pv.HaoUpgradeBranch = explicitMeta.HaoUpgradeBranch;
+
+                pv.HaoUpgradeApplied = explicitMeta.HaoUpgradeApplied;
+            }
+
             try
             {
                 if (explicitMeta != null)
@@ -1815,6 +1893,15 @@ public partial class PersistentManager : Script
                             }
                         }
                         catch { }
+
+                        // Thêm vào cuối phần update metadata trong nhánh existing != null:
+                        if (explicitMeta != null)
+                        {
+                            if (explicitMeta.HaoUpgradeBranch.HasValue)
+                                existing.HaoUpgradeBranch = explicitMeta.HaoUpgradeBranch;
+
+                            existing.HaoUpgradeApplied = explicitMeta.HaoUpgradeApplied;
+                        }
 
                         _vehiclesDirty = true;
                     }
@@ -2121,8 +2208,16 @@ public partial class PersistentManager : Script
                     if (!modelString.EndsWith($"(0x{v.ModelHash:X})", StringComparison.OrdinalIgnoreCase))
                         modelString = $"{modelString}{hexSuffix}";
 
+                    // Thêm các biến mới theo hướng dẫn
+                    string haoBranchStr = v.HaoUpgradeBranch.HasValue
+                        ? v.HaoUpgradeBranch.Value.ToString(CultureInfo.InvariantCulture)
+                        : "";
+
+                    string haoAppliedStr = v.HaoUpgradeApplied ? "1" : "0";
+
+                    // Thay đổi string.Format với các tham số mới (tổng cộng 24 vị trí từ {0} đến {23})
                     return string.Format(CultureInfo.InvariantCulture,
-                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}",
+                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}|{21}|{22}|{23}",
                         modelString,
                         v.Position.X, v.Position.Y, v.Position.Z,
                         v.Heading,
@@ -2142,7 +2237,9 @@ public partial class PersistentManager : Script
                         extrasSerialized,
                         neonRgb,
                         dashStr,
-                        v.IsCollateralLocked ? 1 : 0
+                        v.IsCollateralLocked ? 1 : 0,
+                        haoBranchStr,
+                        haoAppliedStr
                     );
                 }).ToArray();
             }
@@ -2255,6 +2352,10 @@ public partial class PersistentManager : Script
             int? dashColor = null;
             bool collateralLocked = false;
 
+            // Thêm theo hướng dẫn của bạn
+            int? haoUpgradeBranch = null;
+            bool haoUpgradeApplied = false;
+
             try
             {
                 if (p.Length > 11 && !string.IsNullOrEmpty(p[11])) { int tmp; if (int.TryParse(p[11], out tmp)) savedLivery = tmp; }
@@ -2309,6 +2410,21 @@ public partial class PersistentManager : Script
                     if (int.TryParse(p[21], out tmp))
                         collateralLocked = tmp != 0;
                 }
+
+                // Thêm xử lý phân tách chuỗi cho các trường mới nằm trong khối try-catch
+                if (p.Length > 22 && !string.IsNullOrWhiteSpace(p[22]))
+                {
+                    int tmp;
+                    if (int.TryParse(p[22], out tmp) && (tmp == 0 || tmp == 1))
+                        haoUpgradeBranch = tmp;
+                }
+
+                if (p.Length > 23 && !string.IsNullOrWhiteSpace(p[23]))
+                {
+                    int tmp;
+                    if (int.TryParse(p[23], out tmp))
+                        haoUpgradeApplied = tmp != 0;
+                }
             }
             catch { }
 
@@ -2336,7 +2452,11 @@ public partial class PersistentManager : Script
                 ExtrasExist = extrasExist ?? new List<int>(),
                 NeonColor = neonRgb,
                 DashboardColor = dashColor,
-                IsCollateralLocked = collateralLocked
+                IsCollateralLocked = collateralLocked,
+
+                // Thêm gán thuộc tính vào Object Initializer
+                HaoUpgradeBranch = haoUpgradeBranch,
+                HaoUpgradeApplied = haoUpgradeApplied,
             };
 
             return true;
@@ -3009,8 +3129,14 @@ public partial class PersistentManager : Script
                         modelString = $"{modelString}{hexSuffix}";
                     }
 
+                    string haoBranchStr = v.HaoUpgradeBranch.HasValue
+                        ? v.HaoUpgradeBranch.Value.ToString(CultureInfo.InvariantCulture)
+                        : "";
+
+                    string haoAppliedStr = v.HaoUpgradeApplied ? "1" : "0";
+
                     return string.Format(CultureInfo.InvariantCulture,
-                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}",
+                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}|{21}|{22}|{23}",
                         modelString,
                         v.Position.X, v.Position.Y, v.Position.Z,
                         v.Heading,
@@ -3030,7 +3156,9 @@ public partial class PersistentManager : Script
                         extrasSerialized,
                         neonRgb,
                         dashStr,
-                        v.IsCollateralLocked ? 1 : 0
+                        v.IsCollateralLocked ? 1 : 0,
+                        haoBranchStr,
+                        haoAppliedStr
                     );
                 }).ToArray();
             }
@@ -3190,6 +3318,8 @@ public partial class PersistentManager : Script
                     int[] neonRgb = null;
                     int? dashColor = null;
                     bool collateralLocked = false;
+                    int? haoUpgradeBranch = null;
+                    bool haoUpgradeApplied = false;
 
                     try
                     {
@@ -3245,6 +3375,20 @@ public partial class PersistentManager : Script
                             if (int.TryParse(p[21], out tmp))
                                 collateralLocked = tmp != 0;
                         }
+
+                        if (p.Length > 22 && !string.IsNullOrWhiteSpace(p[22]))
+                        {
+                            int tmp;
+                            if (int.TryParse(p[22], out tmp) && (tmp == 0 || tmp == 1))
+                                haoUpgradeBranch = tmp;
+                        }
+
+                        if (p.Length > 23 && !string.IsNullOrWhiteSpace(p[23]))
+                        {
+                            int tmp;
+                            if (int.TryParse(p[23], out tmp))
+                                haoUpgradeApplied = tmp != 0;
+                        }
                     }
                     catch { /* tolerate parse errors */ }
 
@@ -3274,7 +3418,9 @@ public partial class PersistentManager : Script
                             ExtrasExist = extrasExist ?? new List<int>(),
                             NeonColor = neonRgb,
                             DashboardColor = dashColor,
-                            IsCollateralLocked = collateralLocked
+                            IsCollateralLocked = collateralLocked,
+                            HaoUpgradeBranch = haoUpgradeBranch,
+                            HaoUpgradeApplied = haoUpgradeApplied,
                         });
                     }
                 }
@@ -3789,6 +3935,43 @@ public partial class PersistentManager : Script
         }
     }
 
+    public static void UpdateHaoUpgradeState(Vehicle veh, int? haoBranch, bool haoApplied)
+    {
+        try
+        {
+            if (veh == null || !veh.Exists())
+                return;
+
+            lock (_persistVehicles)
+            {
+                var pv = _persistVehicles.FirstOrDefault(p =>
+                    p.RuntimeVehicle != null &&
+                    p.RuntimeVehicle.Exists() &&
+                    p.RuntimeVehicle.Handle == veh.Handle);
+
+                if (pv == null)
+                {
+                    int ownerHash = Game.Player?.Character?.Model.Hash ?? 0;
+                    uint model = (uint)veh.Model.Hash;
+                    var pos = veh.Position;
+
+                    pv = _persistVehicles.FirstOrDefault(p =>
+                        p.ModelHash == model &&
+                        p.OwnerModelHash == ownerHash &&
+                        p.Position.DistanceTo2D(pos) < 5f);
+                }
+
+                if (pv != null)
+                {
+                    pv.HaoUpgradeBranch = haoBranch;
+                    pv.HaoUpgradeApplied = haoApplied;
+                    _vehiclesDirty = true;
+                }
+            }
+        }
+        catch { }
+    }
+
     private void RemoveCollateralStateRecordForRecoveredVehicle(PersistentVehicle pv)
     {
         try
@@ -3847,6 +4030,8 @@ public partial class PersistentManager : Script
             TurboOn = src.TurboOn,
             PurchasePrice = src.PurchasePrice,
             IsCollateralLocked = src.IsCollateralLocked,
+            HaoUpgradeBranch = src.HaoUpgradeBranch,
+            HaoUpgradeApplied = src.HaoUpgradeApplied,
             SavedLivery = src.SavedLivery,
             PrimaryColor = src.PrimaryColor,
             SecondaryColor = src.SecondaryColor,
@@ -3857,7 +4042,7 @@ public partial class PersistentManager : Script
             ExtrasExist = src.ExtrasExist != null ? new List<int>(src.ExtrasExist) : new List<int>(),
             NeonColor = src.NeonColor != null ? (int[])src.NeonColor.Clone() : null,
             DashboardColor = src.DashboardColor,
-            SuppressBlipWhileOccupied = false // <-- Thêm vào đây (cuối danh sách khởi tạo đối tượng)
+            SuppressBlipWhileOccupied = false
         };
     }
 
@@ -3924,6 +4109,22 @@ public partial class PersistentManager : Script
 
                         _persistVehicles.Add(restored);
                         _vehiclesDirty = true;
+                    }
+
+                    Vector3 safePos;
+                    float safeHeading;
+
+                    if (TryFindSafeInsuranceSpawnPoint(src.Position, out safePos, out safeHeading))
+                    {
+                        restored.Position = safePos;
+                        restored.Heading = safeHeading;
+                    }
+                    else
+                    {
+                        // fallback tối thiểu: vẫn cố đưa sang node đường gần nhất
+                        Vector3 street = World.GetNextPositionOnStreet(src.Position);
+                        if (street != Vector3.Zero)
+                            restored.Position = street;
                     }
 
                     SpawnPersistentVehicle(restored);
@@ -4103,6 +4304,11 @@ public partial class PersistentManager : Script
         public bool TurboOn;
         public int PurchasePrice;
         public bool IsCollateralLocked;
+
+        // Hao upgrade state
+        public int? HaoUpgradeBranch;   // 1 = nhánh 60% (full ngay khi mua), 0 = nhánh 40% (cần Hao)
+        public bool HaoUpgradeApplied;   // true = Hao đã nâng cấp xong rồi
+
         // Transient runtime state: ẩn blip khi player đang ngồi trong chính xe này
         public bool SuppressBlipWhileOccupied;
 
@@ -4135,6 +4341,10 @@ public partial class PersistentManager : Script
             NeonColor = null;
             PurchasePrice = 0;
             IsCollateralLocked = false;
+
+            HaoUpgradeBranch = null;
+            HaoUpgradeApplied = false;
+
             SuppressBlipWhileOccupied = false;
         }
     }
@@ -4266,6 +4476,10 @@ public partial class PersistentManager : Script
         public Dictionary<int, int> Mods;
         public bool TurboOn;
         public int PurchasePrice;
+
+        public int? HaoUpgradeBranch;
+        public bool HaoUpgradeApplied;
+
         // removed: SavedTopKmh, SavedPowerMul
     }
 }

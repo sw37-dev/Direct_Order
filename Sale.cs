@@ -108,7 +108,7 @@ public partial class InstantRefill
     private const int VehicleSaleDurationMs = 600000;     // Sale kéo dài 600 giây
     private const int VehicleSaleStartHour = 17;          // 17h bắt đầu
     private const int VehicleSaleEndHour = 21;            // 21h kết thúc
-    private const int VehicleSaleChancePercent = 30;      // 30% kích hoạt khuyến mãi
+    private const int VehicleSaleChancePercent = 50;      // 50% kích hoạt khuyến mãi
 
     // 50/50 chọn 2 ngày hoặc 3 ngày cho lần thử tiếp theo
     private const int VehicleSaleGapChancePercent = 50;

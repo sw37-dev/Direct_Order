@@ -686,6 +686,7 @@ public partial class InstantRefill : Script
         EnsureMazeBankAtmSpawned();
         ProcessIllegalMoneyWantedRisk();
         EnsureDaveyContactRegistered();
+        SyncDaveyContactState();
         EnsureSteveHainesContactRegistered();
         ProcessSteveBribeWantedRestore();
 

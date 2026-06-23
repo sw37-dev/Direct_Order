@@ -366,6 +366,12 @@ public class Hacker : Script
     {
         try
         {
+            CityBlackoutHackerState.ProcessBankAccessTimersForCurrentCharacter();
+        }
+        catch { }
+
+        try
+        {
             // Đăng ký các contact (Paige và Rickie)
             EnsurePaigeHarrisContactRegistered();
             EnsureRickieLukensContactRegistered();
@@ -383,7 +389,6 @@ public class Hacker : Script
             HandlePaigeDeferredActions();
             CityBlackoutHackerState.ProcessPendingAtmHackRollsForCurrentCharacter();
             CityBlackoutHackerState.ProcessPendingVehicleUnlockWantedRollsForCurrentCharacter();
-            CityBlackoutHackerState.ProcessBankAccessTimersForCurrentCharacter();
 
             if (_uiPool != null && _uiPool.AreAnyVisible)
             {
@@ -913,7 +918,7 @@ public class Hacker : Script
             var contact = new iFruitContact(RickieContactName)
             {
                 Active = true,
-                DialTimeout = 6000,
+                DialTimeout = 2000,
                 Bold = false,
                 Icon = ContactIcon.Rickie_Lukens
             };
@@ -1382,12 +1387,10 @@ public class Hacker : Script
 
                 ShowPaigeHarrisNotification(
                     T("CityBlackout_HackerAtmTitle", "Hack ATM"),
-                    T("CityBlackout_HackerAtmActiveOnce",
-                    "Đợi tôi một chút. ATM của Lom Bank sẽ rơi vào tay tôi do tôi kiểm soát nhưng sẽ có rủi ro nếu ATM của Lom Bank có trục trặc nhé.")
-                    + "\n" +
                     string.Format(
                         CultureInfo.InvariantCulture,
-                        "Tỷ lệ nhận tiền bất hợp pháp là ~HUD_COLOUR_DEGEN_CYAN~1:{0:0.00}~s~ chỉ lần này thôi.",
+                        T("CityBlackout_HackerAtmActiveOnce",
+                        "Đợi tôi một chút. ATM của Lom Bank sẽ rơi vào tay tôi do tôi kiểm soát nhưng sẽ có rủi ro nếu ATM của Lom Bank có trục trặc nhé. Tỷ lệ nhận tiền bất hợp pháp là ~HUD_COLOUR_DEGEN_CYAN~1:{0:0.00}~s~ chỉ lần này thôi."),
                         armedMultiplier));
             }
 

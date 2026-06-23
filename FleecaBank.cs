@@ -3,18 +3,24 @@ using GTA.Math;
 using GTA.Native;
 using GTA.UI;
 using iFruitAddon2;
+using LemonUI;
+using LemonUI.Menus;
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using LemonUI;
-using LemonUI.Menus;
-using System.Drawing;
+using System.Text;
+using static InstantRefill;
 
 public partial class FleecaBankLoanScript : Script
 {
+    private static readonly string HackerStateRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "GTA V Mods", "Hacker");
+
     private const long MAX_LOAN_PRINCIPAL = 260_000_000L;
     private string ContactName => L("Credit_ContactName", "Fleeca Bank");
     private string BankerDisplayName => L("Credit_BankerDisplayName", "Nhân viên ngân hàng");
@@ -25,6 +31,14 @@ public partial class FleecaBankLoanScript : Script
 
     private static string QuickPayBaseTitle => L("Credit_QuickPayBaseTitle", "Tất toán nợ trước hạn");
     private readonly BadgeSet _debtBadge = new BadgeSet
+    {
+        NormalDictionary = "commonmenu",
+        NormalTexture = "shop_new_star",
+        HoveredDictionary = "commonmenu",
+        HoveredTexture = "shop_new_star_b"
+    };
+
+    private readonly BadgeSet _savingsBadge = new BadgeSet
     {
         NormalDictionary = "commonmenu",
         NormalTexture = "shop_new_star",
@@ -45,6 +59,32 @@ public partial class FleecaBankLoanScript : Script
         public float Z;
         public float Heading;
     }
+
+    private enum FleecaServiceMode
+    {
+        None = 0,
+        Loan = 1,
+        Savings = 2
+    }
+
+    private FleecaServiceMode _activeBankerServiceMode = FleecaServiceMode.None;
+
+    private const decimal SAVINGS_DAILY_RATE = 0.00035m;      // 0.035%
+    private const long SAVINGS_MIN_DEPOSIT = 1_000_000L;
+    private const int SAVINGS_WINDOW_HOURS = 2;
+    private const int SAVINGS_CHECK_INTERVAL_MS = 60000;
+
+    private bool _savingsDialogActive = false;
+    private bool _savingsActive = false;
+    private long _savingsPrincipal = 0L;
+    private long _savingsInterestAccrued = 0L;
+    private int _savingsLastCreditedDayStamp = -1;
+    private int _savingsWindowStartHour = -1;
+    private int _savingsWindowEndHour = -1;
+    private int _nextSavingsCheckAtGameTime = 0;
+
+    private NativeItem _savingsItem;
+    private NativeItem _savingsWithdrawItem;
 
     private NativeMenu _loanCollateralMenu;
     private NativeItem _loanCollateralItem;
@@ -67,6 +107,7 @@ public partial class FleecaBankLoanScript : Script
     private const decimal COLLATERAL_RATE_2 = 0.015m;
     private const decimal COLLATERAL_RATE_1 = 0.03m;
     private const decimal COLLATERAL_RATE_0 = 0.08m;
+    private const long ZERO_PRICE_COLLATERAL_VALUE = 100_000L;
 
     private readonly ObjectPool _uiPool = new ObjectPool();
     private NativeMenu _loanMenu;
@@ -165,6 +206,7 @@ public partial class FleecaBankLoanScript : Script
     private int _nextDueCheckAtGameTime = 0;     // throttle check 60 giây
 
     private bool _loanDialogActive = false;
+    private bool _quickPayInsufficientWarningAcked = false;
 
     public FleecaBankLoanScript()
     {
@@ -238,6 +280,9 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            // Thêm dòng này ở đầu OnTick() theo hướng dẫn
+            FleecaDebtWantedState.ClearIfWantedLevelZero();
+
             if (Game.IsLoading || Game.IsCutsceneActive)
                 return;
 
@@ -256,6 +301,7 @@ public partial class FleecaBankLoanScript : Script
             UpdateNpcSeatSequence();
             UpdateNpcInteractionPrompt();
             ProcessLoanDuePayments();
+            ProcessSavingsInterestPayments();
         }
         catch (Exception ex)
         {
@@ -268,6 +314,415 @@ public partial class FleecaBankLoanScript : Script
         _quickPayFeeRateFirst7Days = -1m;
         _quickPayFeeRateNext10Days = -1m;
         _quickPayFeeRateAfter17Days = -1m;
+    }
+
+    private string GetSavingsStateFileForOwner(int ownerHash)
+    {
+        Directory.CreateDirectory(_stateRoot);
+        return Path.Combine(_stateRoot, $"savings_state_{ownerHash}.dat");
+    }
+
+    private void ResetSavingsStateToDefaults()
+    {
+        _savingsActive = false;
+        _savingsPrincipal = 0L;
+        _savingsInterestAccrued = 0L;
+        _savingsLastCreditedDayStamp = -1;
+        _savingsWindowStartHour = -1;
+        _savingsWindowEndHour = -1;
+        _nextSavingsCheckAtGameTime = 0;
+    }
+
+    private bool HasActiveSavings()
+    {
+        return _savingsActive && (_savingsPrincipal > 0 || _savingsInterestAccrued > 0);
+    }
+
+    private long SafeAddLong(long a, long b)
+    {
+        try
+        {
+            if (b > 0 && a > long.MaxValue - b)
+                return long.MaxValue;
+
+            if (b < 0 && a < long.MinValue - b)
+                return long.MinValue;
+
+            return a + b;
+        }
+        catch
+        {
+            return a;
+        }
+    }
+
+    private long GetSavingsTotalPayout()
+    {
+        return SafeAddLong(_savingsPrincipal, _savingsInterestAccrued);
+    }
+
+    private void BuildSavingsWindowFromCurrentClock()
+    {
+        GetCurrentInGameClock(out int hour, out _);
+
+        _savingsWindowStartHour = (hour / SAVINGS_WINDOW_HOURS) * SAVINGS_WINDOW_HOURS;
+        _savingsWindowEndHour = (_savingsWindowStartHour + SAVINGS_WINDOW_HOURS) % 24;
+    }
+
+    private string GetSavingsWindowText()
+    {
+        if (_savingsWindowStartHour < 0 || _savingsWindowEndHour < 0)
+            return "N/A";
+
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0:00}:00~{1:00}:00",
+            _savingsWindowStartHour,
+            _savingsWindowEndHour);
+    }
+
+    private bool IsClockInsideSavingsWindow(int currentHour, int currentMinute)
+    {
+        if (_savingsWindowStartHour < 0 || _savingsWindowEndHour < 0)
+            return false;
+
+        if (_savingsWindowStartHour < _savingsWindowEndHour)
+            return currentHour >= _savingsWindowStartHour && currentHour < _savingsWindowEndHour;
+
+        return currentHour >= _savingsWindowStartHour || currentHour < _savingsWindowEndHour;
+    }
+
+    private int GetElapsedInGameDaysSinceLastSavingsCredit()
+    {
+        try
+        {
+            int currentStamp = GetInGameDayStamp();
+            if (currentStamp < 0 || _savingsLastCreditedDayStamp < 0)
+                return 0;
+
+            if (currentStamp <= _savingsLastCreditedDayStamp)
+                return 0;
+
+            if (TryStampToDate(currentStamp, out DateTime nowDate) &&
+                TryStampToDate(_savingsLastCreditedDayStamp, out DateTime lastDate))
+            {
+                return Math.Max(0, (nowDate.Date - lastDate.Date).Days);
+            }
+
+            return 1;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private long GetSavingsDailyInterestAmount()
+    {
+        return Math.Max(1L, (long)Math.Ceiling((decimal)_savingsPrincipal * SAVINGS_DAILY_RATE));
+    }
+
+    private void RefreshSavingsWithdrawItemText()
+    {
+        try
+        {
+            if (_savingsWithdrawItem == null)
+                return;
+
+            _savingsWithdrawItem.Title = L("Credit_MenuSavingsWithdraw", "Rút tiền");
+            _savingsWithdrawItem.LeftBadgeSet = HasActiveSavings() ? _savingsBadge : null;
+
+            if (HasActiveSavings())
+            {
+                _savingsWithdrawItem.Description = string.Format(
+                    L("Credit_MenuSavingsWithdrawDescActive",
+                      "Rút toàn bộ gốc và lãi hiện có: {0}"),
+                    FormatMoney(GetSavingsTotalPayout()));
+            }
+            else
+            {
+                _savingsWithdrawItem.Description = L(
+                    "Credit_MenuSavingsWithdrawDescInactive",
+                    "Chỉ xuất hiện khi đã có tiền gửi sinh lời.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("RefreshSavingsWithdrawItemText failed: " + ex);
+        }
+    }
+
+    private void LoadSavingsStateForOwner(int ownerHash)
+    {
+        try
+        {
+            Directory.CreateDirectory(_stateRoot);
+            ResetSavingsStateToDefaults();
+
+            string file = GetSavingsStateFileForOwner(ownerHash);
+            if (!File.Exists(file))
+                return;
+
+            string[] parts = File.ReadAllText(file).Split('|');
+
+            if (parts.Length >= 7)
+            {
+                _savingsPrincipal = ParseLong(parts[0]);
+                _savingsInterestAccrued = ParseLong(parts[1]);
+                _savingsActive = parts[2].Trim() == "1";
+                _savingsLastCreditedDayStamp = (int)ParseLong(parts[3]);
+                _savingsWindowStartHour = (int)ParseLong(parts[4]);
+                _savingsWindowEndHour = (int)ParseLong(parts[5]);
+            }
+            else if (parts.Length >= 6)
+            {
+                _savingsPrincipal = ParseLong(parts[0]);
+                _savingsInterestAccrued = ParseLong(parts[1]);
+                _savingsActive = parts[2].Trim() == "1";
+                _savingsLastCreditedDayStamp = (int)ParseLong(parts[3]);
+                _savingsWindowStartHour = (int)ParseLong(parts[4]);
+                _savingsWindowEndHour = (int)ParseLong(parts[5]);
+            }
+
+            if (_savingsPrincipal <= 0)
+            {
+                _savingsActive = false;
+                _savingsInterestAccrued = Math.Max(0L, _savingsInterestAccrued);
+            }
+            else
+            {
+                _savingsActive = true;
+            }
+
+            if (_savingsLastCreditedDayStamp < 0)
+                _savingsLastCreditedDayStamp = GetInGameDayStamp();
+
+            if (_savingsWindowStartHour < 0 || _savingsWindowEndHour < 0)
+                BuildSavingsWindowFromCurrentClock();
+        }
+        catch (Exception ex)
+        {
+            Log("LoadSavingsStateForOwner failed: " + ex);
+            ResetSavingsStateToDefaults();
+        }
+    }
+
+    private void SaveSavingsStateForOwner(int ownerHash)
+    {
+        try
+        {
+            if (ownerHash == 0)
+                return;
+
+            Directory.CreateDirectory(_stateRoot);
+
+            string file = GetSavingsStateFileForOwner(ownerHash);
+            string payload = string.Join("|", new[]
+            {
+            _savingsPrincipal.ToString(CultureInfo.InvariantCulture),
+            _savingsInterestAccrued.ToString(CultureInfo.InvariantCulture),
+            _savingsActive ? "1" : "0",
+            _savingsLastCreditedDayStamp.ToString(CultureInfo.InvariantCulture),
+            _savingsWindowStartHour.ToString(CultureInfo.InvariantCulture),
+            _savingsWindowEndHour.ToString(CultureInfo.InvariantCulture),
+            "1"
+        });
+
+            File.WriteAllText(file, payload);
+        }
+        catch (Exception ex)
+        {
+            Log("SaveSavingsStateForOwner failed: " + ex);
+        }
+    }
+
+    private void ReloadSavingsStateFromDiskForCurrentCharacter()
+    {
+        try
+        {
+            int currentHash = GetCurrentCharacterHash();
+            if (currentHash == 0)
+                return;
+
+            LoadSavingsStateForOwner(currentHash);
+            RefreshSavingsWithdrawItemText();
+            RefreshLoanMenuItems();
+        }
+        catch (Exception ex)
+        {
+            Log("ReloadSavingsStateFromDiskForCurrentCharacter failed: " + ex);
+        }
+    }
+
+    private void StartSavingsDeposit(long amount)
+    {
+        try
+        {
+            if (amount < SAVINGS_MIN_DEPOSIT)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    L("Credit_SavingsMinDeposit",
+                    "Số tiền gửi tối thiểu là $1,000,000."),
+                    2500);
+                return;
+            }
+
+            int currentHash = GetCurrentCharacterHash();
+            if (currentHash == 0)
+            {
+                ShowFleecaNotification(
+                    L("Credit_Notify_Title", "Thông báo"),
+                    L("Credit_Error_CharacterNotFound", "Không xác định được nhân vật hiện tại."));
+                return;
+            }
+
+            ReloadSavingsStateFromDiskForCurrentCharacter();
+
+            if (_loanActive && _loanRemainingDebt > 0)
+            {
+                ShowFleecaNotification(
+                    L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
+                    L("Credit_LoanPendingMessage", "Bạn đang có khoản vay chưa thanh toán"));
+                return;
+            }
+
+            long currentMoney = Math.Max(0, Game.Player.Money);
+            if (currentMoney < amount)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    L("Credit_SavingsInsufficientCash",
+                    "Bạn không đủ tiền để gửi khoản này."),
+                    2500);
+                return;
+            }
+
+            DeductPlayerMoney(amount);
+
+            _savingsPrincipal = SafeAddLong(_savingsPrincipal, amount);
+            _savingsActive = true;
+            _savingsLastCreditedDayStamp = GetInGameDayStamp();
+            BuildSavingsWindowFromCurrentClock();
+            _nextSavingsCheckAtGameTime = Game.GameTime + SAVINGS_CHECK_INTERVAL_MS;
+
+            SaveSavingsStateForOwner(currentHash);
+            RefreshSavingsWithdrawItemText();
+            RefreshLoanMenuItems();
+
+            ShowFleecaNotification(
+                L("Credit_SavingsDepositTitle", "Gửi tiết kiệm"),
+                string.Format(
+                    L("Credit_SavingsDepositSuccess",
+                      "Đã gửi {0} vào Fleeca. Tiền sẽ sinh lời ~HUD_COLOUR_DEGEN_GREEN~0.035%~s~ mỗi ngày trong khung ~HUD_COLOUR_DEGEN_CYAN~{1}~s~."),
+                    FormatMoney(amount),
+                    GetSavingsWindowText()));
+
+            DespawnBankerNpc();
+        }
+        catch (Exception ex)
+        {
+            Log("StartSavingsDeposit failed: " + ex);
+        }
+    }
+
+    private bool WithdrawSavings()
+    {
+        try
+        {
+            int currentHash = GetCurrentCharacterHash();
+            if (currentHash == 0)
+                return false;
+
+            ReloadSavingsStateFromDiskForCurrentCharacter();
+
+            if (!HasActiveSavings())
+            {
+                ShowFleecaNotification(
+                    L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
+                    L("Credit_NoSavings", "Bạn chưa có khoản tiền gửi sinh lời nào."));
+                return false;
+            }
+
+            if (_loanActive && _loanRemainingDebt > 0)
+            {
+                ShowFleecaNotification(
+                    L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
+                    L("Credit_LoanPendingMessage", "Bạn đang có khoản vay chưa thanh toán"));
+                return false;
+            }
+
+            long payout = GetSavingsTotalPayout();
+            if (payout <= 0)
+                return false;
+
+            AddPlayerMoney(payout);
+
+            ShowFleecaNotification(
+                L("Credit_SavingsWithdrawTitle", "Rút tiền"),
+                string.Format(
+                    L("Credit_SavingsWithdrawSuccess",
+                      "Ngân hàng Fleeca đã trả tiền gốc và lãi của bạn về tài khoản của mình với số tiền là {0}. Cảm ơn đã sử dụng dịch vụ của Ngân hàng Fleeca."),
+                    FormatMoney(payout)));
+
+            ResetSavingsStateToDefaults();
+            SaveSavingsStateForOwner(currentHash);
+            RefreshSavingsWithdrawItemText();
+            RefreshLoanMenuItems();
+
+            CloseAllLoanMenus();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("WithdrawSavings failed: " + ex);
+            return false;
+        }
+    }
+
+    private void ProcessSavingsInterestPayments()
+    {
+        try
+        {
+            int currentHash = GetCurrentCharacterHash();
+            if (currentHash == 0)
+                return;
+
+            if (_stateOwnerHash != 0 && _stateOwnerHash != currentHash)
+                return;
+
+            if (!HasActiveSavings())
+                return;
+
+            if (_nextSavingsCheckAtGameTime > 0 && Game.GameTime < _nextSavingsCheckAtGameTime)
+                return;
+
+            _nextSavingsCheckAtGameTime = Game.GameTime + SAVINGS_CHECK_INTERVAL_MS;
+
+            int currentDayStamp = GetInGameDayStamp();
+            if (currentDayStamp < 0)
+                return;
+
+            int daysPassed = GetElapsedInGameDaysSinceLastSavingsCredit();
+            if (daysPassed <= 0)
+                return;
+
+            GetCurrentInGameClock(out int currentHour, out int currentMinute);
+            if (!IsClockInsideSavingsWindow(currentHour, currentMinute))
+                return;
+
+            long dailyInterest = GetSavingsDailyInterestAmount();
+            long totalInterest = dailyInterest * (long)daysPassed;
+
+            _savingsInterestAccrued = SafeAddLong(_savingsInterestAccrued, totalInterest);
+            _savingsLastCreditedDayStamp = currentDayStamp;
+
+            SaveSavingsStateForOwner(currentHash);
+            RefreshSavingsWithdrawItemText();
+            RefreshLoanMenuItems();
+        }
+        catch (Exception ex)
+        {
+            Log("ProcessSavingsInterestPayments failed: " + ex);
+        }
     }
 
     private bool TryGetMinotaurOverride(out long debt, out decimal rate)
@@ -439,8 +894,15 @@ public partial class FleecaBankLoanScript : Script
 
             RefreshLoanMenuQuickPayText();
             RefreshLoanDueTimeItem();
+            RefreshSavingsWithdrawItemText();
 
             _loanMenu.Clear();
+
+            if (_savingsItem != null)
+                _loanMenu.Add(_savingsItem);
+
+            if (HasActiveSavings() && _savingsWithdrawItem != null)
+                _loanMenu.Add(_savingsWithdrawItem);
 
             if (_loanConfirmItem != null)
                 _loanMenu.Add(_loanConfirmItem);
@@ -460,6 +922,91 @@ public partial class FleecaBankLoanScript : Script
         catch (Exception ex)
         {
             Log("RefreshLoanMenuItems failed: " + ex);
+        }
+    }
+
+    private void TryEnterLoanFlowFromMainMenu()
+    {
+        try
+        {
+            if (!EnsureFleecaBankAccessAllowed())
+                return;
+
+            ReloadLoanStateFromDiskForCurrentCharacter();
+
+            if (HasActiveSavings())
+            {
+                ShowFleecaNotification(
+                    L("Credit_NotificationTitle", "Fleeca Bank"),
+                    L("Credit_SavingsMustWithdrawBeforeLoan",
+                    "Bạn đang có khoản tiền gửi sinh lời chưa rút. Hãy rút tiền trước khi vay."));
+                return;
+            }
+
+            int wanted = Math.Max(0, Game.Player.WantedLevel);
+            if (wanted >= 1)
+            {
+                if (HasActiveDebt())
+                {
+                    ShowFleecaNotification(
+                        L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
+                        L("Credit_LoanPendingMessage", "Bạn đang có khoản vay chưa thanh toán"));
+                }
+                else
+                {
+                    ShowFleecaNotification(
+                        L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
+                        L("Credit_FleecaWantedRejected",
+                        "Ngân hàng Fleeca hiện không tiếp nhận khách hàng đang trong tình trạng truy nã nguy hiểm. Hãy quay lại sau!"));
+                }
+                return;
+            }
+
+            OpenLoanTypeMenu();
+        }
+        catch (Exception ex)
+        {
+            Log("TryEnterLoanFlowFromMainMenu failed: " + ex);
+        }
+    }
+
+    private bool RequestSavingsSpawn()
+    {
+        try
+        {
+            if (!EnsureFleecaBankAccessAllowed())
+                return false;
+
+            ReloadLoanStateFromDiskForCurrentCharacter();
+
+            if (_loanActive && _loanRemainingDebt > 0)
+            {
+                ShowFleecaNotification(
+                    L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
+                    L("Credit_LoanPendingEllipsis", "Bạn đang có khoản vay chưa thanh toán...."));
+                return false;
+            }
+
+            int currentHash = GetCurrentCharacterHash();
+            if (currentHash == 0)
+            {
+                ShowFleecaNotification(
+                    L("Credit_Notify_Title", "Thông báo"),
+                    L("Credit_Error_CharacterNotFound", "Không xác định được nhân vật hiện tại."));
+                return false;
+            }
+
+            _activeBankerServiceMode = FleecaServiceMode.Savings;
+            _spawnRequested = true;
+            _spawnExecuteAtGameTime = Game.GameTime + SpawnDelayMs;
+
+            TryClosePhone();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("RequestSavingsSpawn failed: " + ex);
+            return false;
         }
     }
 
@@ -656,19 +1203,28 @@ public partial class FleecaBankLoanScript : Script
             if (currentHash == 0)
                 return;
 
+            // Nhánh đang giữ nguyên character (đã thêm RefreshSavingsWithdrawItemText)
             if (_stateOwnerHash == currentHash && _stateLoaded)
             {
                 RefreshLoanMenuQuickPayText();
+                RefreshSavingsWithdrawItemText();
                 PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
                 return;
             }
 
             bool switchedCharacter = (_stateOwnerHash != 0 && _stateOwnerHash != currentHash);
 
+            // Nhánh đổi nhân vật (đã thêm SaveSavingsStateForOwner)
             if (_stateOwnerHash != 0 && _stateOwnerHash != currentHash)
+            {
                 SaveStateForOwner(_stateOwnerHash);
+                SaveSavingsStateForOwner(_stateOwnerHash);
+            }
 
+            // Tải dữ liệu nhân vật mới (đã thêm LoadSavingsStateForOwner)
             LoadStateForOwner(currentHash);
+            LoadSavingsStateForOwner(currentHash);
+
             SyncCollateralStateFromFileForCurrentCharacter();
             _stateOwnerHash = currentHash;
             _activeCharacterHash = currentHash;
@@ -775,6 +1331,41 @@ public partial class FleecaBankLoanScript : Script
         }
     }
 
+    private static DateTime GetCurrentInGameDateTime()
+    {
+        try
+        {
+            int year = Function.Call<int>(Hash.GET_CLOCK_YEAR);
+            int month = Function.Call<int>(Hash.GET_CLOCK_MONTH);
+            int day = Function.Call<int>(Hash.GET_CLOCK_DAY_OF_MONTH);
+            int hour = Function.Call<int>(Hash.GET_CLOCK_HOURS);
+            int minute = Function.Call<int>(Hash.GET_CLOCK_MINUTES);
+
+            if (month < 1 || month > 12)
+                month += 1;
+
+            if (year < 1) year = 1;
+            if (month < 1) month = 1;
+            if (month > 12) month = 12;
+
+            int maxDay = DateTime.DaysInMonth(year, month);
+            if (day < 1) day = 1;
+            if (day > maxDay) day = maxDay;
+
+            if (hour < 0) hour = 0;
+            if (hour > 23) hour = 23;
+
+            if (minute < 0) minute = 0;
+            if (minute > 59) minute = 59;
+
+            return new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Unspecified);
+        }
+        catch
+        {
+            return new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
+        }
+    }
+
     private int GetElapsedInGameDaysSinceLoanStart()
     {
         try
@@ -860,7 +1451,7 @@ public partial class FleecaBankLoanScript : Script
         if (_dueWindowStartHour < 0 || _dueWindowEndHour < 0)
             return "N/A";
 
-        return string.Format("{0:00}:00~{1:00}:00", _dueWindowStartHour, _dueWindowEndHour);
+        return string.Format("{0:00}:00 - {1:00}:00", _dueWindowStartHour, _dueWindowEndHour);
     }
 
     private void EnsureFleecabankContactRegistered()
@@ -876,24 +1467,11 @@ public partial class FleecaBankLoanScript : Script
                 _phoneInstance = phone;
                 _fleecaContact = null;
                 _fleecaContactAnsweredBound = false;
-                _contactAdded = false;
             }
 
-            // Đang bị khóa thì tắt contact, không cho gọi
-            if (IsFleecaBankLockedForCurrentCharacter())
-            {
-                if (_fleecaContact == null)
-                {
-                    _fleecaContact = phone.Contacts.FirstOrDefault(c =>
-                        string.Equals(c.Name, ContactName, StringComparison.OrdinalIgnoreCase));
-                }
-
-                if (_fleecaContact != null)
-                    _fleecaContact.Active = false;
-
-                _contactAdded = true;
-                return;
-            }
+            bool shouldBeActive =
+                !IsFleecaBankLockedForCurrentCharacter() &&
+                Math.Max(0, Game.Player.WantedLevel) < 1;
 
             if (_fleecaContact == null)
             {
@@ -905,7 +1483,7 @@ public partial class FleecaBankLoanScript : Script
             {
                 _fleecaContact = new iFruitContact(ContactName)
                 {
-                    Active = true,
+                    Active = shouldBeActive,
                     DialTimeout = ContactDialTimeoutMs,
                     Bold = false,
                     Icon = ContactIcon.FleecaBank
@@ -917,7 +1495,7 @@ public partial class FleecaBankLoanScript : Script
             }
             else
             {
-                _fleecaContact.Active = true;
+                _fleecaContact.Active = shouldBeActive;
 
                 if (!_fleecaContactAnsweredBound)
                 {
@@ -925,8 +1503,6 @@ public partial class FleecaBankLoanScript : Script
                     _fleecaContactAnsweredBound = true;
                 }
             }
-
-            _contactAdded = true;
         }
         catch (Exception ex)
         {
@@ -984,12 +1560,23 @@ public partial class FleecaBankLoanScript : Script
                 // Khởi tạo _loanDueTimeItem ngay sau khi tạo _loanCancelItem
                 _loanDueTimeItem = new NativeItem("", "");
 
+                // Thêm 2 item mới: Sinh lời và Rút tiền
+                _savingsItem = new NativeItem(
+                    L("Credit_MenuSavings", "Gửi tiết kiệm"),
+                    L("Credit_MenuSavingsDesc", "Gửi tiền vào Fleeca để sinh lời hằng ngày"));
+
+                _savingsWithdrawItem = new QuickPayDebtItem(
+                    L("Credit_MenuSavingsWithdraw", "Rút tiền"),
+                    L("Credit_MenuSavingsWithdrawDescInactive", "Chỉ xuất hiện khi đã có tiền gửi sinh lời."));
+                _savingsWithdrawItem.LeftBadgeSet = _savingsBadge;
+
                 // Thay thế toàn bộ khối Add cũ bằng hàm RefreshLoanMenuItems()
                 RefreshLoanMenuItems();
 
+                // Đổi handler của item “Vay tiền” thành TryEnterLoanFlowFromMainMenu()
                 _loanConfirmItem.Activated += (s, e) =>
                 {
-                    OpenLoanTypeMenu();
+                    TryEnterLoanFlowFromMainMenu();
                 };
 
                 _loanQuickPayItem.Activated += (s, e) =>
@@ -1000,6 +1587,18 @@ public partial class FleecaBankLoanScript : Script
                 _loanCancelItem.Activated += (s, e) =>
                 {
                     CloseAllLoanMenus();
+                };
+
+                // Thêm handler cho “Sinh lời” và “Rút tiền”
+                _savingsItem.Activated += (s, e) =>
+                {
+                    if (RequestSavingsSpawn())
+                        CloseAllLoanMenus();
+                };
+
+                _savingsWithdrawItem.Activated += (s, e) =>
+                {
+                    WithdrawSavings();
                 };
 
                 _uiPool.Add(_loanMenu);
@@ -1032,8 +1631,8 @@ public partial class FleecaBankLoanScript : Script
 
                 _detailConfirmItem.Activated += (s, e) =>
                 {
-                    CloseAllLoanMenus();
-                    ConfirmQuickSettleRemainingDebt();
+                    if (ConfirmQuickSettleRemainingDebt())
+                        CloseAllLoanMenus();
                 };
 
                 _detailCancelItem.Activated += (s, e) =>
@@ -1514,6 +2113,7 @@ public partial class FleecaBankLoanScript : Script
         _loanCollateralMode = false;
         _loanStartDayStamp = -1;
         _nextDueCheckAtGameTime = 0;
+        _quickPayInsufficientWarningAcked = false;
 
         ResetQuickPayFeeRates();
     }
@@ -1531,6 +2131,7 @@ public partial class FleecaBankLoanScript : Script
 
             // Luôn đọc lại từ file, không dùng state cũ trong RAM
             LoadStateForOwner(currentHash);
+            LoadSavingsStateForOwner(currentHash);
             SyncCollateralStateFromFileForCurrentCharacter();
 
             _stateOwnerHash = currentHash;
@@ -1599,6 +2200,7 @@ public partial class FleecaBankLoanScript : Script
 
             if (_loanMenu != null) _loanMenu.Visible = false;
             if (_loanDetailMenu != null) _loanDetailMenu.Visible = true;
+            _quickPayInsufficientWarningAcked = false;
 
             UpdateLemonUiMouseState();
         }
@@ -1757,9 +2359,20 @@ public partial class FleecaBankLoanScript : Script
                 return false;
             }
 
+            // Chặn tiền gửi sinh lời trước khi xử lý khoản vay mới
+            if (HasActiveSavings())
+            {
+                ShowFleecaNotification(
+                    L("Credit_NotificationTitle", "Fleeca Bank"),
+                    "Bạn đang có khoản tiền gửi sinh lời chưa rút. Hãy rút tiền trước khi vay.");
+                return false;
+            }
+
             _selectedLoanPackageAmount = presetLoanAmount > 0 ? presetLoanAmount : 0;
             _loanPackageFlowPending = isPackageLoan && presetLoanAmount > 0;
 
+            // Đặt mode sang Loan trước khi spawn
+            _activeBankerServiceMode = FleecaServiceMode.Loan;
             _spawnRequested = true;
             _spawnExecuteAtGameTime = Game.GameTime + SpawnDelayMs;
 
@@ -1791,12 +2404,12 @@ public partial class FleecaBankLoanScript : Script
         }
     }
 
-    private void ConfirmQuickSettleRemainingDebt()
+    private bool ConfirmQuickSettleRemainingDebt()
     {
         try
         {
             if (!EnsureFleecaBankAccessAllowed())
-                return;
+                return false;
 
             int currentHash = GetCurrentCharacterHash();
             if (currentHash == 0)
@@ -1804,7 +2417,7 @@ public partial class FleecaBankLoanScript : Script
                 ShowFleecaNotification(
                     L("Credit_ErrorTitle", "Lỗi xác thực"),
                     L("Credit_ErrorNoCharacter", "Không xác định được nhân vật hiện tại."));
-                return;
+                return false;
             }
 
             if (_stateOwnerHash != 0 && _stateOwnerHash != currentHash)
@@ -1812,7 +2425,7 @@ public partial class FleecaBankLoanScript : Script
                 ShowFleecaNotification(
                     L("Credit_DisbursementTitle", "Giải ngân"),
                     L("Credit_NotYourLoan", "Khoản vay này không phải của bạn"));
-                return;
+                return false;
             }
 
             if (!_loanActive || _loanRemainingDebt <= 0)
@@ -1820,7 +2433,7 @@ public partial class FleecaBankLoanScript : Script
                 ShowFleecaNotification(
                     L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
                     L("Credit_NoDebt", "Bạn không có khoản nợ nào cần thanh toán."));
-                return;
+                return false;
             }
 
             long totalPayoff = GetQuickPayTotal();
@@ -1829,18 +2442,38 @@ public partial class FleecaBankLoanScript : Script
                 ShowFleecaNotification(
                     L("Credit_MessageTitle", "Tin nhắn ngân hàng"),
                     L("Credit_NoDebt", "Bạn không có khoản nợ nào cần thanh toán."));
-                return;
+                return false;
             }
 
-            // Dùng chung cơ chế thu nợ:
-            // - trừ tiền mặt trước
-            // - thiếu thì siết nhiều xe liên tiếp
-            // - nếu vẫn thiếu sau khi hết xe thì CollectDueAmount() sẽ gán 5 sao
-            long collected = CollectDueAmount(totalPayoff);
+            long currentMoney = Math.Max(0, Game.Player.Money);
+            if (currentMoney < totalPayoff && !_quickPayInsufficientWarningAcked)
+            {
+                _quickPayInsufficientWarningAcked = true;
 
-            // Tất toán trước hạn: dù đủ hay thiếu tài sản, khoản nợ vẫn được đóng
+                ShowFleecaNotification(
+                    L("Credit_MessageTitle", "Fleeca's SMS"),
+                    L("Credit_Errors", "Bạn không đủ tiền, xem Clifford về tài chính của mình. Nếu vẫn tất toán sẽ bị gán tội danh ~HUD_COLOUR_REDLIGHT~chiếm đoạt tài sản~s~, truy nã nghiêm trọng và khóa tài khoản 4 ngày đấy!"));
+
+                return false;
+            }
+
+            // Thu tiền mặt trước, rồi siết xe không thế chấp, rồi siết tiếp xe thế chấp nếu còn thiếu.
+            long collected = CollectDueAmountForQuickSettle(totalPayoff);
+            long remainingAfterCollection = Math.Max(0L, totalPayoff - collected);
+
+            // Dù đủ hay không đủ sau khi đã thu hết tài sản khả dụng, đều đóng khoản vay:
+            // - đủ thì tất toán bình thường
+            // - thiếu thì cưỡng chế đóng khoản vay, bật 5 sao, giải phóng tài sản còn lại
+            bool forcedClosure = remainingAfterCollection > 0;
+
+            if (forcedClosure)
+            {
+                Game.Player.WantedLevel = 5;
+                FleecaDebtWantedState.MarkFleecaDebtWantedActive();
+                ApplyFleecaTemporaryLockForCurrentCharacter(TimeSpan.FromDays(4));
+            }
+
             _loanRemainingDebt = 0;
-            ClearMinotaurStateForCurrentCharacter();
             _loanActive = false;
             _loanPrincipal = 0;
             _loanDailyDue = 0;
@@ -1848,6 +2481,9 @@ public partial class FleecaBankLoanScript : Script
             _loanLastChargedDayStamp = GetInGameDayStamp();
             _nextDueCheckAtGameTime = 0;
 
+            ClearMinotaurStateForCurrentCharacter();
+
+            // Trả lại icon màu theo nhân vật cho các xe còn tồn tại
             UnlockAllCollateralVehiclesForCurrentCharacter();
             _loanCollateralMode = false;
             PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
@@ -1855,8 +2491,19 @@ public partial class FleecaBankLoanScript : Script
             SaveStateForOwner(currentHash);
             RefreshLoanMenuQuickPayText();
             RefreshLoanMenuItems();
+            RefreshCollateralMenuText();
+            _quickPayInsufficientWarningAcked = false;
 
-            if (collected >= totalPayoff)
+            if (forcedClosure)
+            {
+                ShowFleecaNotification(
+                    L("Credit_SeizureTitle", "Siết nợ"),
+                    string.Format(
+                        L("Credit_SeizureForcedCloseDesc",
+                        "Ngân hàng đã thu toàn bộ tiền mặt hiện có và tịch thu tối đa tài sản khả dụng. Phần thiếu còn lại được xử lý bằng biện pháp cưỡng chế. Khoản vay đã bị đóng."),
+                        totalPayoff));
+            }
+            else
             {
                 ShowFleecaNotification(
                     L("Credit_QuickPaySuccessTitle", "Tất toán sớm"),
@@ -1865,22 +2512,87 @@ public partial class FleecaBankLoanScript : Script
                         "Đã tất toán nợ trước hạn. Số tiền đã trừ: ~HUD_COLOUR_DEGEN_GREEN~${0:N0}~s~."),
                         totalPayoff));
             }
-            else
-            {
-                ShowFleecaNotification(
-                    L("Credit_SeizureTitle", "Siết nợ"),
-                    string.Format(
-                        L("Credit_SeizureDesc",
-                        "Ngân hàng đã thu toàn bộ tiền mặt hiện có và tịch thu thêm phương tiện để tất toán khoản nợ. Phần thiếu còn lại bị xử lý bằng biện pháp cưỡng chế."),
-                        totalPayoff));
-            }
 
             DespawnBankerNpc();
+            return true;
         }
         catch (Exception ex)
         {
             Log("ConfirmQuickSettleRemainingDebt failed: " + ex);
+            return false;
         }
+    }
+
+    private List<object> GetOwnedVehiclesByCollateralState(bool locked)
+    {
+        var result = new List<object>();
+
+        try
+        {
+            foreach (var entry in GetPlayerCollateralVehicles())
+            {
+                if (entry == null)
+                    continue;
+
+                if (IsCollateralLocked(entry) == locked)
+                    result.Add(entry);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("GetOwnedVehiclesByCollateralState failed: " + ex);
+        }
+
+        return result;
+    }
+
+    private long SeizeVehiclesFromCandidates(List<object> candidates, int ownerHash, ref long remaining, bool refundExcess)
+    {
+        long collected = 0L;
+
+        try
+        {
+            if (candidates == null || candidates.Count == 0 || remaining <= 0)
+                return 0L;
+
+            Shuffle(candidates);
+
+            foreach (var entry in candidates)
+            {
+                if (remaining <= 0)
+                    break;
+
+                long estimatedValue = Math.Max(0L, GetVehicleCollateralValue(entry));
+                if (estimatedValue <= 0)
+                    continue;
+
+                if (!AssetLeaking.TryConfiscateVehicleEntry(entry, ownerHash))
+                    continue;
+
+                if (estimatedValue >= remaining)
+                {
+                    if (refundExcess)
+                    {
+                        long refund = estimatedValue - remaining;
+                        if (refund > 0)
+                            AddPlayerMoney(refund);
+                    }
+
+                    collected += remaining;
+                    remaining = 0;
+                    break;
+                }
+
+                remaining -= estimatedValue;
+                collected += estimatedValue;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("SeizeVehiclesFromCandidates failed: " + ex);
+        }
+
+        return collected;
     }
 
     private string GetCollateralStateFileForOwner(int ownerHash)
@@ -2562,7 +3274,10 @@ public partial class FleecaBankLoanScript : Script
             if (vehicles == null || vehicles.Count == 0)
                 return false;
 
-            var candidates = vehicles.Where(v => IsOwnedByCurrentPlayer(v, ownerHash)).ToList();
+            var candidates = vehicles
+                .Where(v => v != null && IsOwnedByCurrentPlayer(v, ownerHash) && !IsCollateralLocked(v))
+                .ToList();
+
             if (candidates.Count == 0)
                 return false;
 
@@ -2598,16 +3313,18 @@ public partial class FleecaBankLoanScript : Script
 
     private long CollectDueAmount(long due)
     {
-        long collected = 0;
+        long collected = 0L;
+
         try
         {
             if (due <= 0)
-                return 0;
+                return 0L;
 
             int ownerHash = GetCurrentCharacterHash();
             if (ownerHash == 0)
-                return 0;
+                return 0L;
 
+            // 1) Thu tiền mặt trước
             long money = Math.Max(0, Game.Player.Money);
             long cashTaken = Math.Min(money, due);
             if (cashTaken > 0)
@@ -2620,33 +3337,92 @@ public partial class FleecaBankLoanScript : Script
             if (remaining <= 0)
                 return collected;
 
-            var vehicles = GetPlayerCollateralVehicles();
-            if (vehicles.Count > 1)
-                Shuffle(vehicles);
-
-            bool seizedAny = false;
-
-            foreach (var entry in vehicles)
+            // 2) Chỉ siết xe KHÔNG thế chấp
+            var nonCollateralVehicles = GetOwnedVehiclesByCollateralState(false);
+            if (nonCollateralVehicles.Count == 0)
             {
-                if (remaining <= 0)
-                    break;
-
-                long estimatedValue = GetVehicleCollateralValue(entry);
-
-                // Chuyển nguyên dòng của xe này sang confiscated_vehicles_{ownerHash}.dat
-                if (!AssetLeaking.TryConfiscateVehicleEntry(entry, ownerHash))
-                    continue;
-
-                seizedAny = true;
-
-                long covered = Math.Min(estimatedValue, remaining);
-                remaining -= covered;
-                collected += covered;
+                // Không có xe không thế chấp để siết -> cộng thêm 3 sao, tối đa 5 sao
+                AddWantedStarsForDailyCollection(3);
+                return collected;
             }
 
-            if (seizedAny)
-                RefreshCollateralStateFileForCurrentCharacter();
+            bool seizedAny = false;
+            long before = remaining;
+            long seized = SeizeVehiclesFromCandidates(nonCollateralVehicles, ownerHash, ref remaining, true);
+            if (seized > 0)
+                seizedAny = true;
 
+            collected += seized;
+
+            if (seizedAny)
+            {
+                RefreshCollateralStateFileForCurrentCharacter();
+                PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
+            }
+
+            // Nếu vẫn thiếu sau khi chỉ siết xe không thế chấp -> wanted 5 sao
+            if (remaining > 0)
+                AddWantedStarsForDailyCollection(3);
+
+            return collected;
+        }
+        catch (Exception ex)
+        {
+            Log("CollectDueAmount failed: " + ex);
+            return collected;
+        }
+    }
+
+    private long CollectDueAmountForQuickSettle(long due)
+    {
+        long collected = 0L;
+
+        try
+        {
+            if (due <= 0)
+                return 0L;
+
+            int ownerHash = GetCurrentCharacterHash();
+            if (ownerHash == 0)
+                return 0L;
+
+            // 1) Thu tiền mặt trước
+            long money = Math.Max(0, Game.Player.Money);
+            long cashTaken = Math.Min(money, due);
+            if (cashTaken > 0)
+            {
+                DeductPlayerMoney(cashTaken);
+                collected += cashTaken;
+            }
+
+            long remaining = due - cashTaken;
+            if (remaining <= 0)
+                return collected;
+
+            // 2) Siết xe KHÔNG thế chấp trước
+            var nonCollateralVehicles = GetOwnedVehiclesByCollateralState(false);
+            if (nonCollateralVehicles.Count > 0)
+            {
+                long seized = SeizeVehiclesFromCandidates(nonCollateralVehicles, ownerHash, ref remaining, true);
+                collected += seized;
+            }
+
+            // 3) Nếu vẫn thiếu, siết luôn xe THẾ CHẤP
+            if (remaining > 0)
+            {
+                var collateralVehicles = GetOwnedVehiclesByCollateralState(true);
+                if (collateralVehicles.Count > 0)
+                {
+                    long seizedCollateral = SeizeVehiclesFromCandidates(collateralVehicles, ownerHash, ref remaining, false);
+                    collected += seizedCollateral;
+                }
+            }
+
+            // Đồng bộ lại file/map sau khi đã xử lý
+            RefreshCollateralStateFileForCurrentCharacter();
+            PersistentManager.RefreshVehicleBlipsForCurrentCharacter();
+
+            // Nếu vẫn còn thiếu thì bật wanted 5 sao
             if (remaining > 0)
                 Game.Player.WantedLevel = 5;
 
@@ -2654,7 +3430,7 @@ public partial class FleecaBankLoanScript : Script
         }
         catch (Exception ex)
         {
-            Log("CollectDueAmount failed: " + ex);
+            Log("CollectDueAmountForQuickSettle failed: " + ex);
             return collected;
         }
     }
@@ -2989,6 +3765,34 @@ public partial class FleecaBankLoanScript : Script
         return Math.Max(1L, (long)Math.Ceiling((decimal)_loanPrincipal * rate));
     }
 
+    private void AddWantedStarsForDailyCollection(int starsToAdd = 3)
+    {
+        try
+        {
+            // Nếu số sao thêm vào nhỏ hơn hoặc bằng 0 thì không làm gì cả
+            if (starsToAdd <= 0)
+                return;
+
+            // Lấy mức truy nã hiện tại (đảm bảo không nhỏ hơn 0)
+            int currentWanted = Math.Max(0, Game.Player.WantedLevel);
+
+            // Tính mức truy nã mới, tối đa là 5 sao
+            int newWanted = Math.Min(5, currentWanted + starsToAdd);
+
+            // Nếu mức truy nã mới lớn hơn mức hiện tại thì cập nhật cho người chơi
+            if (newWanted > currentWanted)
+            {
+                Game.Player.WantedLevel = newWanted;
+                FleecaDebtWantedState.MarkFleecaDebtWantedActive();
+            }
+        }
+        catch (Exception ex)
+        {
+            // Ghi lại lỗi nếu có sự cố xảy ra trong quá trình thực thi
+            Log("AddWantedStarsForDailyCollection failed: " + ex);
+        }
+    }
+
     private void UnlockAllCollateralVehiclesForCurrentCharacter()
     {
         try
@@ -3035,11 +3839,11 @@ public partial class FleecaBankLoanScript : Script
             if (priceField != null)
             {
                 object value = priceField.GetValue(entry);
-                if (value is int intValue && intValue > 0)
-                    return intValue;
+                if (value is int intValue)
+                    return intValue > 0 ? intValue : ZERO_PRICE_COLLATERAL_VALUE;
 
-                if (value is long longValue && longValue > 0)
-                    return longValue;
+                if (value is long longValue)
+                    return longValue > 0 ? longValue : ZERO_PRICE_COLLATERAL_VALUE;
             }
         }
         catch { }
@@ -3354,12 +4158,129 @@ public partial class FleecaBankLoanScript : Script
         }
     }
 
+    private static string GetHackerStateFileForOwner(int ownerHash)
+    {
+        Directory.CreateDirectory(HackerStateRoot);
+        return Path.Combine(HackerStateRoot, $"hacker_state_{ownerHash}.dat");
+    }
+
+    private static DateTime? ParseNullableDateTime(string value)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            if (DateTime.TryParseExact(
+                value,
+                "o",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out DateTime parsed))
+            {
+                return parsed;
+            }
+
+            if (DateTime.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeLocal,
+                out parsed))
+            {
+                return parsed;
+            }
+        }
+        catch { }
+
+        return null;
+    }
+
+    private void ApplyFleecaTemporaryLockForCurrentCharacter(TimeSpan duration)
+    {
+        try
+        {
+            int ownerHash = GetCurrentCharacterHash();
+            if (ownerHash == 0)
+                return;
+
+            string file = GetHackerStateFileForOwner(ownerHash);
+            var lines = File.Exists(file)
+                ? File.ReadAllLines(file).ToList()
+                : new List<string>();
+
+            DateTime now = GetCurrentInGameDateTime();
+            DateTime targetExpiry = now.Add(duration);
+
+            bool foundLockedUntil = false;
+            bool foundNoticeShown = false;
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                string raw = lines[i];
+                if (string.IsNullOrWhiteSpace(raw))
+                    continue;
+
+                int idx = raw.IndexOf('=');
+                if (idx <= 0)
+                    continue;
+
+                string key = raw.Substring(0, idx).Trim();
+                string val = raw.Substring(idx + 1).Trim();
+
+                if (key.Equals("fleecaLockedUntil", StringComparison.OrdinalIgnoreCase))
+                {
+                    foundLockedUntil = true;
+                    DateTime? current = ParseNullableDateTime(val);
+
+                    // Không bao giờ kéo dài hơn lock hiện tại nếu lock hiện tại ngắn hơn 4 ngày.
+                    if (current.HasValue && current.Value > targetExpiry)
+                        targetExpiry = current.Value;
+
+                    lines[i] = "fleecaLockedUntil=" + targetExpiry.ToString("o", CultureInfo.InvariantCulture);
+                    continue;
+                }
+
+                if (key.Equals("fleecaUnlockNoticeShown", StringComparison.OrdinalIgnoreCase))
+                {
+                    foundNoticeShown = true;
+                    lines[i] = "fleecaUnlockNoticeShown=0";
+                }
+            }
+
+            if (!foundLockedUntil)
+                lines.Add("fleecaLockedUntil=" + targetExpiry.ToString("o", CultureInfo.InvariantCulture));
+
+            if (!foundNoticeShown)
+                lines.Add("fleecaUnlockNoticeShown=0");
+
+            File.WriteAllLines(file, lines.ToArray());
+        }
+        catch
+        {
+        }
+    }
+
     private void DeductPlayerMoney(long amount)
     {
         if (amount <= 0)
             return;
 
         Game.Player.Money -= (int)amount;
+        PlayPurchaseSound();
+    }
+
+    private void AddPlayerMoney(long amount)
+    {
+        if (amount <= 0)
+            return;
+
+        long current = Math.Max(0, Game.Player.Money);
+        long target = current + amount;
+
+        if (target > int.MaxValue)
+            target = int.MaxValue;
+
+        Game.Player.Money = (int)target;
         PlayPurchaseSound();
     }
 

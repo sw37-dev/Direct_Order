@@ -16,6 +16,8 @@ public partial class InstantRefill : Script
     private CustomiFruit _daveyPhoneInstance = null;
     private bool _daveyContactAdded = false;
 
+    private iFruitContact _daveyContact = null;
+
     private static string DaveyContactName => T("RewardDaveyContactName", "Dave Norton");
 
     // Davey bribe menu UI
@@ -48,22 +50,29 @@ public partial class InstantRefill : Script
             {
                 _daveyPhoneInstance = phone;
                 _daveyContactAdded = false;
+                _daveyContact = null;
             }
 
             if (_daveyContactAdded)
+            {
+                SyncDaveyContactState();
                 return;
+            }
 
-            if (phone.Contacts.Any(c =>
+            _daveyContact = phone.Contacts.FirstOrDefault(c =>
                 c != null &&
-                string.Equals(c.Name, DaveyContactName, StringComparison.OrdinalIgnoreCase)))
+                string.Equals(c.Name, DaveyContactName, StringComparison.OrdinalIgnoreCase));
+
+            if (_daveyContact != null)
             {
                 _daveyContactAdded = true;
+                SyncDaveyContactState();
                 return;
             }
 
             var contact = new iFruitContact(DaveyContactName)
             {
-                Active = true,
+                Active = !IsDaveyBlockedByFleecaDebt(),
                 DialTimeout = DaveyContactDialTimeoutMs,
                 Bold = false,
                 Icon = ContactIcon.Dave
@@ -72,9 +81,13 @@ public partial class InstantRefill : Script
             contact.Answered += OnDaveyContactAnswered;
             phone.Contacts.Add(contact);
 
+            _daveyContact = contact;
             _daveyContactAdded = true;
+            SyncDaveyContactState();
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private void OnDaveyContactAnswered(iFruitContact sender)
@@ -123,6 +136,33 @@ public partial class InstantRefill : Script
         catch
         {
             return false;
+        }
+    }
+
+    private bool IsDaveyBlockedByFleecaDebt()
+    {
+        try
+        {
+            FleecaDebtWantedState.ClearIfWantedLevelZero();
+            return FleecaDebtWantedState.IsLockedByFleecaDebt;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void SyncDaveyContactState()
+    {
+        try
+        {
+            if (_daveyContact == null)
+                return;
+
+            _daveyContact.Active = !IsDaveyBlockedByFleecaDebt();
+        }
+        catch
+        {
         }
     }
 
@@ -177,6 +217,17 @@ public partial class InstantRefill : Script
                 GTA.UI.Screen.ShowSubtitle(
                     T("RewardAnotherMenuOpen", "~HUD_COLOUR_DEGEN_YELLOW~Hiện có menu khác đang mở. Hãy đóng nó trước."),
                     3000);
+                return;
+            }
+
+            // Chặn riêng cho trạng thái nợ Fleeca
+            if (IsDaveyBlockedByFleecaDebt())
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    T("RewardDaveyBlockedByFleecaDebt",
+                      "~HUD_COLOUR_DEGEN_RED~Dave Norton từ chối cuộc gọi vì truy nã này đến từ nhánh thu nợ/tất toán Fleeca."),
+                    3000);
+                PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                 return;
             }
 
@@ -444,5 +495,44 @@ public partial class InstantRefill : Script
         catch { }
 
         return false;
+    }
+
+    public static class FleecaDebtWantedState
+    {
+        private static readonly object _sync = new object();
+        private static bool _lockedByFleecaDebt = false;
+
+        public static bool IsLockedByFleecaDebt
+        {
+            get
+            {
+                lock (_sync)
+                    return _lockedByFleecaDebt;
+            }
+        }
+
+        public static void MarkFleecaDebtWantedActive()
+        {
+            lock (_sync)
+                _lockedByFleecaDebt = true;
+        }
+
+        public static void ClearIfWantedLevelZero()
+        {
+            try
+            {
+                if (Game.Player == null)
+                    return;
+
+                if (Game.Player.WantedLevel <= 0)
+                {
+                    lock (_sync)
+                        _lockedByFleecaDebt = false;
+                }
+            }
+            catch
+            {
+            }
+        }
     }
 }

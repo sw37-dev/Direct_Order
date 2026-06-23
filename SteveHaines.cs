@@ -35,8 +35,12 @@ public partial class InstantRefill
     private int _steveBribeStars = 0;
 
     private const int SteveBribeMaxStars = 4;
+    private const int SteveBribeDebtModeMaxStars = 5;
+    private const long SteveBribeDebtModeFiveStarCost = 100000L;
+
     private const int SteveBribeFailRestoreDelayMs = 10000;
     private const int SteveBribeWantedRestoreCap = 5;
+
     private static readonly long[] SteveBribeCosts = { 0L, 5000L, 10000L, 25000L, 50000L };
 
     private static readonly object _steveRandomLock = new object();
@@ -75,9 +79,11 @@ public partial class InstantRefill
                 return;
             }
 
+            // Thay đổi logic khởi tạo Active tại đây theo hướng dẫn
             var contact = new iFruitContact(SteveContactName)
             {
-                Active = GetCurrentWantedLevel() <= 4 && !IsSteveHainesBlockedByAssetLeaking(),
+                Active = (GetCurrentWantedLevel() <= 4 || IsSteveHainesBlockedByFleecaDebt())
+                         && !IsSteveHainesBlockedByAssetLeaking(),
                 DialTimeout = DaveyContactDialTimeoutMs,
                 Bold = false,
                 Icon = ContactIcon.Steve
@@ -91,6 +97,7 @@ public partial class InstantRefill
         }
         catch
         {
+            // Bạn có thể cân nhắc ghi log lỗi ở đây nếu cần thiết trong quá trình debug
         }
     }
 
@@ -102,7 +109,11 @@ public partial class InstantRefill
                 return;
 
             AssetLeakingWantedState.ClearIfWantedLevelZero();
-            _steveContact.Active = GetCurrentWantedLevel() <= 4 && !AssetLeakingWantedState.IsLockedByAssetLeaking;
+            FleecaDebtWantedState.ClearIfWantedLevelZero();
+
+            _steveContact.Active =
+                !IsSteveHainesBlockedByAssetLeaking() &&
+                (GetCurrentWantedLevel() <= 4 || IsSteveHainesBlockedByFleecaDebt());
         }
         catch
         {
@@ -126,9 +137,30 @@ public partial class InstantRefill
         return string.Format(CultureInfo.InvariantCulture, "${0:N0}", Math.Max(0L, amount));
     }
 
+    private int GetSteveBribeMaxStars()
+    {
+        return IsSteveHainesBlockedByFleecaDebt()
+            ? SteveBribeDebtModeMaxStars
+            : SteveBribeMaxStars;
+    }
+
     private long GetSteveBribeCost(int stars)
     {
-        if (stars < 1 || stars > SteveBribeMaxStars)
+        if (stars < 1)
+            return 0L;
+
+        if (IsSteveHainesBlockedByFleecaDebt())
+        {
+            if (stars == 5)
+                return SteveBribeDebtModeFiveStarCost;
+
+            if (stars <= 4)
+                return SteveBribeCosts[stars];
+
+            return 0L;
+        }
+
+        if (stars > SteveBribeMaxStars)
             return 0L;
 
         return SteveBribeCosts[stars];
@@ -211,7 +243,7 @@ public partial class InstantRefill
                 return;
             }
 
-            if (GetCurrentWantedLevel() >= 5)
+            if (GetCurrentWantedLevel() >= 5 && !IsSteveHainesBlockedByFleecaDebt())
             {
                 return;
             }
@@ -300,7 +332,8 @@ public partial class InstantRefill
             if (_luiSteveBribeMenu == null || !_luiSteveBribeMenu.Visible)
                 return;
 
-            if (GetCurrentWantedLevel() >= 5)
+            // Cập nhật điều kiện kiểm tra: 5 sao truy nã và Steve Haines không bị chặn bởi nợ Fleeca
+            if (GetCurrentWantedLevel() >= 5 && !IsSteveHainesBlockedByFleecaDebt())
             {
                 GTA.UI.Screen.ShowSubtitle(
                     T("SteveBribeFiveStarLocked", "~HUD_COLOUR_DEGEN_RED~Steve Haines không thể gọi khi đang 5 sao truy nã."),
@@ -324,10 +357,14 @@ public partial class InstantRefill
                 return;
             }
 
-            if (stars < 1 || stars > 4)
+            int maxStars = GetSteveBribeMaxStars();
+            if (stars < 1 || stars > maxStars)
             {
                 GTA.UI.Screen.ShowSubtitle(
-                    T("SteveBribeInputRangeError", "~HUD_COLOUR_DEGEN_RED~Chỉ được nhập số từ 1 đến 4."),
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        T("SteveBribeInputRangeError", "~HUD_COLOUR_DEGEN_RED~Chỉ được nhập số từ 1 đến {0}."),
+                        maxStars),
                     2500);
                 PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                 return;
@@ -348,12 +385,16 @@ public partial class InstantRefill
         {
             if (_luiSteveBribeLevelItem != null)
             {
-                // Hiển thị đúng số sao đã nhập gần nhất
+                int maxStars = GetSteveBribeMaxStars();
+
                 _luiSteveBribeLevelItem.AltTitle = string.Format(
                     CultureInfo.InvariantCulture, "\u2190 {0} \u2192", Math.Max(0, _steveBribeStars));
-                _luiSteveBribeLevelItem.Description = T(
-                    "SteveBribeLevelDesc",
-                    "Hãy nhập số sao muốn giảm. Chỉ chấp nhận từ 1 đến 4.");
+
+                _luiSteveBribeLevelItem.Description = string.Format(
+                    CultureInfo.InvariantCulture,
+                    T("SteveBribeLevelDesc",
+                      "Hãy nhập số sao muốn giảm. Giới hạn hiện tại là {0} sao."),
+                    maxStars);
             }
 
             if (_luiSteveBribeCostItem != null)
@@ -389,12 +430,36 @@ public partial class InstantRefill
                 else
                 {
                     long cost = GetSteveBribeCost(Math.Max(0, _steveBribeStars));
-                    _luiSteveBribeConfirmItem.Description = string.Format(
-                        CultureInfo.InvariantCulture,
-                        T("SteveBribeConfirmDesc",
-                          "Xác nhận giao dịch ngầm để giảm {0} sao với chi phí {1}."),
-                        _steveBribeStars,
-                        FormatDollar(cost));
+
+                    if (IsSteveHainesBlockedByFleecaDebt())
+                    {
+                        if (_steveBribeStars == 5)
+                        {
+                            _luiSteveBribeConfirmItem.Description = string.Format(
+                                CultureInfo.InvariantCulture,
+                                T("SteveBribeConfirmDescDebtModeFive",
+                                  "Xác nhận giao dịch ngầm 5 sao với phí cố định {0}."),
+                                FormatDollar(cost));
+                        }
+                        else
+                        {
+                            _luiSteveBribeConfirmItem.Description = string.Format(
+                                CultureInfo.InvariantCulture,
+                                T("SteveBribeConfirmDescDebtMode",
+                                  "Xác nhận giao dịch ngầm để giảm {0} sao với chi phí {1}."),
+                                _steveBribeStars,
+                                FormatDollar(cost));
+                        }
+                    }
+                    else
+                    {
+                        _luiSteveBribeConfirmItem.Description = string.Format(
+                            CultureInfo.InvariantCulture,
+                            T("SteveBribeConfirmDesc",
+                              "Xác nhận giao dịch ngầm để giảm {0} sao với chi phí {1}."),
+                            _steveBribeStars,
+                            FormatDollar(cost));
+                    }
                 }
             }
         }
@@ -409,7 +474,7 @@ public partial class InstantRefill
         {
             int currentWanted = GetCurrentWantedLevel();
 
-            if (currentWanted >= 5)
+            if (currentWanted >= 5 && !IsSteveHainesBlockedByFleecaDebt())
             {
                 GTA.UI.Screen.ShowSubtitle(
                     T("SteveBribeFiveStarLocked", "~HUD_COLOUR_DEGEN_RED~Steve Haines không thể gọi khi đang 5 sao truy nã."),
@@ -418,10 +483,14 @@ public partial class InstantRefill
                 return;
             }
 
-            if (_steveBribeStars < 1 || _steveBribeStars > 4)
+            int maxStars = GetSteveBribeMaxStars();
+            if (_steveBribeStars < 1 || _steveBribeStars > maxStars)
             {
                 GTA.UI.Screen.ShowSubtitle(
-                    T("SteveBribeNoSelectedLevel", "~HUD_COLOUR_DEGEN_YELLOW~Hãy chọn số sao cần giảm từ 1 đến 4 trước."),
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        T("SteveBribeNoSelectedLevel", "~HUD_COLOUR_DEGEN_YELLOW~Hãy chọn số sao cần giảm từ 1 đến {0} trước."),
+                        maxStars),
                     3000);
                 PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                 return;
@@ -460,10 +529,22 @@ public partial class InstantRefill
             int newWanted = Math.Max(0, currentWanted - reduceStars);
             SetWantedLevel(newWanted);
 
+            bool debtMode = IsSteveHainesBlockedByFleecaDebt();
+            double successChance;
+
+            if (debtMode)
+            {
+                successChance = (reduceStars >= 5) ? 0.20d : 0.40d;
+            }
+            else
+            {
+                successChance = 0.60d;
+            }
+
             bool success;
             lock (_steveRandomLock)
             {
-                success = _steveRandom.NextDouble() < 0.60d;
+                success = _steveRandom.NextDouble() < successChance;
             }
 
             if (success)
@@ -539,6 +620,19 @@ public partial class InstantRefill
         }
         catch
         {
+        }
+    }
+
+    private bool IsSteveHainesBlockedByFleecaDebt()
+    {
+        try
+        {
+            FleecaDebtWantedState.ClearIfWantedLevelZero();
+            return FleecaDebtWantedState.IsLockedByFleecaDebt;
+        }
+        catch
+        {
+            return false;
         }
     }
 

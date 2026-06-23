@@ -33,7 +33,14 @@ public class Lester : Script
     private const long MaxFee = 3500000L;
 
     private readonly ObjectPool _pool = new ObjectPool();
-    private NativeMenu _menu = null;
+
+    private NativeMenu _mainMenu = null;
+    private NativeMenu _manipulationMenu = null;
+
+    private NativeItem _mainServiceItem = null;
+    private NativeCheckboxItem _bankReductionItem = null;
+    private NativeItem _mainConfirmItem = null;
+    private NativeItem _mainCancelItem = null;
 
     private NativeItem _serviceItem = null;
     private NativeItem _manipulationItem = null;
@@ -51,6 +58,8 @@ public class Lester : Script
     private int _currentMinDelta = DefaultMinDelta;
     private int _currentMaxDelta = DefaultMaxDelta;
 
+    private bool _suppressMainCheckboxEvent = false;
+
     public Lester()
     {
         Tick += OnTick;
@@ -67,6 +76,22 @@ public class Lester : Script
         catch
         {
             return fallback;
+        }
+    }
+
+    private static string L(string key, string fallback)
+    {
+        return T(key, fallback);
+    }
+
+    private static void Log(string message)
+    {
+        try
+        {
+            System.Diagnostics.Trace.WriteLine(message);
+        }
+        catch
+        {
         }
     }
 
@@ -109,27 +134,103 @@ public class Lester : Script
                 }
             }
         }
-        catch { }
+        catch
+        {
+        }
+    }
+
+    private void SetCheckboxCheckedIfExists(NativeCheckboxItem item, bool checkedState)
+    {
+        try
+        {
+            if (item == null)
+                return;
+
+            Type t = item.GetType();
+
+            PropertyInfo prop = t.GetProperty("Checked", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (prop != null && prop.CanWrite && prop.PropertyType == typeof(bool))
+            {
+                prop.SetValue(item, checkedState, null);
+                return;
+            }
+
+            prop = t.GetProperty("IsChecked", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (prop != null && prop.CanWrite && prop.PropertyType == typeof(bool))
+            {
+                prop.SetValue(item, checkedState, null);
+                return;
+            }
+
+            FieldInfo field = t.GetField("_checked", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null && field.FieldType == typeof(bool))
+            {
+                field.SetValue(item, checkedState);
+                return;
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private void ForceReadOnlyCheckbox(NativeCheckboxItem item, bool checkedState)
+    {
+        try
+        {
+            if (item == null)
+                return;
+
+            SetCheckboxCheckedIfExists(item, checkedState);
+        }
+        catch
+        {
+        }
+    }
+
+    private bool IsAnyMenuVisible()
+    {
+        try
+        {
+            return (_mainMenu != null && _mainMenu.Visible)
+                || (_manipulationMenu != null && _manipulationMenu.Visible);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void UpdateLemonUiMouseState()
     {
         try
         {
-            bool anyMenuVisible = (_menu != null && _menu.Visible);
+            bool anyMenuVisible = IsAnyMenuVisible();
 
             if (!anyMenuVisible)
                 return;
 
-            SetBoolPropertyIfExists(_menu, false,
-                "MouseControlsEnabled", "MouseControls", "EnableMouseControls", "UseMouse",
-                "MouseEdgeEnabled", "MouseEdgesEnabled", "AllowMouseControls");
+            if (_mainMenu != null && _mainMenu.Visible)
+            {
+                SetBoolPropertyIfExists(_mainMenu, false,
+                    "MouseControlsEnabled", "MouseControls", "EnableMouseControls", "UseMouse",
+                    "MouseEdgeEnabled", "MouseEdgesEnabled", "AllowMouseControls");
+            }
+
+            if (_manipulationMenu != null && _manipulationMenu.Visible)
+            {
+                SetBoolPropertyIfExists(_manipulationMenu, false,
+                    "MouseControlsEnabled", "MouseControls", "EnableMouseControls", "UseMouse",
+                    "MouseEdgeEnabled", "MouseEdgesEnabled", "AllowMouseControls");
+            }
 
             SetBoolPropertyIfExists(_pool, false,
                 "MouseControlsEnabled", "MouseControls", "EnableMouseControls", "UseMouse",
                 "MouseEdgeEnabled", "MouseEdgesEnabled", "AllowMouseControls");
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private void OnTick(object sender, EventArgs e)
@@ -141,7 +242,7 @@ public class Lester : Script
 
             EnsureLesterContactRegistered();
 
-            if (_menu != null && _menu.Visible)
+            if (IsAnyMenuVisible())
             {
                 UpdateLemonUiMouseState();
                 Interval = 0;
@@ -165,7 +266,10 @@ public class Lester : Script
             if (Game.IsLoading || Game.IsCutsceneActive)
                 return;
 
-            if (_menu == null || !_menu.Visible)
+            bool mainVisible = _mainMenu != null && _mainMenu.Visible;
+            bool manipulationVisible = _manipulationMenu != null && _manipulationMenu.Visible;
+
+            if (!mainVisible && !manipulationVisible)
                 return;
 
             if (Game.GameTime < _inputBlockUntil)
@@ -173,31 +277,40 @@ public class Lester : Script
 
             if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Escape)
             {
-                CloseMenu(true);
+                if (manipulationVisible)
+                    CloseManipulationMenu(true);
+                else if (mainVisible)
+                    CloseMainMenu(true);
+
                 return;
             }
 
-            if (e.KeyCode == Keys.Left)
+            if (manipulationVisible)
             {
-                if (_manipulationFocused)
+                if (e.KeyCode == Keys.Left)
                 {
-                    AdjustManipulationRange(-1);
-                    BlockInput(InputBlockMs);
+                    if (_manipulationFocused)
+                    {
+                        AdjustManipulationRange(-1);
+                        BlockInput(InputBlockMs);
+                    }
+                    return;
                 }
-                return;
-            }
 
-            if (e.KeyCode == Keys.Right)
-            {
-                if (_manipulationFocused)
+                if (e.KeyCode == Keys.Right)
                 {
-                    AdjustManipulationRange(+1);
-                    BlockInput(InputBlockMs);
+                    if (_manipulationFocused)
+                    {
+                        AdjustManipulationRange(+1);
+                        BlockInput(InputBlockMs);
+                    }
+                    return;
                 }
-                return;
             }
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private void BlockInput(int ms)
@@ -250,7 +363,22 @@ public class Lester : Script
                     sec),
                 2500);
         }
-        catch { }
+        catch
+        {
+        }
+    }
+
+    private void ShowIcebreakerStyleError(string title, string message)
+    {
+        try
+        {
+            GTA.UI.Screen.ShowSubtitle(
+                string.Format(CultureInfo.InvariantCulture, "~r~{0}~s~: {1}", title, message),
+                3000);
+        }
+        catch
+        {
+        }
     }
 
     private void EnsureLesterContactRegistered()
@@ -301,14 +429,16 @@ public class Lester : Script
             phone.Contacts.Add(contact);
             _contactAdded = true;
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private void OnLesterContactAnswered(iFruitContact sender)
     {
         try
         {
-            OpenLesterManipulationMenu();
+            OpenMainLesterMenu();
         }
         finally
         {
@@ -316,21 +446,133 @@ public class Lester : Script
         }
     }
 
-    private void EnsureMenu()
+    private void EnsureMainMenu()
     {
         try
         {
-            if (_menu != null)
+            if (_mainMenu != null)
                 return;
 
-            _menu = new NativeMenu(
+            _mainMenu = new NativeMenu(
+                T("LesterAuctionManipulation_MenuTitle", "Lester Crest"),
+                T("LesterAuctionManipulation_MainSubtitle", "CHI TIẾT CÁC DỊCH VỤ"));
+
+            _mainMenu.MouseBehavior = MenuMouseBehavior.Disabled;
+            _mainMenu.ResetCursorWhenOpened = false;
+            _mainMenu.CloseOnInvalidClick = false;
+            _mainMenu.RotateCamera = true;
+
+            _pool.Add(_mainMenu);
+
+            _mainServiceItem = new NativeItem(
+                T("LesterAuctionManipulation_Banner", "1. Thao túng đấu giá thị trường xe"));
+            _mainServiceItem.AltTitle = "~w~>~s~";
+
+            _bankReductionItem = new NativeCheckboxItem(
+                T("LesterAuctionManipulation_BankReduction", "2. Giảm án khóa ngân hàng"),
+                false);
+
+            _mainConfirmItem = new NativeItem(
+                T("PowCleanse_Confirm", "Xác nhận giao dịch"));
+
+            _mainCancelItem = new NativeItem(
+                T("PowCleanse_Cancel", "Hủy bỏ giao dịch"));
+
+            _mainServiceItem.Activated += (s, e) =>
+            {
+                OpenManipulationMenu();
+            };
+
+            _bankReductionItem.CheckboxChanged += (s, e) =>
+            {
+                try
+                {
+                    if (_suppressMainCheckboxEvent)
+                        return;
+
+                    if (_bankReductionItem.Checked)
+                    {
+                        // Chọn là tick và giữ trạng thái này cho tới khi Icebreaker tiêu thụ nó
+                        LesterAuctionManipulationState.ArmBankLockReductionRequestForCurrentCharacter();
+                    }
+                    else
+                    {
+                        // không cho bỏ tick bằng tay
+                        _suppressMainCheckboxEvent = true;
+                        ForceReadOnlyCheckbox(_bankReductionItem, true);
+                        _suppressMainCheckboxEvent = false;
+                        return;
+                    }
+
+                    SyncMainMenuCheckboxes();
+                }
+                catch
+                {
+                    _suppressMainCheckboxEvent = false;
+                }
+            };
+
+            _mainConfirmItem.Activated += (s, e) =>
+            {
+                ConfirmMainMenuTransaction();
+            };
+
+            _mainCancelItem.Activated += (s, e) =>
+            {
+                CloseMainMenu(true);
+            };
+
+            _mainMenu.Add(_mainServiceItem);
+            _mainMenu.Add(_bankReductionItem);
+            _mainMenu.Add(_mainConfirmItem);
+            _mainMenu.Add(_mainCancelItem);
+        }
+        catch (Exception ex)
+        {
+            Log(L("Lester_LogEnsureMenuFailed", "EnsureMainMenu failed: ") + ex);
+        }
+    }
+
+    private void EnsureManipulationMenu()
+    {
+        try
+        {
+            if (_manipulationMenu != null)
+                return;
+
+            _manipulationMenu = new NativeMenu(
                 T("LesterAuctionManipulation_MenuTitle", "Lester Crest"),
                 T("LesterAuctionManipulation_MenuSubtitle", "CHI TIẾT THAO TÚNG ĐẤU GIÁ"));
 
-            _pool.Add(_menu);
-            _menu.Visible = false;
+            _manipulationMenu.MouseBehavior = MenuMouseBehavior.Disabled;
+            _manipulationMenu.ResetCursorWhenOpened = false;
+            _manipulationMenu.CloseOnInvalidClick = false;
+            _manipulationMenu.RotateCamera = true;
+
+            _pool.Add(_manipulationMenu);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Log(L("Lester_LogEnsureMenuFailed", "EnsureManipulationMenu failed: ") + ex);
+        }
+    }
+
+    // Compatibility wrapper if something else still calls old name.
+    private void EnsureMenu()
+    {
+        EnsureManipulationMenu();
+    }
+
+    private void SyncMainMenuCheckboxes()
+    {
+        try
+        {
+            bool armed = LesterAuctionManipulationState.HasPendingBankLockReductionRequestForCurrentCharacter();
+            SetCheckboxCheckedIfExists(_bankReductionItem, armed);
+        }
+        catch
+        {
+        }
     }
 
     private void SyncMenuSelectionFromSavedState()
@@ -359,12 +601,12 @@ public class Lester : Script
         }
     }
 
-    private void BuildMenu()
+    private void BuildManipulationMenu()
     {
-        if (_menu == null)
+        if (_manipulationMenu == null)
             return;
 
-        _menu.Clear();
+        _manipulationMenu.Clear();
 
         _serviceItem = new NativeItem(
             T("LesterAuctionManipulation_Service", "Dịch vụ: Thao túng thị trường đấu giá"));
@@ -375,7 +617,7 @@ public class Lester : Script
         {
             _manipulationFocused = false;
         };
-        _menu.Add(_serviceItem);
+        _manipulationMenu.Add(_serviceItem);
 
         _manipulationItem = new NativeItem(
             T("LesterAuctionManipulation_Level", "Mức thao túng"));
@@ -386,7 +628,7 @@ public class Lester : Script
         {
             _manipulationFocused = true;
         };
-        _menu.Add(_manipulationItem);
+        _manipulationMenu.Add(_manipulationItem);
 
         _feeItem = new NativeItem(
             T("LesterAuctionManipulation_Fee", "Phí thao túng"));
@@ -397,7 +639,7 @@ public class Lester : Script
         {
             _manipulationFocused = false;
         };
-        _menu.Add(_feeItem);
+        _manipulationMenu.Add(_feeItem);
 
         _confirmItem = new NativeItem(
             T("LesterAuctionManipulation_Confirm", "Xác nhận giao dịch"));
@@ -412,7 +654,7 @@ public class Lester : Script
         {
             _manipulationFocused = false;
         };
-        _menu.Add(_confirmItem);
+        _manipulationMenu.Add(_confirmItem);
 
         _cancelItem = new NativeItem(
             T("LesterAuctionManipulation_Cancel", "Hủy bỏ giao dịch"));
@@ -421,15 +663,21 @@ public class Lester : Script
             "Đóng menu.");
         _cancelItem.Activated += (s, e) =>
         {
-            CloseMenu(true);
+            CloseManipulationMenu(true);
         };
         _cancelItem.Selected += (s, e) =>
         {
             _manipulationFocused = false;
         };
-        _menu.Add(_cancelItem);
+        _manipulationMenu.Add(_cancelItem);
 
         UpdateMenuVisuals();
+    }
+
+    // Compatibility wrapper if something else still calls old name.
+    private void BuildMenu()
+    {
+        BuildManipulationMenu();
     }
 
     private void UpdateMenuVisuals()
@@ -459,10 +707,12 @@ public class Lester : Script
                     FormatCash(ComputeFee(_currentMinDelta, _currentMaxDelta)));
             }
         }
-        catch { }
+        catch
+        {
+        }
     }
 
-    private void OpenLesterManipulationMenu()
+    private void OpenMainLesterMenu()
     {
         try
         {
@@ -475,38 +725,104 @@ public class Lester : Script
                 return;
             }
 
-            EnsureMenu();
-            SyncMenuSelectionFromSavedState();
-            BuildMenu();
+            EnsureMainMenu();
+            SyncMainMenuCheckboxes();
 
-            _manipulationFocused = true;
-            _menu.Visible = true;
+            if (_mainMenu != null)
+                _mainMenu.Visible = true;
+
+            if (_manipulationMenu != null)
+                _manipulationMenu.Visible = false;
+
             UpdateLemonUiMouseState();
             Interval = 0;
             BlockInput(250);
             PlayFrontendSound("SELECT", "HUD_FRONTEND_DEFAULT_SOUNDSET");
         }
-        catch { }
+        catch
+        {
+        }
     }
 
-    private void CloseMenu(bool setCooldown)
+    private void OpenManipulationMenu()
     {
         try
         {
-            if (_menu != null)
+            if (Game.IsLoading || Game.IsCutsceneActive)
+                return;
+
+            EnsureManipulationMenu();
+            SyncMenuSelectionFromSavedState();
+            BuildManipulationMenu();
+
+            if (_manipulationMenu != null)
+                _manipulationMenu.Visible = true;
+
+            if (_mainMenu != null)
+                _mainMenu.Visible = false;
+
+            UpdateLemonUiMouseState();
+            Interval = 0;
+        }
+        catch
+        {
+        }
+    }
+
+    // Compatibility wrapper if something else still calls old name.
+    private void OpenLesterManipulationMenu()
+    {
+        OpenManipulationMenu();
+    }
+
+    private void CloseMainMenu(bool setCooldown)
+    {
+        try
+        {
+            if (_mainMenu != null)
             {
-                _menu.Visible = false;
-                _menu.Clear();
+                _mainMenu.Visible = false;
+                _mainMenu.Clear();
             }
         }
-        catch { }
+        catch
+        {
+        }
+
+        if (setCooldown)
+            EnsureCooldownSet();
+
+        UpdateLemonUiMouseState();
+        Interval = 1000;
+    }
+
+    private void CloseManipulationMenu(bool setCooldown)
+    {
+        try
+        {
+            if (_manipulationMenu != null)
+            {
+                _manipulationMenu.Visible = false;
+                _manipulationMenu.Clear();
+            }
+        }
+        catch
+        {
+        }
 
         _manipulationFocused = true;
 
         if (setCooldown)
             EnsureCooldownSet();
 
+        UpdateLemonUiMouseState();
         Interval = 1000;
+    }
+
+    // Compatibility wrapper if something else still calls old name.
+    private void CloseMenu(bool setCooldown)
+    {
+        CloseManipulationMenu(setCooldown);
     }
 
     private void AdjustManipulationRange(int delta)
@@ -549,7 +865,9 @@ public class Lester : Script
             UpdateMenuVisuals();
             PlayFrontendSound("NAV_UP_DOWN", "HUD_FRONTEND_DEFAULT_SOUNDSET");
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private int ComputeFee(int minDelta, int maxDelta)
@@ -572,6 +890,31 @@ public class Lester : Script
         }
     }
 
+    private void ConfirmMainMenuTransaction()
+    {
+        try
+        {
+            bool bankReductionArmed = LesterAuctionManipulationState.HasPendingBankLockReductionRequestForCurrentCharacter();
+
+            if (!bankReductionArmed)
+            {
+                ShowIcebreakerStyleError(
+                    T("Lester_BankReductionNeedPickTitle", "Giao dịch thất bại"),
+                    T("Lester_BankReductionNeedPickMessage", "Hãy chọn Giảm án khóa ngân hàng trước khi xác nhận."));
+                return;
+            }
+
+            // Chỉ đánh dấu request. Icebreaker sẽ tiêu thụ nó khi xử lý thành công.
+            LesterAuctionManipulationState.ArmBankLockReductionRequestForCurrentCharacter();
+
+            CloseMainMenu(false);
+        }
+        catch (Exception ex)
+        {
+            Log(L("Lester_LogConfirmFailed", "ConfirmMainMenuTransaction failed: ") + ex);
+        }
+    }
+
     private void ConfirmManipulation()
     {
         try
@@ -580,7 +923,7 @@ public class Lester : Script
             Ped player = Game.Player.Character;
             if (player == null || !player.Exists() || player.IsDead)
             {
-                CloseMenu(false);
+                CloseManipulationMenu(false);
                 return;
             }
 
@@ -610,11 +953,11 @@ public class Lester : Script
                 3500);
 
             PlayFrontendSound("PURCHASE", "HUD_FRONTEND_DEFAULT_SOUNDSET");
-            CloseMenu(false);
+            CloseManipulationMenu(false);
         }
         catch
         {
-            CloseMenu(false);
+            CloseManipulationMenu(false);
         }
     }
 
@@ -630,7 +973,9 @@ public class Lester : Script
             {
                 Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
             }
-            catch { }
+            catch
+            {
+            }
         }
     }
 }
@@ -647,6 +992,7 @@ internal static class LesterAuctionManipulationState
 
     private static readonly object _sync = new object();
     private static readonly Dictionary<int, Session> _sessions = new Dictionary<int, Session>();
+    private static readonly Dictionary<int, bool> _bankReductionRequests = new Dictionary<int, bool>();
 
     private static int GetCurrentCharacterHash()
     {
@@ -753,6 +1099,62 @@ internal static class LesterAuctionManipulationState
         lock (_sync)
         {
             _sessions.Remove(ownerHash);
+        }
+    }
+
+    public static void ArmBankLockReductionRequestForCurrentCharacter()
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return;
+
+        lock (_sync)
+        {
+            _bankReductionRequests[ownerHash] = true;
+        }
+    }
+
+    public static bool HasPendingBankLockReductionRequestForCurrentCharacter()
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return false;
+
+        lock (_sync)
+        {
+            bool armed;
+            return _bankReductionRequests.TryGetValue(ownerHash, out armed) && armed;
+        }
+    }
+
+    public static bool ConsumeBankLockReductionRequestForCurrentCharacter()
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return false;
+
+        lock (_sync)
+        {
+            bool armed;
+            if (_bankReductionRequests.TryGetValue(ownerHash, out armed) && armed)
+            {
+                _bankReductionRequests.Remove(ownerHash);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static void ClearBankLockReductionRequestForCurrentCharacter()
+    {
+        int ownerHash = GetCurrentCharacterHash();
+        if (ownerHash == 0)
+            return;
+
+        lock (_sync)
+        {
+            _bankReductionRequests.Remove(ownerHash);
         }
     }
 }

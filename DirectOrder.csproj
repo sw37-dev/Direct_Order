@@ -75,8 +75,12 @@
     <Compile Include="AssetLeaking.cs" />
     <Compile Include="AuctionHouse.cs" />
     <Compile Include="AutoDrive.cs" />
+    <Compile Include="BailBondsman.cs" />
     <Compile Include="Banker.cs" />
+    <Compile Include="Benefactor.cs" />
+    <Compile Include="Chop.cs" />
     <Compile Include="Davey.cs" />
+    <Compile Include="DevinWeston.cs" />
     <Compile Include="Hacker.cs" />
     <Compile Include="Bodyguards.cs" />
     <Compile Include="Dealership.cs" />
@@ -86,7 +90,9 @@
     <Compile Include="FleecaBank.cs" />
     <Compile Include="Lester.cs" />
     <Compile Include="LomBank.cs" />
+    <Compile Include="MollySchultz.cs" />
     <Compile Include="MoneyTruckEvent.cs" />
+    <Compile Include="Gearhead.cs" />
     <Compile Include="PersistentManager.cs" />
     <Compile Include="PlaneDeliveryContractEvent.cs" />
     <Compile Include="Icebreaker.cs" />
@@ -107,6 +113,8 @@
     <Compile Include="VehicleJump.cs" />
     <Compile Include="VehicleRepair.cs" />
     <Compile Include="VehicleRocketBoost.cs" />
+    <Compile Include="Hao.cs" />
+    <Compile Include="Violet.cs" />
     <Compile Include="Weapons.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

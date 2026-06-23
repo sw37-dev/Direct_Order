@@ -4,7 +4,6 @@ using GTA.Native;
 using GTA.UI;
 using iFruitAddon2;
 using LemonUI;
-using LemonUI.Elements;
 using LemonUI.Menus;
 using System;
 using System.Collections.Generic;
@@ -34,11 +33,14 @@ public partial class AssetLeaking : Script
 
     private const int MOLE_CALL_DURATION_MS = 2000;
     private const int WANTED_PENALTY_DELAY_MS = 20000;
-    private const int WANTED_PENALTY_CHANCE_PERCENT = 70;
+    private const int WANTED_PENALTY_CHANCE_PERCENT = 60;
     private const int WANTED_PENALTY_ADD_STARS = 3;
     private const int WANTED_PENALTY_MAX_STARS = 5;
     private const int MAX_CONFISCATED_PER_CHAR = 10;
-    private const decimal REDEEM_PERCENT = 0.80m;
+    private const decimal REDEEM_PERCENT = 0.62m;
+    private const long ZERO_PRICE_REDEEM_COST = 100_000L;
+    private const int MOLE_LOCK_CHANCE_PERCENT = 25;
+    private const int MOLE_LOCK_DURATION_HOURS = 6;
 
     private readonly ObjectPool _uiPool = new ObjectPool();
 
@@ -50,6 +52,10 @@ public partial class AssetLeaking : Script
 
     private bool _moleRestorePending = false;
     private int _moleRestoreDueTime = 0;
+
+    // Mole contact lock state (in-game time)
+    private bool _moleContactLocked = false;
+    private DateTime? _moleContactUnlockAtGameTime = null;
 
     private readonly List<int> _wantedPenaltyDueTimes = new List<int>();
 
@@ -84,6 +90,7 @@ public partial class AssetLeaking : Script
             if (Game.IsLoading || Game.IsCutsceneActive)
                 return;
 
+            UpdateMoleContactLockState();
             EnsureMoleContactRegistered();
             UpdateMolePendingCall();
             UpdateWantedPenaltyPending();
@@ -140,9 +147,11 @@ public partial class AssetLeaking : Script
 
             string contactName = T("AssetLeaking.ContactName", "Mole");
 
-            if (phone.Contacts.Any(c =>
+            var existing = phone.Contacts.FirstOrDefault(c =>
                 c != null &&
-                string.Equals(c.Name, contactName, StringComparison.OrdinalIgnoreCase)))
+                string.Equals(c.Name, contactName, StringComparison.OrdinalIgnoreCase));
+
+            if (existing != null)
             {
                 _moleContactAdded = true;
                 return;
@@ -150,7 +159,7 @@ public partial class AssetLeaking : Script
 
             var contact = new iFruitContact(contactName)
             {
-                Active = true,
+                Active = !_moleContactLocked,
                 DialTimeout = MOLE_CALL_DURATION_MS,
                 Bold = false,
                 Icon = new ContactIcon("CHAR_LESTER_DEATHWISH")
@@ -324,7 +333,8 @@ public partial class AssetLeaking : Script
                         if (string.IsNullOrWhiteSpace(name))
                             name = $"0x{captured.ModelHash:X}";
 
-                        long redeemCost = GetRedeemCost(captured.PurchasePrice);
+                        long originalPrice = GetOriginalVehiclePrice(captured.PurchasePrice);
+                        long redeemCost = GetDisplayRedeemCost(originalPrice);
 
                         var item = new NativeCheckboxItem(
                             TF("AssetLeaking.VehicleItemTitle", "{0}. {1}: {2}", index, name, FormatMoney(redeemCost)),
@@ -332,7 +342,7 @@ public partial class AssetLeaking : Script
 
                         item.Description =
                             TF("AssetLeaking.PlateLabel", "Biển số: {0}", captured.Plate) + "\n" +
-                            TF("AssetLeaking.OriginalPriceLabel", "Giá gốc: {0}", FormatMoney(captured.PurchasePrice)) + "\n" +
+                            TF("AssetLeaking.OriginalPriceLabel", "Giá gốc: {0}", FormatMoney(originalPrice)) + "\n" +
                             TF("AssetLeaking.RedeemFeeLabel", "Phí chuộc: {0}", FormatMoney(redeemCost));
 
                         _moleEntries.Add(captured);
@@ -429,7 +439,7 @@ public partial class AssetLeaking : Script
 
             long totalCost = 0L;
             foreach (var r in selected)
-                totalCost += GetRedeemCost(r.PurchasePrice);
+                totalCost += GetDisplayRedeemCost(r.PurchasePrice);
 
             if (Game.Player.Money < totalCost)
             {
@@ -517,6 +527,19 @@ public partial class AssetLeaking : Script
         return string.Format(CultureInfo.InvariantCulture, "${0:N0}", value);
     }
 
+    private static long GetDisplayRedeemCost(long purchasePrice)
+    {
+        if (purchasePrice <= 0)
+            return ZERO_PRICE_REDEEM_COST;
+
+        return GetRedeemCost(purchasePrice);
+    }
+
+    private static long GetOriginalVehiclePrice(long purchasePrice)
+    {
+        return Math.Max(0L, purchasePrice);
+    }
+
     private static void ShowMoleNotification(string title, string message)
     {
         try
@@ -560,11 +583,12 @@ public partial class AssetLeaking : Script
 
                 _wantedPenaltyDueTimes.RemoveAt(i);
 
-                // 70% cơ hội cộng 3 sao
+                // 60% cơ hội cộng 3 sao
                 if (_rng.Next(100) >= WANTED_PENALTY_CHANCE_PERCENT)
                     continue;
 
-                ApplyWantedPenalty(WANTED_PENALTY_ADD_STARS);
+                if (ApplyWantedPenalty(WANTED_PENALTY_ADD_STARS))
+                    TryRollMoleLockAfterWantedPenalty();
             }
         }
         catch
@@ -572,12 +596,128 @@ public partial class AssetLeaking : Script
         }
     }
 
-    private static void ApplyWantedPenalty(int addStars)
+    private void TryRollMoleLockAfterWantedPenalty()
+    {
+        try
+        {
+            if (_rng.Next(100) >= MOLE_LOCK_CHANCE_PERCENT)
+                return;
+
+            LockMoleContactForHours(MOLE_LOCK_DURATION_HOURS);
+        }
+        catch
+        {
+        }
+    }
+
+    private void LockMoleContactForHours(int hours)
+    {
+        try
+        {
+            if (hours <= 0)
+                return;
+
+            DateTime now = GetCurrentGameDateTime();
+            if (now == DateTime.MinValue)
+                return;
+
+            _moleContactLocked = true;
+            _moleContactUnlockAtGameTime = now.AddHours(hours);
+            SyncMoleContactActiveState();
+        }
+        catch
+        {
+        }
+    }
+
+    private void UpdateMoleContactLockState()
+    {
+        try
+        {
+            if (!_moleContactLocked || !_moleContactUnlockAtGameTime.HasValue)
+                return;
+
+            DateTime now = GetCurrentGameDateTime();
+            if (now == DateTime.MinValue)
+                return;
+
+            if (now < _moleContactUnlockAtGameTime.Value)
+                return;
+
+            _moleContactLocked = false;
+            _moleContactUnlockAtGameTime = null;
+            SyncMoleContactActiveState();
+        }
+        catch
+        {
+        }
+    }
+
+    private void SyncMoleContactActiveState()
+    {
+        try
+        {
+            var phone = CustomiFruit.GetCurrentInstance();
+            if (phone == null || phone.Contacts == null)
+                return;
+
+            string contactName = T("AssetLeaking.ContactName", "Mole");
+
+            var contact = phone.Contacts.FirstOrDefault(c =>
+                c != null &&
+                string.Equals(c.Name, contactName, StringComparison.OrdinalIgnoreCase));
+
+            if (contact != null)
+            {
+                try
+                {
+                    contact.Active = !_moleContactLocked;
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static DateTime GetCurrentGameDateTime()
+    {
+        try
+        {
+            int year = Function.Call<int>(Hash.GET_CLOCK_YEAR);
+            int month = Function.Call<int>(Hash.GET_CLOCK_MONTH);
+            int day = Function.Call<int>(Hash.GET_CLOCK_DAY_OF_MONTH);
+            int hour = Function.Call<int>(Hash.GET_CLOCK_HOURS);
+            int minute = Function.Call<int>(Hash.GET_CLOCK_MINUTES);
+            int second = Function.Call<int>(Hash.GET_CLOCK_SECONDS);
+
+            // Một số bản natives trả month theo kiểu 0..11, một số trả 1..12.
+            if (month >= 0 && month <= 11)
+                month += 1;
+
+            month = Math.Max(1, Math.Min(12, month));
+            day = Math.Max(1, Math.Min(31, day));
+            hour = Math.Max(0, Math.Min(23, hour));
+            minute = Math.Max(0, Math.Min(59, minute));
+            second = Math.Max(0, Math.Min(59, second));
+
+            return new DateTime(year, month, day, hour, minute, second, DateTimeKind.Unspecified);
+        }
+        catch
+        {
+            return DateTime.MinValue;
+        }
+    }
+
+    private static bool ApplyWantedPenalty(int addStars)
     {
         try
         {
             if (addStars <= 0)
-                return;
+                return false;
 
             int current = 0;
             try
@@ -600,17 +740,21 @@ public partial class AssetLeaking : Script
                 catch
                 {
                 }
+
+                return true;
             }
         }
         catch
         {
         }
+
+        return false;
     }
 
     public static long GetRedeemCost(long purchasePrice)
     {
         if (purchasePrice <= 0)
-            return 0L;
+            return ZERO_PRICE_REDEEM_COST;
 
         return (long)Math.Round((decimal)purchasePrice * REDEEM_PERCENT, MidpointRounding.AwayFromZero);
     }
@@ -689,6 +833,9 @@ public partial class AssetLeaking : Script
             AppendConfiscatedLine(ownerHash, line);
             EnforceConfiscatedCap(ownerHash);
             RemoveMatchingLineFromPersistentFile(record);
+
+            // Ép cập nhật lại icon còn lại cho đúng trạng thái hiện tại
+            try { PersistentManager.RefreshVehicleBlipsForCurrentCharacter(); } catch { }
 
             return true;
         }
@@ -1666,6 +1813,9 @@ public partial class AssetLeaking : Script
                 {
                     try
                     {
+                        // Xóa icon cũ ngay trước khi gỡ khỏi danh sách
+                        ClearPersistentEntryMapBlip(entry);
+
                         if (entry != null && list.Contains(entry))
                             list.Remove(entry);
                     }
@@ -1682,6 +1832,45 @@ public partial class AssetLeaking : Script
             MethodInfo saveMethod = pmType.GetMethod("SaveVehiclesFileInternal", BindingFlags.NonPublic | BindingFlags.Static);
             if (saveMethod != null)
                 saveMethod.Invoke(null, null);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void ClearPersistentEntryMapBlip(object persistentEntry)
+    {
+        try
+        {
+            if (persistentEntry == null)
+                return;
+
+            var t = persistentEntry.GetType();
+
+            FieldInfo blipField = t.GetField("MapBlip", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (blipField != null)
+            {
+                object blipObj = blipField.GetValue(persistentEntry);
+                if (blipObj is Blip b)
+                {
+                    try
+                    {
+                        if (b.Exists())
+                            b.Delete();
+                    }
+                    catch { }
+
+                    blipField.SetValue(persistentEntry, null);
+                }
+            }
+
+            FieldInfo runtimeField = t.GetField("RuntimeVehicle", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (runtimeField != null)
+                runtimeField.SetValue(persistentEntry, null);
+
+            FieldInfo suppressField = t.GetField("SuppressBlipWhileOccupied", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (suppressField != null)
+                suppressField.SetValue(persistentEntry, false);
         }
         catch
         {

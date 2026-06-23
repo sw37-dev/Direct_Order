@@ -1030,8 +1030,24 @@ public class VehicleDelivery : Script
 
                             // finish touches
                             try { ApplyFinalVehicleFinish(t.SpawnedVehicle); } catch { }
-                            try { ApplyOnlineLikeUpgrades(t.SpawnedVehicle); } catch { }
-                            try { PersistentManager.RegisterVehicle(t.SpawnedVehicle); } catch { }
+
+                            bool haoFullBranch = false;
+                            try { ApplyOnlineLikeUpgrades(t.SpawnedVehicle, out haoFullBranch); } catch { }
+
+                            try
+                            {
+                                var meta = new PersistentManager.VehicleMeta
+                                {
+                                    PurchasePrice = 0,
+                                    HaoUpgradeBranch = haoFullBranch ? 1 : 0,
+                                    HaoUpgradeApplied = haoFullBranch
+                                };
+                                PersistentManager.RegisterVehicle(t.SpawnedVehicle, meta);
+                            }
+                            catch
+                            {
+                                try { PersistentManager.RegisterVehicle(t.SpawnedVehicle); } catch { }
+                            }
 
                             // final notification only when brake confirmed and near target
                             if (near)
@@ -1438,6 +1454,8 @@ public class VehicleDelivery : Script
                                 return;
                             }
 
+                            bool haoFullBranch = false;
+
                             try
                             {
                                 spawned.PlaceOnGround();
@@ -1447,9 +1465,23 @@ public class VehicleDelivery : Script
                             }
                             catch { }
 
-                            try { ApplyOnlineLikeUpgrades(spawned); } catch { }
+                            try { ApplyOnlineLikeUpgrades(spawned, out haoFullBranch); } catch { }
                             try { ApplyFinalVehicleFinish(spawned); } catch { }
-                            try { PersistentManager.RegisterVehicle(spawned); } catch { }
+
+                            try
+                            {
+                                var meta = new PersistentManager.VehicleMeta
+                                {
+                                    PurchasePrice = 0,
+                                    HaoUpgradeBranch = haoFullBranch ? 1 : 0,
+                                    HaoUpgradeApplied = haoFullBranch
+                                };
+                                PersistentManager.RegisterVehicle(spawned, meta);
+                            }
+                            catch
+                            {
+                                try { PersistentManager.RegisterVehicle(spawned); } catch { }
+                            }
 
                             t.SpawnedVehicle = spawned;
                             t.DriverPed = null;
@@ -1525,6 +1557,8 @@ public class VehicleDelivery : Script
                                 return;
                             }
 
+                            bool haoFullBranch = false;
+
                             try
                             {
                                 spawned.PlaceOnGround();
@@ -1535,7 +1569,7 @@ public class VehicleDelivery : Script
                             }
                             catch { }
 
-                            try { ApplyOnlineLikeUpgrades(spawned); } catch { }
+                            try { ApplyOnlineLikeUpgrades(spawned, out haoFullBranch); } catch { }
                             try { ApplyFinalVehicleFinish(spawned); } catch { }
 
                             try
@@ -1548,7 +1582,21 @@ public class VehicleDelivery : Script
                             }
                             catch { }
 
-                            try { PersistentManager.RegisterVehicle(spawned); } catch { }
+                            try
+                            {
+                                var meta = new PersistentManager.VehicleMeta
+                                {
+                                    PurchasePrice = 0,
+                                    HaoUpgradeBranch = haoFullBranch ? 1 : 0,
+                                    HaoUpgradeApplied = haoFullBranch
+                                };
+                                PersistentManager.RegisterVehicle(spawned, meta);
+                            }
+                            catch
+                            {
+                                try { PersistentManager.RegisterVehicle(spawned); } catch { }
+                            }
+
                             try { t.OnDelivered?.Invoke(spawned); } catch { }
                             try { t.RequestedModel?.MarkAsNoLongerNeeded(); } catch { }
 
@@ -1637,13 +1685,15 @@ public class VehicleDelivery : Script
                             continue;
                         }
 
+                        bool haoFullBranch = false;
+
                         try
                         {
                             driver.SetIntoVehicle(veh, VehicleSeat.Driver);
                             driver.BlockPermanentEvents = true;
                             driver.IsPersistent = true;
                             driver.CanBeTargetted = false;
-                            ApplyOnlineLikeUpgrades(veh);
+                            ApplyOnlineLikeUpgrades(veh, out haoFullBranch);
                         }
                         catch { }
 
@@ -1670,6 +1720,7 @@ public class VehicleDelivery : Script
                         t.StateStartMs = Game.GameTime;
 
                         try { t.RequestedModel?.MarkAsNoLongerNeeded(); pedModel.MarkAsNoLongerNeeded(); } catch { }
+
                         spawnedOk = true;
                         break;
                     }
@@ -1729,25 +1780,29 @@ public class VehicleDelivery : Script
     }
 
     // --- REPLACE the whole ApplyOnlineLikeUpgrades method with this one ---
-    private void ApplyOnlineLikeUpgrades(Vehicle v)
+    private bool ApplyOnlineLikeUpgrades(Vehicle v, out bool fullBranch)
     {
-        if (!SafeExists(v)) return;
+        fullBranch = false;
+
+        if (!SafeExists(v))
+            return false;
+
         try
         {
             SafeCall(() => { Function.Call(Hash.SET_VEHICLE_MOD_KIT, v.Handle, 0); return 0; });
 
-            // --- NEW: decide per-vehicle whether to apply "full" (60%) or "random" (40%) ---
-            bool chooseFullVehicle = _rng.NextDouble() < 0.60; // tune 0.60 to change probability
+            bool chooseFullVehicle = _rng.NextDouble() < 0.60;
+            fullBranch = chooseFullVehicle;
 
             for (int modType = 0; modType <= 49; modType++)
             {
                 if (!SafeExists(v)) break;
-                if (modType == 18) continue; // turbo handled later
+                if (modType == 18) continue;
 
                 int count = SafeCall(() => Function.Call<int>(Hash.GET_NUM_VEHICLE_MODS, v.Handle, modType), 0);
                 if (count > 0)
                 {
-                    int chosenIndex = chooseFullVehicle ? (count - 1) : _rng.Next(0, count); // 0..count-1
+                    int chosenIndex = chooseFullVehicle ? (count - 1) : _rng.Next(0, count);
                     SafeCall(() => { Function.Call(Hash.SET_VEHICLE_MOD, v.Handle, modType, chosenIndex, false); return 0; });
                 }
             }
@@ -1756,6 +1811,7 @@ public class VehicleDelivery : Script
             foreach (int pm in perfMods)
             {
                 if (!SafeExists(v)) break;
+
                 int count = SafeCall(() => Function.Call<int>(Hash.GET_NUM_VEHICLE_MODS, v.Handle, pm), 0);
                 if (count > 0)
                 {
@@ -1764,8 +1820,8 @@ public class VehicleDelivery : Script
                 }
             }
 
-            // Turbo (modType 18) - keep toggle, but choose index similarly
             SafeCall(() => { Function.Call(Hash.TOGGLE_VEHICLE_MOD, v.Handle, 18, true); return 0; });
+
             int turboCount = SafeCall(() => Function.Call<int>(Hash.GET_NUM_VEHICLE_MODS, v.Handle, 18), 0);
             if (turboCount > 0)
             {
@@ -1773,7 +1829,6 @@ public class VehicleDelivery : Script
                 SafeCall(() => { Function.Call(Hash.SET_VEHICLE_MOD, v.Handle, 18, chosenIndex, false); return 0; });
             }
 
-            // Livery: choose last or random
             SafeCall(() =>
             {
                 int liveryCount = SafeCall(() => Function.Call<int>(Hash.GET_VEHICLE_LIVERY_COUNT, v.Handle), 0);
@@ -1785,8 +1840,6 @@ public class VehicleDelivery : Script
                 return 0;
             });
 
-            // The rest unchanged
-            // Random primary/secondary colors instead of forcing black
             SafeCall(() => { ApplyRandomVehicleColours(v); return 0; });
             SafeCall(() => { Function.Call(Hash.SET_VEHICLE_EXTRA_COLOURS, v.Handle, 0, 0); return 0; });
             SafeCall(() => { Function.Call(Hash.SET_VEHICLE_WINDOW_TINT, v.Handle, 1); return 0; });
@@ -1795,21 +1848,19 @@ public class VehicleDelivery : Script
             for (int ex = 1; ex <= 20; ex++)
             {
                 if (!SafeExists(v)) break;
+
                 bool exists = SafeCall(() => Function.Call<bool>(Hash.DOES_EXTRA_EXIST, v.Handle, ex), false);
-                if (exists) SafeCall(() => { Function.Call(Hash.SET_VEHICLE_EXTRA, v.Handle, ex, 0); return 0; });
+                if (exists)
+                    SafeCall(() => { Function.Call(Hash.SET_VEHICLE_EXTRA, v.Handle, ex, 0); return 0; });
             }
 
             SafeCall(() => { v.IsEngineRunning = true; return 0; });
             SafeCall(() => { v.DirtLevel = 0f; return 0; });
             SafeCall(() => { v.Repair(); return 0; });
 
-            // pick a Menyoo color name randomly
             string chosenName = _sharedColorNames[_rng.Next(_sharedColorNames.Length)];
-
-            // map the chosen name deterministically to RGB (game native requires RGB)
             var rgb = NameToRgb(chosenName);
 
-            // Enable all neon positions (0=Left,1=Right,2=Front,3=Back) if present and set color
             try
             {
                 for (int i = 0; i <= 3; i++)
@@ -1818,20 +1869,24 @@ public class VehicleDelivery : Script
                     SafeCall(() => { Function.Call(Hash.SET_VEHICLE_NEON_ENABLED, v.Handle, i, true); return 0; });
                 }
 
-                // set neon colour (native expects RGB)
                 SafeCall(() => { Function.Call(Hash.SET_VEHICLE_NEON_COLOUR, v.Handle, rgb.Item1, rgb.Item2, rgb.Item3); return 0; });
             }
-            catch { /* swallow neon errors to avoid crash on unsupported vehicles */ }
+            catch { }
 
-            // Dashboard Colour (Paint Index 0..177) — choose randomly and apply
             try
             {
-                int paintIndex = _rng.Next(0, 178); // inclusive 0 .. 177
+                int paintIndex = _rng.Next(0, 178);
                 SafeCall(() => { Function.Call(Hash.SET_VEHICLE_EXTRA_COLOUR_6, v.Handle, paintIndex); return 0; });
             }
-            catch { /* ignore if native not available */ }
+            catch { }
+
+            return true;
         }
-        catch { }
+        catch
+        {
+            fullBranch = false;
+            return false;
+        }
     }
 
     private Tuple<int, int, int> NameToRgb(string name)

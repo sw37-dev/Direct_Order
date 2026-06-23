@@ -39,8 +39,8 @@ public class Icebreaker : Script
     private NativeItem _severityItem;
     private NativeCheckboxItem _lomBankItem;
     private NativeCheckboxItem _fleecaBankItem;
-    private NativeItem _dirtyMoneyItem;
-    private NativeItem _cashItem;
+    private NativeCheckboxItem _dirtyMoneyItem;
+    private NativeCheckboxItem _cashItem;
     private NativeItem _confirmItem;
     private NativeItem _cancelItem;
 
@@ -48,12 +48,6 @@ public class Icebreaker : Script
     private iFruitContact _icebreakerContact = null;
     private bool _icebreakerContactAnsweredBound = false;
     private bool _icebreakerContactAdded = false;
-
-    private CustomiFruit _lombankPhoneInstance = null;
-    private iFruitContact _lombankContact = null;
-
-    private CustomiFruit _fleecaPhoneInstance = null;
-    private iFruitContact _fleecaContact = null;
 
     private int _menuCooldownUntil = 0;
     private bool _uiSync = false;
@@ -82,6 +76,7 @@ public class Icebreaker : Script
         public DateTime? FleecaLockedUntil;
         public string HackerStateFile;
         public string LomBankStateFile;
+        public bool LesterRequestArmed;
 
         public bool Eligible => LomLocked && FleecaLocked;
     }
@@ -111,8 +106,6 @@ public class Icebreaker : Script
             bool hasSnapshot = TryBuildSnapshot(out snapshot);
 
             EnsureIcebreakerContactRegistered(hasSnapshot ? snapshot.Eligible : false);
-            SyncLomBankContactState(hasSnapshot && snapshot.LomLocked);
-            SyncFleecaBankContactState(hasSnapshot && snapshot.FleecaLocked);
 
             if (_menu != null && _menu.Visible)
             {
@@ -175,69 +168,6 @@ public class Icebreaker : Script
             ResetContactState();
         }
         catch { }
-    }
-
-    private void SyncLomBankContactState(bool locked)
-    {
-        try
-        {
-            var phone = CustomiFruit.GetCurrentInstance();
-            if (phone == null || phone.Contacts == null)
-                return;
-
-            if (!ReferenceEquals(_lombankPhoneInstance, phone))
-            {
-                _lombankPhoneInstance = phone;
-                _lombankContact = null;
-            }
-
-            if (_lombankContact == null)
-            {
-                _lombankContact = phone.Contacts.FirstOrDefault(c =>
-                    string.Equals(c.Name, "Lom Bank", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(c.Name, "Lombank", StringComparison.OrdinalIgnoreCase));
-            }
-
-            if (_lombankContact != null)
-            {
-                _lombankContact.Active = !locked;
-            }
-        }
-        catch (Exception ex)
-        {
-            Log(L("Icebreaker_LogEnsureContactFailed", "SyncLomBankContactState failed: ") + ex);
-        }
-    }
-
-    private void SyncFleecaBankContactState(bool locked)
-    {
-        try
-        {
-            var phone = CustomiFruit.GetCurrentInstance();
-            if (phone == null || phone.Contacts == null)
-                return;
-
-            if (!ReferenceEquals(_fleecaPhoneInstance, phone))
-            {
-                _fleecaPhoneInstance = phone;
-                _fleecaContact = null;
-            }
-
-            if (_fleecaContact == null)
-            {
-                _fleecaContact = phone.Contacts.FirstOrDefault(c =>
-                    string.Equals(c.Name, "Fleeca Bank", StringComparison.OrdinalIgnoreCase));
-            }
-
-            if (_fleecaContact != null)
-            {
-                _fleecaContact.Active = !locked;
-            }
-        }
-        catch (Exception ex)
-        {
-            Log(L("Icebreaker_LogEnsureContactFailed", "SyncFleecaBankContactState failed: ") + ex);
-        }
     }
 
     private void ResetContactState()
@@ -358,8 +288,8 @@ public class Icebreaker : Script
             _lomBankItem = new NativeCheckboxItem(L("Icebreaker_LomBank", "Ngân hàng Lom"), true);
             _fleecaBankItem = new NativeCheckboxItem(L("Icebreaker_FleecaBank", "Ngân hàng Fleeca"), true);
 
-            _dirtyMoneyItem = new NativeItem("");
-            _cashItem = new NativeItem("");
+            _dirtyMoneyItem = new NativeCheckboxItem(L("Icebreaker_DirtyMoneyRequiredFormat", "Trả Lester"), false);
+            _cashItem = new NativeCheckboxItem(L("Icebreaker_CashRequiredFormat", "Trả Icebreaker"), true);
 
             _confirmItem = new NativeItem(
                 L("PowCleanse_Confirm", "Xác nhận giảm ngầm thời gian"));
@@ -375,6 +305,16 @@ public class Icebreaker : Script
             _fleecaBankItem.CheckboxChanged += (s, e) =>
             {
                 ForceMandatoryCheckbox(_fleecaBankItem);
+            };
+
+            _dirtyMoneyItem.CheckboxChanged += (s, e) =>
+            {
+                ForceReadOnlyCheckbox(_dirtyMoneyItem, LesterAuctionManipulationState.HasPendingBankLockReductionRequestForCurrentCharacter());
+            };
+
+            _cashItem.CheckboxChanged += (s, e) =>
+            {
+                ForceReadOnlyCheckbox(_cashItem, true);
             };
 
             _confirmItem.Activated += (s, e) =>
@@ -465,13 +405,16 @@ public class Icebreaker : Script
 
             _dirtyMoneyItem.Title = string.Format(
                 CultureInfo.InvariantCulture,
-                L("Icebreaker_DirtyMoneyRequiredFormat", "Tiền bất hợp pháp trả Lester: {0}"),
+                L("Icebreaker_DirtyMoneyRequiredFormat", "Trả Lester: {0}"),
                 FormatMoney(snapshot.DirtyMoneyRequired));
 
             _cashItem.Title = string.Format(
                 CultureInfo.InvariantCulture,
-                L("Icebreaker_CashRequiredFormat", "Số tiền mặt trả Icebreaker: {0}"),
+                L("Icebreaker_CashRequiredFormat", "Trả Icebreaker: {0}"),
                 FormatMoney(snapshot.CashRequired));
+
+            SetCheckboxCheckedIfExists(_dirtyMoneyItem, snapshot.LesterRequestArmed);
+            SetCheckboxCheckedIfExists(_cashItem, true);
 
             _confirmItem.Title = L("PowCleanse_Confirm", "Xác nhận giảm ngầm thời gian");
             _cancelItem.Title = L("PowCleanse_Cancel", "Hủy dịch vụ này");
@@ -500,6 +443,14 @@ public class Icebreaker : Script
                 ShowIcebreakerNotification(
                     L("PowCleanse_ErrorTitle", "Giao dịch thất bại"),
                     L("PowCleanse_NotEligible", "Icebreaker chỉ hoạt động khi Lom Bank và Fleeca Bank đều đang bị khóa."));
+                return;
+            }
+
+            if (!_dirtyMoneyItem.Checked || !_cashItem.Checked || !snapshot.LesterRequestArmed)
+            {
+                ShowIcebreakerNotification(
+                    L("PowCleanse_ErrorTitle", "Giao dịch thất bại"),
+                    L("PowCleanse_NotReady", "Thiếu điều kiện xác nhận. Hãy chọn đúng dịch vụ Lester trước khi giảm án."));
                 return;
             }
 
@@ -535,6 +486,15 @@ public class Icebreaker : Script
                     L("PowCleanse_ErrorTitle", "Giao dịch thất bại"),
                     error);
                 return;
+            }
+
+            try
+            {
+                LesterAuctionManipulationState.ConsumeBankLockReductionRequestForCurrentCharacter();
+            }
+            catch (Exception ex)
+            {
+                Log(L("Icebreaker_LogConsumeLesterRequestFailed", "ConsumeBankLockReductionRequestForCurrentCharacter failed: ") + ex);
             }
 
             CloseMenu(false);
@@ -619,6 +579,7 @@ public class Icebreaker : Script
 
             bool lomLocked = hacker.AtmLockedUntil.HasValue && now < hacker.AtmLockedUntil.Value;
             bool fleecaLocked = hacker.FleecaLockedUntil.HasValue && now < hacker.FleecaLockedUntil.Value;
+            bool lesterArmed = LesterAuctionManipulationState.HasPendingBankLockReductionRequestForCurrentCharacter();
 
             long totalLimit = GetTotalLimitForCurrentCharacter(ownerHash);
             long dirtyRequired = RoundMoney((decimal)totalLimit * 1.3m);
@@ -637,7 +598,8 @@ public class Icebreaker : Script
                 LomLockedUntil = hacker.AtmLockedUntil,
                 FleecaLockedUntil = hacker.FleecaLockedUntil,
                 HackerStateFile = hackerFile,
-                LomBankStateFile = lombankFile
+                LomBankStateFile = lombankFile,
+                LesterRequestArmed = lesterArmed
             };
 
             return true;
@@ -954,6 +916,18 @@ public class Icebreaker : Script
                 return;
 
             SetCheckboxCheckedIfExists(item, true);
+        }
+        catch { }
+    }
+
+    private void ForceReadOnlyCheckbox(NativeCheckboxItem item, bool checkedState)
+    {
+        try
+        {
+            if (item == null)
+                return;
+
+            SetCheckboxCheckedIfExists(item, checkedState);
         }
         catch { }
     }

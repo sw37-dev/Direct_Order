@@ -38,6 +38,11 @@ public class SimeonsShowroomFix : Script
         "Premium Deluxe Motorsport đã đóng cửa hàng lại rồi!"
     );
 
+    private static string PdmScheduledCloseNoticeMessage => T(
+        "PdmScheduledCloseNoticeMessage",
+        "Premium Deluxe Motorsport tạm nghỉ trong một khoảng thời gian. Bạn có thể quay lại sau. Mong quý khách thông cảm!"
+    );
+
     public static bool PdmEnabledForCurrentSession => PdmShowroomBridge.IsActive;
 
     private static readonly Vector3 PdmShowroomPos = new Vector3(-45.8048f, -1095.530f, 26.3272f);
@@ -56,8 +61,11 @@ public class SimeonsShowroomFix : Script
     private const int PdmBlackoutRejectChancePercent = 70;
     private const int PdmBlackoutRejectNoticeDelayMs = 3000;
 
-    // PATCH: thêm 20 giây cảnh báo trước khi tự đóng
+    // Thêm 20 giây cảnh báo trước khi tự đóng
     private const int PdmCloseGraceDelayMs = 20000;
+
+    // NEW: gia hạn riêng khi chạm mốc đóng cửa theo giờ
+    private const int PdmScheduledCloseGraceMs = 20000;
 
     public static readonly Vector3[] PdmDeliverySpawnPoints =
     {
@@ -101,6 +109,10 @@ public class SimeonsShowroomFix : Script
     private int _pendingSimeonRejectNoticeAt = -1;
     private bool _pendingSimeonRejectNotice = false;
 
+    // NEW: gia hạn riêng cho mốc đóng cửa 12:00 / 18:00
+    private bool _scheduledCloseGraceArmed = false;
+    private int _scheduledCloseGraceUntilGameTime = -1;
+
     // NPC Simeon đang đứng tại showroom
     private Ped _simeonNpc;
 
@@ -124,6 +136,24 @@ public class SimeonsShowroomFix : Script
 
             bool canOpenNow = IsPdmOpenNow(out _);
 
+            // NEW: nếu đang mở mà chạm đúng mốc đóng cửa (12:00 / 18:00)
+            // thì giữ IPL mở thêm 20 giây trước khi đóng thật.
+            if (PdmShowroomBridge.IsActive &&
+                !_scheduledCloseGraceArmed &&
+                !canOpenNow &&
+                IsScheduledCloseGraceMoment())
+            {
+                ShowPdmNotification(PdmCloseFeedTitle, PdmScheduledCloseNoticeMessage);
+                StartScheduledCloseGracePeriod();
+            }
+
+            // Hết 20 giây gia hạn riêng của mốc đóng cửa thì đóng thật
+            if (_scheduledCloseGraceArmed &&
+                Game.GameTime >= _scheduledCloseGraceUntilGameTime)
+            {
+                DeactivatePdmShowroom();
+            }
+
             // Nếu phiên đang mở và đã tới ngưỡng hết hạn thì bắn cảnh báo 1 lần
             // rồi gia hạn thêm 20 giây trước khi đóng thật.
             if (PdmShowroomBridge.IsActive &&
@@ -144,7 +174,11 @@ public class SimeonsShowroomFix : Script
 
             // Giữ logic cũ: ngoài giờ thì PDM không cho hoạt động
             // nhưng không ép đóng ngay trong 20 giây cảnh báo cuối phiên
-            if (PdmShowroomBridge.IsActive && !canOpenNow && !PdmShowroomBridge.IsCloseGracePeriodArmed)
+            // và cũng không ép đóng trong 20 giây gia hạn riêng của mốc đóng cửa
+            if (PdmShowroomBridge.IsActive &&
+                !canOpenNow &&
+                !PdmShowroomBridge.IsCloseGracePeriodArmed &&
+                !_scheduledCloseGraceArmed)
             {
                 DeactivatePdmShowroom();
             }
@@ -242,14 +276,12 @@ public class SimeonsShowroomFix : Script
             if (phone == null || phone.Contacts == null)
                 return;
 
-            bool canOpenNow = IsPdmOpenNow(out _);
-
             var existing = phone.Contacts.FirstOrDefault(c =>
                 string.Equals(c.Name, PdmContactName, StringComparison.OrdinalIgnoreCase));
 
             if (existing != null)
             {
-                existing.Active = canOpenNow;
+                existing.Active = true;
                 _contactAdded = true;
                 return;
             }
@@ -259,7 +291,7 @@ public class SimeonsShowroomFix : Script
 
             var contact = new iFruitContact(PdmContactName)
             {
-                Active = canOpenNow,
+                Active = true,
                 DialTimeout = 2500,
                 Bold = false,
                 Icon = ContactIcon.Simeon
@@ -302,30 +334,20 @@ public class SimeonsShowroomFix : Script
     {
         try
         {
-            if (!IsPdmOpenNow(out _))
+            if (!IsPdmOpenNow(out string reason))
             {
-                try
-                {
-                    sender.Active = false;
-                }
-                catch
-                {
-                }
-
+                ShowPdmNotification(
+                    PdmCloseFeedTitle,
+                    string.IsNullOrWhiteSpace(reason)
+                    ? PdmScheduledCloseNoticeMessage
+                    : reason
+                );
                 return;
             }
 
             // NEW: nếu đang cúp điện thì 70% từ chối, dù vẫn đang trong khung giờ hoạt động
             if (IsCityBlackoutActive() && _rng.Next(100) < PdmBlackoutRejectChancePercent)
             {
-                try
-                {
-                    sender.Active = false;
-                }
-                catch
-                {
-                }
-
                 ScheduleSimeonRejectNotification();
                 return;
             }
@@ -408,6 +430,7 @@ public class SimeonsShowroomFix : Script
         if (!PdmShowroomBridge.IsActive)
             PdmShowroomBridge.Activate(PdmSessionLifetimeMs);
 
+        ClearScheduledCloseGracePeriod();
         _simeonNpcSpawnRequestedAt = -1;
         ApplyPdmOpenState();
         EnsureSimeonNpcSpawned();
@@ -420,6 +443,45 @@ public class SimeonsShowroomFix : Script
         DeleteSimeonNpc();
         ApplyPdmClosedState();
         PdmShowroomBridge.Deactivate();
+        ClearScheduledCloseGracePeriod();
+    }
+
+    private bool IsScheduledCloseGraceMoment()
+    {
+        try
+        {
+            int dow = Function.Call<int>(Hash.GET_CLOCK_DAY_OF_WEEK);
+            if (dow < 1 || dow > 5)
+                return false;
+
+            int hour = Function.Call<int>(Hash.GET_CLOCK_HOURS);
+            int minute = Function.Call<int>(Hash.GET_CLOCK_MINUTES);
+            int second = Function.Call<int>(Hash.GET_CLOCK_SECONDS);
+
+            if (minute != 0)
+                return false;
+
+            if (second >= (PdmScheduledCloseGraceMs / 1000))
+                return false;
+
+            return hour == 12 || hour == 18;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void StartScheduledCloseGracePeriod()
+    {
+        _scheduledCloseGraceArmed = true;
+        _scheduledCloseGraceUntilGameTime = Game.GameTime + PdmScheduledCloseGraceMs;
+    }
+
+    private void ClearScheduledCloseGracePeriod()
+    {
+        _scheduledCloseGraceArmed = false;
+        _scheduledCloseGraceUntilGameTime = -1;
     }
 
     private void ApplyPdmOpenState()

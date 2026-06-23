@@ -3018,7 +3018,7 @@ public partial class InstantRefill : Script
         }, 150, 30000);
 
         // 5. PHẢN HỒI THÀNH CÔNG (Giao diện & Logic mua hàng)
-        // Lưu ý: VehicleDelivery sẽ tự hiển thị thông báo "Xe đang được giao" 
+        // Lưu ý: VehicleDelivery sẽ tự hiển thị thông báo "Xe đang được giao"
         // nên ở đây ta chỉ xử lý logic hoàn tất giao dịch.
         chosen.TimesPurchased = Math.Max(0, chosen.TimesPurchased + 1);
         SafeCall(() => PlayFrontendSound("PURCHASE", "HUD_FRONTEND_DEFAULT_SOUNDSET"));
