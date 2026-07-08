@@ -1087,6 +1087,8 @@ public class DevinWeston : Script
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+
             Notification.Show(NotificationIcon.Devin, DevinContactName, subject, body);
             return;
         }
@@ -1101,6 +1103,24 @@ public class DevinWeston : Script
         catch
         {
             try { GTA.UI.Screen.ShowSubtitle(body, 3000); } catch { }
+        }
+    }
+
+    private static void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
         }
     }
 
@@ -1522,7 +1542,6 @@ public class DevinWeston : Script
         }
     }
 
-    // NEW: chỉ xóa blip/icon của xe đã bán, không xóa trạng thái khóa xe
     private static bool RemovePersistentVehicleBlipForSoldVehicle(Vehicle veh, object recordHint = null)
     {
         try

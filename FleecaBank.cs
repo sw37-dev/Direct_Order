@@ -74,6 +74,9 @@ public partial class FleecaBankLoanScript : Script
     private const int SAVINGS_WINDOW_HOURS = 2;
     private const int SAVINGS_CHECK_INTERVAL_MS = 60000;
 
+    private const string FleecaMessageSoundName = "Text_Arrive_Tone";
+    private const string FleecaMessageSoundSet = "Phone_SoundSet_Default";
+
     private bool _savingsDialogActive = false;
     private bool _savingsActive = false;
     private long _savingsPrincipal = 0L;
@@ -82,6 +85,9 @@ public partial class FleecaBankLoanScript : Script
     private int _savingsWindowStartHour = -1;
     private int _savingsWindowEndHour = -1;
     private int _nextSavingsCheckAtGameTime = 0;
+
+    private bool _loanTransferredFromParadigmRoyalty = false;
+    private decimal _loanTransferredDailyRate = -1m;
 
     private NativeItem _savingsItem;
     private NativeItem _savingsWithdrawItem;
@@ -436,7 +442,7 @@ public partial class FleecaBankLoanScript : Script
             {
                 _savingsWithdrawItem.Description = string.Format(
                     L("Credit_MenuSavingsWithdrawDescActive",
-                      "Rút toàn bộ gốc và lãi hiện có: {0}"),
+                      "Rút toàn bộ gốc và lãi hiện có: ~HUD_COLOUR_DEGEN_GREEN~{0}~s~"),
                     FormatMoney(GetSavingsTotalPayout()));
             }
             else
@@ -2115,6 +2121,10 @@ public partial class FleecaBankLoanScript : Script
         _nextDueCheckAtGameTime = 0;
         _quickPayInsufficientWarningAcked = false;
 
+        // Cập nhật mới theo hướng dẫn
+        _loanTransferredFromParadigmRoyalty = false;
+        _loanTransferredDailyRate = -1m;
+
         ResetQuickPayFeeRates();
     }
 
@@ -3743,16 +3753,25 @@ public partial class FleecaBankLoanScript : Script
     {
         try
         {
+            if (CreditDefaultSwapBridge.TryGetOverrideRate(out decimal cdsRate) && cdsRate > 0m)
+                return cdsRate;
+        }
+        catch { }
+
+        try
+        {
             if (MinotaurBankBridge.TryGetOverrideRate(out decimal overrideRate) && overrideRate > 0m)
                 return overrideRate;
         }
         catch { }
 
+        if (_loanTransferredFromParadigmRoyalty && _loanTransferredDailyRate > 0m)
+            return _loanTransferredDailyRate;
+
         if (!_loanCollateralMode)
             return NO_COLLATERAL_DAILY_RATE;
 
         int alive = GetCurrentCollateralCount();
-
         if (alive >= 3) return COLLATERAL_RATE_3;
         if (alive == 2) return COLLATERAL_RATE_2;
         if (alive == 1) return COLLATERAL_RATE_1;
@@ -3965,7 +3984,8 @@ public partial class FleecaBankLoanScript : Script
             string[] parts = File.ReadAllText(file).Split('|');
             int savedVersion = 1;
 
-            if (parts.Length >= 13)
+            // Ưu tiên kiểm tra phiên bản mới nhất chứa ít nhất 15 trường dữ liệu
+            if (parts.Length >= 15)
             {
                 _loanPrincipal = ParseLong(parts[0]);
                 _loanRemainingDebt = ParseLong(parts[1]);
@@ -3980,6 +4000,30 @@ public partial class FleecaBankLoanScript : Script
                 _quickPayFeeRateNext10Days = ParseDecimal(parts[10]);
                 _quickPayFeeRateAfter17Days = ParseDecimal(parts[11]);
                 savedVersion = (int)ParseLong(parts[12]);
+
+                // Đọc 2 field mới ở cuối file
+                _loanTransferredFromParadigmRoyalty = ParseBool(parts[13]);
+                _loanTransferredDailyRate = ParseDecimal(parts[14]);
+            }
+            else if (parts.Length >= 13)
+            {
+                _loanPrincipal = ParseLong(parts[0]);
+                _loanRemainingDebt = ParseLong(parts[1]);
+                _loanDailyDue = ParseLong(parts[2]);
+                _loanActive = parts[3].Trim() == "1" && _loanRemainingDebt > 0;
+                _loanLastChargedDayStamp = (int)ParseLong(parts[4]);
+                _dueWindowStartHour = (int)ParseLong(parts[5]);
+                _dueWindowEndHour = (int)ParseLong(parts[6]);
+                _loanCollateralMode = parts[7].Trim() == "1";
+                _loanStartDayStamp = (int)ParseLong(parts[8]);
+                _quickPayFeeRateFirst7Days = ParseDecimal(parts[9]);
+                _quickPayFeeRateNext10Days = ParseDecimal(parts[10]);
+                _quickPayFeeRateAfter17Days = ParseDecimal(parts[11]);
+                savedVersion = (int)ParseLong(parts[12]);
+
+                // Gán giá trị mặc định cho dữ liệu cũ không có 2 field này
+                _loanTransferredFromParadigmRoyalty = false;
+                _loanTransferredDailyRate = -1m;
             }
             else if (parts.Length >= 12)
             {
@@ -3996,6 +4040,9 @@ public partial class FleecaBankLoanScript : Script
                 _quickPayFeeRateNext10Days = ParseDecimal(parts[10]);
                 _quickPayFeeRateAfter17Days = ParseDecimal(parts[11]);
                 savedVersion = 1;
+
+                _loanTransferredFromParadigmRoyalty = false;
+                _loanTransferredDailyRate = -1m;
             }
             else if (parts.Length >= 9)
             {
@@ -4009,6 +4056,9 @@ public partial class FleecaBankLoanScript : Script
                 _loanCollateralMode = parts[7].Trim() == "1";
                 _loanStartDayStamp = (int)ParseLong(parts[8]);
                 savedVersion = 1;
+
+                _loanTransferredFromParadigmRoyalty = false;
+                _loanTransferredDailyRate = -1m;
             }
             else if (parts.Length >= 8)
             {
@@ -4022,6 +4072,9 @@ public partial class FleecaBankLoanScript : Script
                 _loanCollateralMode = parts[7].Trim() == "1";
                 _loanStartDayStamp = _loanLastChargedDayStamp > 0 ? _loanLastChargedDayStamp : GetInGameDayStamp();
                 savedVersion = 1;
+
+                _loanTransferredFromParadigmRoyalty = false;
+                _loanTransferredDailyRate = -1m;
             }
 
             if (savedVersion < QUICK_PAY_FEE_RATE_STATE_VERSION)
@@ -4045,6 +4098,24 @@ public partial class FleecaBankLoanScript : Script
             _stateOwnerHash = ownerHash;
             RefreshLoanMenuQuickPayText();
             RefreshLoanMenuItems();
+        }
+    }
+
+    private static bool ParseBool(string value)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            string s = value.Trim();
+            return s == "1"
+                || s.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || s.Equals("yes", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -4078,20 +4149,22 @@ public partial class FleecaBankLoanScript : Script
 
             string payload = string.Join("|", new[]
             {
-                _loanPrincipal.ToString(CultureInfo.InvariantCulture),
-                _loanRemainingDebt.ToString(CultureInfo.InvariantCulture),
-                _loanDailyDue.ToString(CultureInfo.InvariantCulture),
-                _loanActive ? "1" : "0",
-                _loanLastChargedDayStamp.ToString(CultureInfo.InvariantCulture),
-                _dueWindowStartHour.ToString(CultureInfo.InvariantCulture),
-                _dueWindowEndHour.ToString(CultureInfo.InvariantCulture),
-                _loanCollateralMode ? "1" : "0",
-                _loanStartDayStamp.ToString(CultureInfo.InvariantCulture),
-                _quickPayFeeRateFirst7Days.ToString(CultureInfo.InvariantCulture),
-                _quickPayFeeRateNext10Days.ToString(CultureInfo.InvariantCulture),
-                _quickPayFeeRateAfter17Days.ToString(CultureInfo.InvariantCulture),
-                QUICK_PAY_FEE_RATE_STATE_VERSION.ToString(CultureInfo.InvariantCulture)
-            });
+            _loanPrincipal.ToString(CultureInfo.InvariantCulture),
+            _loanRemainingDebt.ToString(CultureInfo.InvariantCulture),
+            _loanDailyDue.ToString(CultureInfo.InvariantCulture),
+            _loanActive ? "1" : "0",
+            _loanLastChargedDayStamp.ToString(CultureInfo.InvariantCulture),
+            _dueWindowStartHour.ToString(CultureInfo.InvariantCulture),
+            _dueWindowEndHour.ToString(CultureInfo.InvariantCulture),
+            _loanCollateralMode ? "1" : "0",
+            _loanStartDayStamp.ToString(CultureInfo.InvariantCulture),
+            _quickPayFeeRateFirst7Days.ToString(CultureInfo.InvariantCulture),
+            _quickPayFeeRateNext10Days.ToString(CultureInfo.InvariantCulture),
+            _quickPayFeeRateAfter17Days.ToString(CultureInfo.InvariantCulture),
+            QUICK_PAY_FEE_RATE_STATE_VERSION.ToString(CultureInfo.InvariantCulture),
+            _loanTransferredFromParadigmRoyalty ? "1" : "0",
+            _loanTransferredDailyRate.ToString(CultureInfo.InvariantCulture)
+        });
 
             File.WriteAllText(file, payload);
         }
@@ -4126,21 +4199,29 @@ public partial class FleecaBankLoanScript : Script
         return -1m;
     }
 
-    private void PlayPurchaseSound()
+    private void PlayFrontendSound(string soundName, string soundSet)
     {
         try
         {
-            Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, "PURCHASE", "HUD_FRONTEND_TATTOO_SHOP_SOUNDSET", true);
+            Audio.PlaySoundFrontend(soundName, soundSet);
         }
-        catch { }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
+        }
     }
 
     private void ShowFleecaNotification(string subtitle, string message, bool playSound = false)
     {
         try
         {
-            if (playSound)
-                PlayPurchaseSound();
+            PlayFrontendSound(FleecaMessageSoundName, FleecaMessageSoundSet);
 
             Notification.Show(
                 FleecaNotifIcon,
@@ -4151,8 +4232,7 @@ public partial class FleecaBankLoanScript : Script
         catch
         {
             // fallback nếu API notification lỗi
-            if (playSound)
-                PlayPurchaseSound();
+            PlayFrontendSound(FleecaMessageSoundName, FleecaMessageSoundSet);
 
             Notification.Show(message);
         }
@@ -4266,7 +4346,7 @@ public partial class FleecaBankLoanScript : Script
             return;
 
         Game.Player.Money -= (int)amount;
-        PlayPurchaseSound();
+        PlayFrontendSound(FleecaMessageSoundName, FleecaMessageSoundSet);
     }
 
     private void AddPlayerMoney(long amount)
@@ -4281,7 +4361,7 @@ public partial class FleecaBankLoanScript : Script
             target = int.MaxValue;
 
         Game.Player.Money = (int)target;
-        PlayPurchaseSound();
+        PlayFrontendSound(FleecaMessageSoundName, FleecaMessageSoundSet);
     }
 
     private void Log(string message)

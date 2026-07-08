@@ -609,6 +609,7 @@ public class PrimeAutoHandover : Script
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
             Notification.Show(
                 NotificationIcon.Carsite2,
                 NotificationSenderName,
@@ -632,8 +633,9 @@ public class PrimeAutoHandover : Script
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
             Notification.Show(
-                NotificationIcon.Carsite,
+                NotificationIcon.Carsite2,
                 sender,
                 subject,
                 body);
@@ -643,6 +645,22 @@ public class PrimeAutoHandover : Script
             try
             {
                 GTA.UI.Notification.Show(body);
+            }
+            catch { }
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
             }
             catch { }
         }

@@ -18,6 +18,8 @@ public class MinotaurScript : Script
     private const int CONTACT_DIAL_TIMEOUT_MS = 3000;
     private const int PROMPT_TIMEOUT_MS = 15000;
     private const decimal SERVICE_FEE_RATE = 0.15m;
+    private const decimal TRANSFERRED_SERVICE_FEE_RATE = 0.15m;
+    private const decimal TRANSFERRED_DAILY_RATE = 0.0062m;
 
     private int _lastSyncedCollateralCount = -1;
     private long _lastSyncedRemainingDebt = -1;
@@ -51,6 +53,8 @@ public class MinotaurScript : Script
         public int CollateralCount;
         public int LoanStateVersion;
         public DateTime UpdatedUtc;
+        public bool TransferredFromParadigmRoyalty;
+        public decimal TransferredDailyRate;
     }
 
     private sealed class MinotaurInfoItem : NativeItem
@@ -274,7 +278,8 @@ public class MinotaurScript : Script
             if (ownerHash == 0)
                 return;
 
-            if (!TryReadFleecaLoanStateForOwner(ownerHash, out long remainingDebt, out bool loanActive) || !loanActive || remainingDebt <= 0)
+            MinotaurState loanState = ReadLoanState(ownerHash);
+            if (loanState == null || !loanState.Active || loanState.CurrentDebt <= 0)
             {
                 if (IsMinotaurStateActiveForOwner(ownerHash))
                     TryDeleteMinotaurState(ownerHash);
@@ -298,6 +303,8 @@ public class MinotaurScript : Script
             }
 
             int collateralCount = CountCollateralVehicles(ownerHash);
+            long remainingDebt = loanState.CurrentDebt;
+            bool transferredLoan = loanState.TransferredFromParadigmRoyalty;
 
             // Chỉ ghi lại khi có thay đổi để tránh spam file I/O mỗi tick
             if (remainingDebt == _lastSyncedRemainingDebt && collateralCount == _lastSyncedCollateralCount)
@@ -319,7 +326,9 @@ public class MinotaurScript : Script
                 NewDebt = remainingDebt,
                 CollateralCount = collateralCount,
                 LoanStateVersion = 1,
-                UpdatedUtc = DateTime.UtcNow
+                UpdatedUtc = DateTime.UtcNow,
+                TransferredFromParadigmRoyalty = transferredLoan,
+                TransferredDailyRate = transferredLoan ? TRANSFERRED_DAILY_RATE : 0m
             };
 
             _cachedState = state;
@@ -328,7 +337,7 @@ public class MinotaurScript : Script
             SaveMinotaurState(state);
 
             // Đồng bộ lại loan_state để file lưu trữ luôn phản ánh rate mới
-            TryPatchFleecaLoanStateFile(ownerHash, remainingDebt, collateralCount, false);
+            TryPatchFleecaLoanStateFile(ownerHash, remainingDebt, collateralCount, false, transferredLoan);
 
             if (_minotaurContact != null)
                 _minotaurContact.Active = false;
@@ -539,9 +548,13 @@ public class MinotaurScript : Script
                 return;
 
             long currentDebt = Math.Max(0, _cachedState.CurrentDebt);
-            long fee = Math.Max(0, (long)Math.Ceiling(currentDebt * SERVICE_FEE_RATE));
+            bool transferredLoan = _cachedState.TransferredFromParadigmRoyalty;
+            decimal feeRate = transferredLoan ? TRANSFERRED_SERVICE_FEE_RATE : SERVICE_FEE_RATE;
+            decimal dailyRate = transferredLoan ? TRANSFERRED_DAILY_RATE : GetEffectiveMinotaurRate(_cachedState.CollateralCount);
+            
+            long fee = Math.Max(0, (long)Math.Ceiling(currentDebt * feeRate));
             long newDebt = currentDebt + fee;
-            decimal rate = GetEffectiveMinotaurRate(_cachedState.CollateralCount);
+            decimal rate = dailyRate;
 
             _cachedState.ProcessingFee = fee;
             _cachedState.NewDebt = newDebt;
@@ -573,7 +586,9 @@ public class MinotaurScript : Script
 
             _feeItem.Description = L(
                 "Minotaur_ProcessingFeeDesc",
-                "Khoản nợ thêm 15% được cộng thêm vào khoản nợ hiện tại trước khi áp dụng lãi mới.");
+                transferredLoan
+                    ? "Khoản nợ chuyển chỉ bị cộng thêm 15% trước khi áp dụng lãi cố định 0.62%/ngày."
+                    : "Khoản nợ thêm 15% được cộng thêm vào khoản nợ hiện tại trước khi áp dụng lãi mới.");
 
             _newDebtItem.Description = L(
                 "Minotaur_NewDebtDesc",
@@ -613,7 +628,8 @@ public class MinotaurScript : Script
                 return;
             }
 
-            if (_cachedState.CollateralCount <= 0)
+            bool transferredLoan = _cachedState.TransferredFromParadigmRoyalty;
+            if (!transferredLoan && _cachedState.CollateralCount <= 0)
             {
                 ShowMinotaurNotification(
                     L("Minotaur_ErrorTitle", "Lỗi"),
@@ -623,9 +639,11 @@ public class MinotaurScript : Script
             }
 
             long currentDebt = Math.Max(0, _cachedState.CurrentDebt);
-            long fee = Math.Max(0, (long)Math.Ceiling(currentDebt * SERVICE_FEE_RATE));
+            decimal serviceFeeRate = transferredLoan ? TRANSFERRED_SERVICE_FEE_RATE : SERVICE_FEE_RATE;
+            long fee = Math.Max(0, (long)Math.Ceiling(currentDebt * serviceFeeRate));
             long newDebt = currentDebt + fee;
             int collateralCount = CountCollateralVehicles(_cachedState.OwnerHash);
+            decimal appliedRate = transferredLoan ? TRANSFERRED_DAILY_RATE : GetEffectiveMinotaurRate(collateralCount);
 
             _cachedState.Active = true;
             _cachedState.CurrentDebt = newDebt;
@@ -633,6 +651,8 @@ public class MinotaurScript : Script
             _cachedState.NewDebt = newDebt;
             _cachedState.CollateralCount = collateralCount;
             _cachedState.UpdatedUtc = DateTime.UtcNow;
+            _cachedState.TransferredFromParadigmRoyalty = transferredLoan;
+            _cachedState.TransferredDailyRate = transferredLoan ? TRANSFERRED_DAILY_RATE : 0m;
 
             _lastSyncedRemainingDebt = newDebt;
             _lastSyncedCollateralCount = collateralCount;
@@ -640,14 +660,17 @@ public class MinotaurScript : Script
             SaveMinotaurState(_cachedState);
 
             // updatePrincipal = true để khoản vay ban đầu được ghi thành khoản nợ sau phí dịch vụ
-            TryPatchFleecaLoanStateFile(_cachedState.OwnerHash, newDebt, collateralCount, true);
+            TryPatchFleecaLoanStateFile(_cachedState.OwnerHash, newDebt, collateralCount, true, transferredLoan);
 
             ShowMinotaurNotification(
                 L("Minotaur_SuccessTitle", "Minotaur"),
                 string.Format(
                     CultureInfo.InvariantCulture,
-                    L("Minotaur_SuccessDesc", "Dịch vụ đã được kích hoạt. Khoản nợ mới: {0}."),
-                    FormatMoney(newDebt)));
+                    transferredLoan
+                        ? L("Minotaur_SuccessDescTransferred", "Dịch vụ đã được kích hoạt cho nợ chuyển. Khoản nợ mới: {0}. Lãi cố định áp dụng: {1:0.00}%/ngày.")
+                        : L("Minotaur_SuccessDesc", "Dịch vụ đã được kích hoạt. Khoản nợ mới: {0}."),
+                    FormatMoney(newDebt),
+                    (double)(appliedRate * 100m)));
 
             CloseAllMenus();
         }
@@ -708,11 +731,28 @@ public class MinotaurScript : Script
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
             Notification.Show(NotificationIcon.Minotaur, GetMenuTitle(), subtitle, message);
         }
         catch
         {
             Notification.Show(message);
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch { }
         }
     }
 
@@ -799,6 +839,8 @@ public class MinotaurScript : Script
             long principal = ParseLong(parts[0]);
             long remaining = ParseLong(parts[1]);
             bool active = parts[3].Trim() == "1" && remaining > 0;
+            bool transferredLoan = parts.Length >= 14 && ParseBool(parts[13]);
+            decimal transferredDailyRate = parts.Length >= 15 ? ParseDecimal(parts[14]) : 0m;
 
             if (!active || remaining <= 0)
             {
@@ -815,7 +857,9 @@ public class MinotaurScript : Script
                 NewDebt = remaining,
                 CollateralCount = 0,
                 LoanStateVersion = parts.Length >= 13 ? (int)ParseLong(parts[12]) : 1,
-                UpdatedUtc = DateTime.UtcNow
+                UpdatedUtc = DateTime.UtcNow,
+                TransferredFromParadigmRoyalty = transferredLoan,
+                TransferredDailyRate = transferredDailyRate
             };
         }
         catch
@@ -869,9 +913,16 @@ public class MinotaurScript : Script
 
     private static decimal GetEffectiveMinotaurRate(int collateralCount)
     {
+        try
+        {
+            if (CreditDefaultSwapBridge.TryGetOverrideRate(out decimal cdsRate) && cdsRate > 0m)
+                return cdsRate;
+        }
+        catch { }
+
         if (collateralCount >= 3) return 0.0058m;
-        if (collateralCount == 2) return 0.0145m;
-        if (collateralCount == 1) return 0.0363m;
+        if (collateralCount == 2) return 0.0113m;
+        if (collateralCount == 1) return 0.0325m;
         return 0.10m;
     }
 
@@ -884,6 +935,35 @@ public class MinotaurScript : Script
         }
         catch { }
         return 0;
+    }
+
+    private static bool ParseBool(string value)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            string s = value.Trim();
+            return s == "1"
+                || s.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || s.Equals("yes", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static decimal ParseDecimal(string value)
+    {
+        try
+        {
+            if (decimal.TryParse((value ?? string.Empty).Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out decimal n))
+                return n;
+        }
+        catch { }
+        return 0m;
     }
 
     private int CountCollateralVehicles(int ownerHash)
@@ -967,7 +1047,7 @@ public class MinotaurScript : Script
         return false;
     }
 
-    private static void TryPatchFleecaLoanStateFile(int ownerHash, long debtValue, int collateralCount, bool updatePrincipal)
+    private static void TryPatchFleecaLoanStateFile(int ownerHash, long debtValue, int collateralCount, bool updatePrincipal, bool transferredLoan = false)
     {
         try
         {
@@ -979,16 +1059,16 @@ public class MinotaurScript : Script
             if (parts.Length < 13)
                 return;
 
-            decimal rate = GetEffectiveMinotaurRate(collateralCount);
+            decimal rate = transferredLoan ? TRANSFERRED_DAILY_RATE : GetEffectiveMinotaurRate(collateralCount);
             long dailyDue = (long)Math.Ceiling((decimal)debtValue * rate);
 
             if (updatePrincipal)
                 parts[0] = debtValue.ToString(CultureInfo.InvariantCulture);
 
-            parts[1] = debtValue.ToString(CultureInfo.InvariantCulture);          // remaining debt
-            parts[2] = dailyDue.ToString(CultureInfo.InvariantCulture);           // daily due theo collateral hiện tại
-            parts[3] = debtValue > 0 ? "1" : "0";                                 // active
-            parts[7] = collateralCount > 0 ? "1" : "0";                           // collateral mode
+            parts[1] = debtValue.ToString(CultureInfo.InvariantCulture);             // remaining debt
+            parts[2] = dailyDue.ToString(CultureInfo.InvariantCulture);              // daily due theo collateral hiện tại
+            parts[3] = debtValue > 0 ? "1" : "0";                                    // active
+            parts[7] = transferredLoan ? "0" : (collateralCount > 0 ? "1" : "0");    // transferred loan không cần cọc
 
             File.WriteAllText(file, string.Join("|", parts));
         }
@@ -1011,9 +1091,10 @@ public class MinotaurScript : Script
 public static class MinotaurBankBridge
 {
     private const decimal RATE_3_COLLATERAL = 0.0058m; // 0.58%
-    private const decimal RATE_2_COLLATERAL = 0.0145m; // 1.45%
-    private const decimal RATE_1_COLLATERAL = 0.0363m; // 3.63%
+    private const decimal RATE_2_COLLATERAL = 0.0113m; // 1.13%
+    private const decimal RATE_1_COLLATERAL = 0.0325m; // 3.25%
     private const decimal RATE_0_COLLATERAL = 0.10m;   // 10.00%
+    private const decimal TRANSFERRED_DAILY_RATE = 0.0062m; // 0.62%
 
     private static readonly string DataRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -1076,10 +1157,11 @@ public static class MinotaurBankBridge
         }
     }
 
-    private static bool TryReadFleecaLoanState(int ownerHash, out long remainingDebt, out bool active)
+    private static bool TryReadFleecaLoanState(int ownerHash, out long remainingDebt, out bool active, out bool transferredFromParadigmRoyalty)
     {
         remainingDebt = 0;
         active = false;
+        transferredFromParadigmRoyalty = false;
 
         try
         {
@@ -1093,12 +1175,14 @@ public static class MinotaurBankBridge
 
             remainingDebt = ParseLong(parts[1]);
             active = parts[3].Trim() == "1" && remainingDebt > 0;
+            transferredFromParadigmRoyalty = parts.Length >= 14 && ParseBool(parts[13]);
             return true;
         }
         catch
         {
             remainingDebt = 0;
             active = false;
+            transferredFromParadigmRoyalty = false;
             return false;
         }
     }
@@ -1116,14 +1200,14 @@ public static class MinotaurBankBridge
             if (!TryReadMinotaurActivationState(ownerHash, out bool active) || !active)
                 return false;
 
-            if (!TryReadFleecaLoanState(ownerHash, out long remainingDebt, out bool loanActive) || !loanActive || remainingDebt <= 0)
+            if (!TryReadFleecaLoanState(ownerHash, out long remainingDebt, out bool loanActive, out bool transferredLoan) || !loanActive || remainingDebt <= 0)
             {
                 ClearMinotaurStateForOwner(ownerHash);
                 return false;
             }
 
             int collateralCount = CountCollateralVehicles(ownerHash);
-            rate = GetEffectiveRate(collateralCount);
+            rate = transferredLoan ? TRANSFERRED_DAILY_RATE : GetEffectiveRate(collateralCount);
             return true;
         }
         catch
@@ -1147,7 +1231,7 @@ public static class MinotaurBankBridge
             if (!TryReadMinotaurActivationState(ownerHash, out bool active) || !active)
                 return false;
 
-            if (!TryReadFleecaLoanState(ownerHash, out long remainingDebt, out bool loanActive) || !loanActive || remainingDebt <= 0)
+            if (!TryReadFleecaLoanState(ownerHash, out long remainingDebt, out bool loanActive, out bool transferredLoan) || !loanActive || remainingDebt <= 0)
             {
                 ClearMinotaurStateForOwner(ownerHash);
                 return false;
@@ -1155,8 +1239,8 @@ public static class MinotaurBankBridge
 
             int collateralCount = CountCollateralVehicles(ownerHash);
 
-            debt = remainingDebt;                 // luôn lấy debt hiện tại từ Fleeca
-            rate = GetEffectiveRate(collateralCount); // luôn lấy rate theo collateral hiện tại
+            debt = remainingDebt;   // luôn lấy debt hiện tại từ Fleeca
+            rate = transferredLoan ? TRANSFERRED_DAILY_RATE : GetEffectiveRate(collateralCount);
             return true;
         }
         catch
@@ -1249,16 +1333,46 @@ public static class MinotaurBankBridge
 
     private static decimal GetEffectiveRate(int collateralCount)
     {
-        if (collateralCount >= 3)
-            return RATE_3_COLLATERAL;
+        try
+        {
+            if (CreditDefaultSwapBridge.TryGetOverrideRate(out decimal cdsRate) && cdsRate > 0m)
+                return cdsRate;
+        }
+        catch { }
 
-        if (collateralCount == 2)
-            return RATE_2_COLLATERAL;
-
-        if (collateralCount == 1)
-            return RATE_1_COLLATERAL;
-
+        if (collateralCount >= 3) return RATE_3_COLLATERAL;
+        if (collateralCount == 2) return RATE_2_COLLATERAL;
+        if (collateralCount == 1) return RATE_1_COLLATERAL;
         return RATE_0_COLLATERAL;
+    }
+
+    private static decimal ParseDecimal(string value)
+    {
+        try
+        {
+            if (decimal.TryParse((value ?? string.Empty).Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out decimal n))
+                return n;
+        }
+        catch { }
+        return 0m;
+    }
+
+    private static bool ParseBool(string value)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            string s = value.Trim();
+            return s == "1"
+                || s.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || s.Equals("yes", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static long ParseLong(string value)

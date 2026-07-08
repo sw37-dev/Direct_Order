@@ -677,6 +677,12 @@ public partial class InstantRefill : Script
             return;
         }
 
+        if (_vehicleAddedBannerQueued)
+        {
+            ProcessVehicleAddedBanner();
+            return;
+        }
+
         // Register Ammunation phone contact as soon as the iFruit phone exists.
         EnsureAmmunationContactRegistered();
         EnsureEliteProtectionContactRegistered();

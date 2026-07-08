@@ -53,7 +53,7 @@ public class Hao : Script
     private static string HaoDefaultCustomerName => L("VehicleUpgrade_DefaultCustomerName", "Khách hàng");
 
     private const int GameReadyDelayMs = 2500;
-    private const int FadeOutMs = 1000;
+    private const int FadeOutMs = 2000;
     private const int PostFadeDelayMs = 1000;
 
     private const int UpgradeFeePercent = 33;
@@ -63,6 +63,9 @@ public class Hao : Script
     private const int StreetLootRejectChancePercent = 60;
     private const int StreetLootMinComponentFee = 500000;
     private const int StreetLootMaxComponentFee = 1000000;
+
+    private const string HaoMessageSoundName = "Text_Arrive_Tone";
+    private const string HaoMessageSoundSet = "Phone_SoundSet_Default";
 
     private string _lastUpgradeRejectMessage = null;
 
@@ -149,6 +152,10 @@ public class Hao : Script
         public bool IsPersistentOwnedVehicle;
         public bool IsStreetLootVehicle;
         public bool StreetLootAccepted;
+        public int UpgradeMinutes;
+        public int CompletionHour;
+        public int CompletionMinute;
+        public bool TimeShiftApplied;
     }
 
     private sealed class UpgradeProbeSnapshot
@@ -712,6 +719,7 @@ public class Hao : Script
                     return;
                 }
 
+                // Lúc màn hình còn đang fade out, đồng hồ game đã được đẩy tới thời điểm hoàn tất.
                 GTA.UI.Screen.FadeIn(FadeOutMs);
                 _flowState = FlowState.WaitingFadeIn;
                 _flowStateSince = Game.GameTime;
@@ -761,6 +769,11 @@ public class Hao : Script
             }
 
             ApplyFullUpgradeToVehicle(veh);
+
+            // Nhảy thời gian trong game theo đúng nhánh xe.
+            // Xe chính chủ: 60–75 phút.
+            // Xe lụm vặt:   35–50 phút.
+            ApplyHaoUpgradeTimeShift();
 
             if (_upgradeTarget.IsPersistentOwnedVehicle && _upgradeTarget.Record != null)
             {
@@ -1219,6 +1232,58 @@ public class Hao : Script
             veh.Repair();
             veh.DirtLevel = 0f;
             veh.IsEngineRunning = true;
+        }
+        catch
+        {
+        }
+    }
+
+    private void ApplyHaoUpgradeTimeShift()
+    {
+        try
+        {
+            if (_upgradeTarget == null || _upgradeTarget.TimeShiftApplied)
+                return;
+
+            int minMinutes;
+            int maxMinutes;
+
+            if (_upgradeTarget.IsPersistentOwnedVehicle)
+            {
+                minMinutes = 60;
+                maxMinutes = 75;
+            }
+            else if (_upgradeTarget.IsStreetLootVehicle)
+            {
+                minMinutes = 35;
+                maxMinutes = 50;
+            }
+            else
+            {
+                return;
+            }
+
+            int addMinutes = _rng.Next(minMinutes, maxMinutes + 1);
+
+            int curHour = SafeCall(() => Function.Call<int>(Hash.GET_CLOCK_HOURS), 0);
+            int curMinute = SafeCall(() => Function.Call<int>(Hash.GET_CLOCK_MINUTES), 0);
+
+            int totalMinutes = (curHour * 60) + curMinute + addMinutes;
+            int newHour = (totalMinutes / 60) % 24;
+            int newMinute = totalMinutes % 60;
+
+            _upgradeTarget.UpgradeMinutes = addMinutes;
+            _upgradeTarget.CompletionHour = newHour;
+            _upgradeTarget.CompletionMinute = newMinute;
+            _upgradeTarget.TimeShiftApplied = true;
+
+            try
+            {
+                Function.Call(Hash.SET_CLOCK_TIME, newHour, newMinute, 0);
+            }
+            catch
+            {
+            }
         }
         catch
         {
@@ -1719,6 +1784,7 @@ public class Hao : Script
     {
         try
         {
+            PlayFrontendSound(HaoMessageSoundName, HaoMessageSoundSet);
             Notification.Show(NotificationIcon.Hao, HaoContactName, subject, body);
             return;
         }
@@ -1732,6 +1798,24 @@ public class Hao : Script
         }
         catch
         {
+        }
+    }
+
+    private static void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
         }
     }
 

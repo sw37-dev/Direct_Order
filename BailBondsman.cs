@@ -21,6 +21,9 @@ public class SentenceReduction : Script
     private const int CheckIntervalMs = 1000;
     private const int MenuCooldownMs = 1000;
 
+    private const string BailBondsmanMessageSoundName = "Text_Arrive_Tone";
+    private const string BailBondsmanMessageSoundSet = "Phone_SoundSet_Default";
+
     private static readonly string HackerStateRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "GTA V Mods", "Hacker");
@@ -1062,6 +1065,8 @@ public class SentenceReduction : Script
     {
         try
         {
+            PlayFrontendSound(BailBondsmanMessageSoundName, BailBondsmanMessageSoundSet);
+
             Notification.Show(
                 NotificationIcon.MpFmContact,
                 NotificationBrand,
@@ -1073,6 +1078,24 @@ public class SentenceReduction : Script
             try
             {
                 GTA.UI.Screen.ShowSubtitle($"{title}: {message}", timeout);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
             }
             catch
             {

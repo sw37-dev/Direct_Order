@@ -32,8 +32,8 @@ public class VehicleDeliveryContractEvent : Script
     private const int RollIntervalMs = 420000;           // 7 phút roll 1 lần
     private const int SpawnChancePercent = 13;          // 13% kích hoạt sự kiện
     private const int GameReadyDelayMs = 3000;
-    private const int FadeOutMs = 800;                   // hiệu ứng tắt màn hình
-    private const int PostFadeDelayMs = 900;            // hiệu ứng mở màn hình
+    private const int FadeOutMs = 900;                   // hiệu ứng tắt màn hình
+    private const int PostFadeDelayMs = 1000;            // hiệu ứng mở màn hình
     private const int MarkerAutoCancelMs = 200000;       // 200 giây kết thúc
     private const int MissionTimeoutMs = 330000;         // sự kiện 5 phút 30 giây
     private const int RewardMoneyMin = 500000;
@@ -48,6 +48,9 @@ public class VehicleDeliveryContractEvent : Script
     private const int ContractFailPenaltyDelayMs = 5000;
     private const int ContractFailDamageThresholdPercent = 30;   // 30% hư sẽ kết thúc
     private const int ContractFailPenaltyMaxMoney = 5000000;   // số tiền đền bù tối đa
+
+    private const string VehicleMessageSoundName = "Text_Arrive_Tone";
+    private const string VehicleMessageSoundSet = "Phone_SoundSet_Default";
 
     private static readonly Vector3 MarkerPosition = new Vector3(-28.426650f, -1085.516000f, 26.566130f);
     private static readonly Vector3 PostCutscenePlayerPosition = new Vector3(-25.922160f, -1081.612000f, 26.630220f);
@@ -492,6 +495,8 @@ public class VehicleDeliveryContractEvent : Script
 
     private void ShowFeedMessage(NotificationIcon icon, string sender, string subject, string body)
     {
+        PlayFrontendSound(VehicleMessageSoundName, VehicleMessageSoundSet);
+
         try
         {
             Notification.Show(icon, sender, subject, body);
@@ -505,6 +510,24 @@ public class VehicleDeliveryContractEvent : Script
             catch
             {
                 // Xử lý ngoại lệ nếu cần thiết
+            }
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
             }
         }
     }

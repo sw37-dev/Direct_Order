@@ -282,6 +282,8 @@ public class Hacker : Script
     {
         try
         {
+            PlayFrontendSound("CHECKPOINT_NORMAL", "HUD_MINI_GAME_SOUNDSET");
+
             Notification.Show(
                 NotificationIcon.HumanDefault,
                 PaigeHarrisNotificationBrand,
@@ -292,6 +294,24 @@ public class Hacker : Script
         catch
         {
             GTA.UI.Screen.ShowSubtitle(message, timeout);
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
         }
     }
 
@@ -464,7 +484,6 @@ public class Hacker : Script
             }
 
             // Khi Paige đang chờ hiện help-box / chờ người chơi đồng ý / chờ blackout sau khi đồng ý,
-            // ép tick = 0ms để help-box không bị nhấp nháy và timing luôn chính xác.
             if (_paigeSequenceActive && !_blackoutActive)
             {
                 Interval = 0;
@@ -482,8 +501,6 @@ public class Hacker : Script
 
         if (_paigeSequenceActive)
         {
-            // Nếu vì lý do nào đó blackout khác đã bắt đầu trong lúc chờ Paige,
-            // thì hủy toàn bộ lớp xác nhận để tránh logic treo.
             if (_blackoutActive && _blackoutSource != BlackoutSource.Paige)
             {
                 ResetPaigeSequenceState(true);

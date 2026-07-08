@@ -46,6 +46,70 @@ public partial class InstantRefill
     private static readonly object _steveRandomLock = new object();
     private static readonly Random _steveRandom = new Random();
 
+    private string GetRandomSteveWantedRestoreNotice()
+    {
+        try
+        {
+            string[] notices =
+            {
+            L("SteveWantedRestoreNotice_1", "Chúng tôi nhận lệnh truy nã từ đặc vụ Steve."),
+            L("SteveWantedRestoreNotice_2", "Có người báo án bạn có hoạt động nguy hiểm?"),
+            L("SteveWantedRestoreNotice_3", "Steve tố cáo bạn có hành vi nguy hiểm?")
+        };
+
+            lock (_steveRandomLock)
+            {
+                if (notices == null || notices.Length == 0)
+                    return L("SteveWantedRestoreNotice_Default", "Cảnh sát đang truy nã.");
+
+                return notices[_steveRandom.Next(notices.Length)];
+            }
+        }
+        catch
+        {
+            return L("SteveWantedRestoreNotice_Default", "Cảnh sát đang truy nã.");
+        }
+    }
+
+    private void ShowPoliceNotification(string title, string message, int timeout = 5000)
+    {
+        PlayFrontendSound("5_SEC_WARNING", "HUD_MINI_GAME_SOUNDSET");
+        Wait(140);
+        PlayFrontendSound("5_SEC_WARNING", "HUD_MINI_GAME_SOUNDSET");
+
+        try
+        {
+            const string iconDict = "DIA_POLICE";
+            const string iconName = "DIA_POLICE";
+
+            RequestTextureDict(iconDict);
+
+            Function.Call(Hash.BEGIN_TEXT_COMMAND_THEFEED_POST, "STRING");
+            Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, message);
+
+            Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_MESSAGETEXT,
+                iconDict,
+                iconName,
+                false,
+                0,
+                L("PoliceNotification_ContactName", "Cảnh sát"),
+                title);
+
+            Function.Call(Hash.END_TEXT_COMMAND_THEFEED_POST_TICKER, false, true);
+        }
+        catch
+        {
+            try
+            {
+                Notification.Show($"{title}: {message}");
+            }
+            catch
+            {
+                GTA.UI.Screen.ShowSubtitle($"{title}: {message}", timeout);
+            }
+        }
+    }
+
     private void EnsureSteveHainesContactRegistered()
     {
         try
@@ -614,13 +678,40 @@ public partial class InstantRefill
                 return;
 
             int current = GetCurrentWantedLevel();
+            int newWanted = Math.Min(SteveBribeWantedRestoreCap, current + restoreStars);
 
             // Không vượt quá 5 sao
-            SetWantedLevel(Math.Min(SteveBribeWantedRestoreCap, current + restoreStars));
+            SetWantedLevel(newWanted);
+
+            if (newWanted > current)
+            {
+                ShowPoliceNotification(
+                    T("SteveWantedRestoreTitle", "Truy nã đối tượng"),
+                    GetRandomSteveWantedRestoreNotice());
+            }
         }
         catch
         {
         }
+    }
+
+    private void RequestTextureDict(string dict)
+    {
+        try
+        {
+            if (!Function.Call<bool>(Hash.HAS_STREAMED_TEXTURE_DICT_LOADED, dict))
+            {
+                Function.Call(Hash.REQUEST_STREAMED_TEXTURE_DICT, dict, true);
+
+                int wait = 0;
+                while (!Function.Call<bool>(Hash.HAS_STREAMED_TEXTURE_DICT_LOADED, dict) && wait < 2000)
+                {
+                    Script.Wait(0);
+                    wait += 0;
+                }
+            }
+        }
+        catch { }
     }
 
     private bool IsSteveHainesBlockedByFleecaDebt()

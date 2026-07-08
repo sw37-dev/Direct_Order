@@ -103,6 +103,9 @@ public class Clifford : Script
     private int _fleecaDueWarningStateOwnerHash = 0;
     private int _fleecaDueWarningLastNotifiedCycleDayKey = -1;
 
+    private const string ClifffordMessageSoundName = "Text_Arrive_Tone";
+    private const string ClifffordMessageSoundSet = "Phone_SoundSet_Default";
+
     private readonly string _cliffordContactName = T("Clifford_ContactName", "Clifford");
 
     private sealed class VehicleSnapshot
@@ -1193,6 +1196,8 @@ public class Clifford : Script
 
     private void ShowCliffordNotification(string title, string message, int timeout = 7000)
     {
+        PlayFrontendSound(ClifffordMessageSoundName, ClifffordMessageSoundSet);
+
         try
         {
             Function.Call(Hash.BEGIN_TEXT_COMMAND_THEFEED_POST, "STRING");
@@ -1204,6 +1209,24 @@ public class Clifford : Script
         {
             try { Notification.Show(title + ": " + message); }
             catch { GTA.UI.Screen.ShowSubtitle(title + ": " + message, timeout); }
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
         }
     }
 

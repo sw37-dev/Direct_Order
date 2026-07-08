@@ -530,9 +530,7 @@ public partial class InstantRefill : Script
                         _lockedByFleecaDebt = false;
                 }
             }
-            catch
-            {
-            }
+            catch { }
         }
     }
 }

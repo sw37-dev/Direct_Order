@@ -44,6 +44,15 @@ public class SubmarineDeliveryContractEvent : Script
     private const float SpecialVehicleSpawnHeading = 0f;
     private const uint SpecialVehicleModelHash = 0xA1355F67u;   // Blazer Aqua
 
+    private static readonly Hash SetWeatherNowPersistNative = Hash.SET_WEATHER_TYPE_NOW_PERSIST;
+    private static readonly Hash SetWeatherPersistNative = Hash.SET_WEATHER_TYPE_PERSIST;
+    private static readonly Hash SetOverrideWeatherNative = Hash.SET_OVERRIDE_WEATHER;
+    private static readonly Hash ClearOverrideWeatherNative = Hash.CLEAR_OVERRIDE_WEATHER;
+    private static readonly Hash ClearWeatherTypePersistNative = Hash.CLEAR_WEATHER_TYPE_PERSIST;
+
+    private bool _missionWeatherPrepared = false;
+    private string _weatherBeforeMission = string.Empty;
+
     private const int RewardMoneyMin = 180000;
     private const int RewardMoneyMax = 250000;
 
@@ -53,6 +62,9 @@ public class SubmarineDeliveryContractEvent : Script
     private const float PickupInteractRadius = 2.0f;
     private const float DestinationCompleteRadius = 2.5f;
     private const float DestinationDepthTolerance = 2.0f;
+
+    private const string SubmarineMessageSoundName = "Pin_Centred";
+    private const string SubmarineMessageSoundSet = "DLC_HEIST_BIOLAB_PREP_HACKING_SOUNDS";
 
     private static readonly Vector3 MarkerPosition = new Vector3(-768.996200f, -1327.138000f, 9.599990f);
     private static readonly Vector3 PostCutscenePlayerPosition = new Vector3(-764.503200f, -1375.198000f, 1.595213f);
@@ -189,6 +201,55 @@ public class SubmarineDeliveryContractEvent : Script
         return Language.ReplaceTokens(Language.Get(key, fallback), tokensAndValues);
     }
 
+    private void PrepareMissionWeatherForFadeTransition()
+    {
+        if (_missionWeatherPrepared)
+            return;
+
+        try
+        {
+            _weatherBeforeMission = string.Empty;
+        }
+        catch
+        {
+            _weatherBeforeMission = string.Empty;
+        }
+
+        try
+        {
+            // Reset Weather trước
+            Function.Call(ClearOverrideWeatherNative);
+            Function.Call(ClearWeatherTypePersistNative);
+
+            // Sau đó ép Foggy 1 lần để lúc fadein xong sẽ là Foggy
+            Function.Call(SetWeatherNowPersistNative, "FOGGY");
+            Function.Call(SetWeatherPersistNative, "FOGGY");
+            Function.Call(SetOverrideWeatherNative, "FOGGY");
+
+            _missionWeatherPrepared = true;
+        }
+        catch
+        {
+        }
+    }
+
+    private void RestoreWeatherToReset()
+    {
+        try
+        {
+            Function.Call(ClearOverrideWeatherNative);
+            Function.Call(ClearWeatherTypePersistNative);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _missionWeatherPrepared = false;
+            _weatherBeforeMission = string.Empty;
+        }
+    }
+
     private void UpdateIdleState()
     {
         if (!PrimeAutoHandoverBridge.CanTriggerDeliveryContractsForCurrentCharacter())
@@ -216,6 +277,7 @@ public class SubmarineDeliveryContractEvent : Script
         _missionAcceptedNotificationShown = false;
 
         CreatePickupBlip();
+        PlayFrontendSound(SubmarineMessageSoundName, SubmarineMessageSoundSet);
 
         Notification.Show(
             NotificationIcon.DialASub,
@@ -223,6 +285,24 @@ public class SubmarineDeliveryContractEvent : Script
             LT("Submarine_Subject", "Giao tàu thuyền"),
             LT("SubmarineMarkerEventNotification", "Đang có yêu cầu giao tàu thuyền! Bạn có muốn kiếm thêm thu nhập không?")
         );
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
+        }
     }
 
     private void UpdateMarkerState()
@@ -287,6 +367,8 @@ public class SubmarineDeliveryContractEvent : Script
 
         DeletePickupBlip();
         GTA.UI.Screen.FadeOut(FadeOutMs);
+
+        PrepareMissionWeatherForFadeTransition();
     }
 
     private int RollMissionBaseReward()
@@ -303,6 +385,7 @@ public class SubmarineDeliveryContractEvent : Script
 
         if (!SpawnMission())
         {
+            RestoreWeatherToReset();
             GTA.UI.Screen.FadeIn(FadeOutMs);
             CleanupAllAndReturnToIdle(true);
             return;
@@ -789,6 +872,8 @@ public class SubmarineDeliveryContractEvent : Script
         {
         }
 
+        RestoreWeatherToReset();
+
         ReleaseMissionVehicleWithDeferredCleanup(true);
         QueueSpecialVehicleCleanupAfterMission();
 
@@ -815,6 +900,8 @@ public class SubmarineDeliveryContractEvent : Script
         CleanupPickupObjects();
         ResetDeliveryFlowFlags();
 
+        RestoreWeatherToReset();
+
         _state = EventState.Idle;
         _playerNearMarkerCached = false;
         _stateSince = 0;
@@ -834,6 +921,8 @@ public class SubmarineDeliveryContractEvent : Script
     {
         CleanupPickupObjects();
         CleanupDestinationObjects();
+
+        RestoreWeatherToReset();
 
         try
         {
@@ -1159,6 +1248,8 @@ public class SubmarineDeliveryContractEvent : Script
     {
         CleanupPickupObjects();
         CleanupDestinationObjects();
+
+        RestoreWeatherToReset();
 
         try
         {

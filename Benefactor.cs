@@ -36,22 +36,44 @@ public class BenefactorScript : Script
     private static string BenefactorRentalExpiredText => L("Benefactor_RentalExpiredText", "Thời gian thuê xe đã kết thúc.");
     private static string BenefactorRentalLostNoticeText => L("Benefactor_RentalLostNoticeText",
          "Chiếc phương tiện mà bạn đã thuê từ công ty đâu rồi, sao không thấy trả lại? Nếu không trả sẽ phải đền bù một khoảng tiền ~HUD_COLOUR_DEGEN_YELLOW~{0}~s~ đấy!");
+    private static string BenefactorRentalPenaltySeizureText = L(
+    "Benefactor_RentalPenaltySeizureText",
+    "Vì bạn không đủ tiền đền nên công ty chúng tôi buộc phải tịch thu chút đỉnh từ số tiền hiện tại của bạn. Mong lần sau bạn thuê phương tiện sẽ cẩn thận hơn!");
 
     private const int CONTACT_DIAL_TIMEOUT_MS = 2000;
     private const int RENT_CHECK_INTERVAL_MS = 30000;
     private const int RENT_DURATION_HOURS = 3;
-    private const double RENT_FEE_PERCENT = 0.018;
-    private const int RENTAL_SPAWN_BLIP_DURATION_MS = 10000;
-    private const int RENT_DECAY_STOP_DELETE_DELAY_MS = 15000;
+    private const double RENT_FEE_PERCENT = 0.0175;
+    private const int RENTAL_SPAWN_BLIP_DURATION_MS = 60000;
+    private const int RENT_DECAY_STOP_DELETE_DELAY_MS = 60000;
 
     private const int DAILY_RENTAL_POOL_SIZE = 12;
-    private const int RENT_DECAY_DURATION_MS = 3000;
+    private const int RENT_DECAY_DURATION_MS = 5000;
 
     private const int RENT_LOST_NOTICE_DELAY_MS = 5000;
     private const int RENT_LOST_PENALTY_DELAY_MS = 15000;
-    private const double RENT_LOST_COMPENSATION_PERCENT = 0.75;
     private const int RENT_LOST_WANTED_STAR_GAIN = 2;
     private const int RENT_LOST_WANTED_STAR_MAX = 5;
+
+    private const int RENTAL_STREAM_KEEPALIVE_INTERVAL_MS = 10000;
+    private const int RENTAL_STREAM_PRELOAD_WAIT_MS = 150;
+    private const float RENTAL_STREAM_PRELOAD_RADIUS = 120f;
+    private const float RENTAL_STREAM_KEEPALIVE_DISTANCE = 300f;
+
+    // Trạng thái giữ vùng spawn luôn được load
+    private Vector3 _rentalStreamAnchor = Vector3.Zero;
+    private bool _rentalStreamActive = false;
+    private int _rentalStreamLastPulseGameTime = -1;
+
+    private int _rentalLossCompensation = -1;
+
+    private const float AIR_WANTED_ZONE_RADIUS = 800f;
+    private const int AIR_WANTED_FREEZE_DURATION_MS = 70000;
+
+    private bool _rentedVehicleIsAir = false;
+    private bool _airWantedZoneTriggered = false;
+    private int _airWantedFreezeUntilGameTime = -1;
+    private int _airWantedFrozenLevel = -1;
 
     private int _rentedBasePrice = 0;
     private bool _rentalLossSequenceActive = false;
@@ -60,8 +82,47 @@ public class BenefactorScript : Script
     private int _rentalLossNoticeDueGameTime = -1;
     private int _rentalLossPenaltyDueGameTime = -1;
 
-    private static readonly Vector3 RENT_SPAWN_POS = new Vector3(562.4601f, -1437.666f, 29.03143f);
-    private const float RENT_SPAWN_HEADING = 234.9772f;
+    private const string BenefactorMessageSoundName = "Text_Arrive_Tone";
+    private const string BenefactorMessageSoundSet = "Phone_SoundSet_Default";
+
+    private sealed class SpawnPoint
+    {
+        public Vector3 Position;
+        public float Heading;
+
+        public SpawnPoint(float x, float y, float z, float heading)
+        {
+            Position = new Vector3(x, y, z);
+            Heading = heading;
+        }
+    }
+
+    // Plane / Helicopter
+    private static readonly SpawnPoint[] AIR_RENT_SPAWN_POINTS =
+    {
+        new SpawnPoint(-1432.883f, -2666.713f, 22.7252f, 239.5946f),
+        new SpawnPoint(-980.8219f, -2996.609f, 15.16564f, 61.21362f),
+        new SpawnPoint(-1082.069f, -2908.835f, 15.67712f, 60.14975f),
+    };
+
+    // Boats / Class 14
+    private static readonly SpawnPoint[] BOAT_RENT_SPAWN_POINTS =
+    {
+    new SpawnPoint(-846.8261f, -1362.792f, -0.08653483f, 105.8724f),
+    new SpawnPoint(-843.0363f, -1372.011f, -0.08653766f, 111.5746f),
+    new SpawnPoint(-836.4541f, -1388.954f, -0.08653696f, 108.9818f),
+    new SpawnPoint(-839.4794f, -1380.607f, -0.08653706f, 109.0283f),
+    new SpawnPoint(-849.943f, -1354.28f, -0.08640999f, 108.0519f),
+};
+
+    // All other vehicle classes
+    private static readonly SpawnPoint[] GROUND_RENT_SPAWN_POINTS =
+    {
+        new SpawnPoint(-167.0612f, -625.1726f, 31.92324f, 69.95976f),
+        new SpawnPoint(-311.5956f, -771.7511f, 47.5835f, 342.8295f),
+        new SpawnPoint(-357.8903f, -756.9161f, 43.12815f, 88.4092f),
+        new SpawnPoint(-156.6779f, -637.7577f, 31.67542f, 250.8911f),
+    };
 
     private readonly ObjectPool _menuPool = new ObjectPool();
     private NativeMenu _mainMenu;
@@ -142,9 +203,17 @@ public class BenefactorScript : Script
             ProcessPendingCall();
             UpdateRentalLifecycle();
             UpdateRentalSpawnBlipLifecycle();
+            PulseRentalStreamAnchor();
+
+            // GIỮ DÒNG NÀY
+            UpdateAirVehicleWantedEffect();
 
             bool menuVisible = _mainMenu != null && _mainMenu.Visible;
-            bool needsFastTick = menuVisible || _callPending || _rentalExpiryTriggered;
+            bool needsFastTick =
+                menuVisible ||
+                _callPending ||
+                _rentalExpiryTriggered ||
+                IsAirWantedFreezeActive();
 
             if (menuVisible)
                 _menuPool.Process();
@@ -176,6 +245,90 @@ public class BenefactorScript : Script
         catch (Exception ex)
         {
             Log("OnKeyDown failed: " + ex);
+        }
+    }
+
+    private void StartRentalStreamAnchor(Vector3 position)
+    {
+        try
+        {
+            _rentalStreamAnchor = position;
+            _rentalStreamActive = true;
+            _rentalStreamLastPulseGameTime = -RENTAL_STREAM_KEEPALIVE_INTERVAL_MS;
+
+            // Nạp ngay một nhịp đầu tiên
+            PulseRentalStreamAnchor(true);
+        }
+        catch (Exception ex)
+        {
+            Log("StartRentalStreamAnchor failed: " + ex);
+        }
+    }
+
+    private void StopRentalStreamAnchor()
+    {
+        try
+        {
+            _rentalStreamActive = false;
+            _rentalStreamAnchor = Vector3.Zero;
+            _rentalStreamLastPulseGameTime = -1;
+
+            try
+            {
+                Function.Call(Hash.NEW_LOAD_SCENE_STOP);
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            Log("StopRentalStreamAnchor failed: " + ex);
+        }
+    }
+
+    private void PrewarmSpawnArea(Vector3 position)
+    {
+        try
+        {
+            Function.Call(Hash.REQUEST_COLLISION_AT_COORD, position.X, position.Y, position.Z);
+
+            Function.Call(Hash.NEW_LOAD_SCENE_START_SPHERE,
+                position.X, position.Y, position.Z,
+                RENTAL_STREAM_PRELOAD_RADIUS, 0);
+
+            Script.Wait(RENTAL_STREAM_PRELOAD_WAIT_MS);
+
+            Function.Call(Hash.NEW_LOAD_SCENE_STOP);
+        }
+        catch (Exception ex)
+        {
+            Log("PrewarmSpawnArea failed: " + ex);
+        }
+    }
+
+    private void PulseRentalStreamAnchor(bool force = false)
+    {
+        try
+        {
+            if (!_rentalStreamActive || _rentalStreamAnchor == Vector3.Zero)
+                return;
+
+            if (!force && Game.GameTime - _rentalStreamLastPulseGameTime < RENTAL_STREAM_KEEPALIVE_INTERVAL_MS)
+                return;
+
+            Ped player = Game.Player.Character;
+            if (!force && player != null && player.Exists() && !player.IsDead)
+            {
+                float dist2 = player.Position.DistanceToSquared(_rentalStreamAnchor);
+                if (dist2 <= RENTAL_STREAM_KEEPALIVE_DISTANCE * RENTAL_STREAM_KEEPALIVE_DISTANCE)
+                    return;
+            }
+
+            _rentalStreamLastPulseGameTime = Game.GameTime;
+            Function.Call(Hash.REQUEST_COLLISION_AT_COORD, _rentalStreamAnchor.X, _rentalStreamAnchor.Y, _rentalStreamAnchor.Z);
+        }
+        catch (Exception ex)
+        {
+            Log("PulseRentalStreamAnchor failed: " + ex);
         }
     }
 
@@ -252,13 +405,221 @@ public class BenefactorScript : Script
             if (basePrice <= 0)
                 return 0;
 
-            long amount = ((long)Math.Max(0, basePrice) * 75L) / 100L;
-            return (int)Math.Max(0L, amount);
+            decimal amount = decimal.Round(
+                (decimal)Math.Max(0, basePrice) * 0.75m,
+                0,
+                MidpointRounding.AwayFromZero);
+
+            return (int)Math.Max(0m, amount);
         }
         catch
         {
             return 0;
         }
+    }
+
+    private static bool IsAirVehicleClassName(string cls)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(cls))
+                return false;
+
+            string s = cls.Trim().ToLowerInvariant();
+
+            return s.Contains("aircraft")
+                || s.Contains("helicopter")
+                || s.Contains("seaplane")
+                || s.Contains("flying")
+                || s.Contains("jet")
+                || s.Contains("bomber");
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool IsAirWantedFreezeActive()
+    {
+        try
+        {
+            return _airWantedFrozenLevel >= 0
+                && _airWantedFreezeUntilGameTime >= 0
+                && Game.GameTime < _airWantedFreezeUntilGameTime;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void StartAirWantedFreeze(int wantedLevel)
+    {
+        try
+        {
+            _airWantedFrozenLevel = Math.Max(0, Math.Min(5, wantedLevel));
+            _airWantedFreezeUntilGameTime = Game.GameTime + AIR_WANTED_FREEZE_DURATION_MS;
+        }
+        catch { }
+    }
+
+    private void ClearAirWantedFreeze()
+    {
+        _airWantedFrozenLevel = -1;
+        _airWantedFreezeUntilGameTime = -1;
+        ActivateAirWantedImmunity(false);
+    }
+
+    private void UpdateAirVehicleWantedEffect()
+    {
+        try
+        {
+            if (!IsRentalActive())
+                return;
+
+            if (!_rentedVehicleIsAir)
+                return;
+
+            if (_rentedVehicle == null || !_rentedVehicle.Exists())
+                return;
+
+            // Đang trong thời gian miễn truy nã
+            if (IsAirWantedFreezeActive())
+            {
+                ForceWantedLevel(0);
+                ActivateAirWantedImmunity(true);
+
+                if (Game.GameTime >= _airWantedFreezeUntilGameTime)
+                    ClearAirWantedFreeze();
+
+                return;
+            }
+
+            // Đã kích hoạt rồi thì thôi
+            if (_airWantedZoneTriggered)
+                return;
+
+            // Trong phạm vi 800m của phương tiện thuê
+            if (!IsPlayerWithinAirWantedZone())
+                return;
+
+            ApplyAirVehicleWantedReduction();
+        }
+        catch (Exception ex)
+        {
+            Log("UpdateAirVehicleWantedEffect failed: " + ex);
+        }
+    }
+
+    private bool IsPlayerWithinAirWantedZone()
+    {
+        try
+        {
+            Ped player = Game.Player.Character;
+
+            if (player == null || !player.Exists() || player.IsDead)
+                return false;
+
+            if (_rentedVehicle == null || !_rentedVehicle.Exists())
+                return false;
+
+            return player.Position.DistanceToSquared(_rentedVehicle.Position)
+                <= AIR_WANTED_ZONE_RADIUS * AIR_WANTED_ZONE_RADIUS;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ApplyAirVehicleWantedReduction()
+    {
+        try
+        {
+            // Xóa toàn bộ sao truy nã
+            ForceWantedLevel(0);
+
+            try
+            {
+                int playerId = Function.Call<int>(Hash.PLAYER_ID);
+
+                Function.Call(Hash.CLEAR_PLAYER_WANTED_LEVEL, playerId);
+                Function.Call(Hash.SET_PLAYER_WANTED_LEVEL, playerId, 0, false);
+                Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, playerId, false);
+            }
+            catch { }
+
+            // Never Wanted 70 giây
+            StartAirWantedFreeze(0);
+            ActivateAirWantedImmunity(true);
+
+            // Chỉ kích hoạt 1 lần
+            _airWantedZoneTriggered = true;
+        }
+        catch (Exception ex)
+        {
+            Log("ApplyAirVehicleWantedReduction failed: " + ex);
+        }
+    }
+
+    private static int SafeGetWantedLevel()
+    {
+        try
+        {
+            return Math.Max(0, Game.Player.WantedLevel);
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static void ForceWantedLevel(int wantedLevel)
+    {
+        try
+        {
+            wantedLevel = Math.Max(0, Math.Min(5, wantedLevel));
+
+            try { Game.Player.WantedLevel = wantedLevel; } catch { }
+
+            try
+            {
+                if (wantedLevel <= 0)
+                {
+                    Function.Call(Hash.CLEAR_PLAYER_WANTED_LEVEL, Game.Player);
+                    Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, Game.Player, false);
+                    return;
+                }
+
+                Function.Call(Hash.SET_PLAYER_WANTED_LEVEL, Game.Player, wantedLevel, false);
+                Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, Game.Player, false);
+            }
+            catch { }
+        }
+        catch { }
+    }
+
+    private void ActivateAirWantedImmunity(bool enabled)
+    {
+        try
+        {
+            int playerId = Function.Call<int>(Hash.PLAYER_ID);
+
+            Function.Call(Hash.SET_POLICE_IGNORE_PLAYER, playerId, enabled);
+            Function.Call(Hash.SET_DISPATCH_COPS_FOR_PLAYER, playerId, !enabled);
+
+            if (enabled)
+            {
+                Function.Call(Hash.CLEAR_PLAYER_WANTED_LEVEL, playerId);
+                Function.Call(Hash.SET_PLAYER_WANTED_LEVEL, playerId, 0, false);
+                Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, playerId, false);
+
+                // Ghì liên tục để vùng cấm như sân bay không tự bật sao lại ngay
+                try { Game.Player.WantedLevel = 0; } catch { }
+            }
+        }
+        catch { }
     }
 
     private bool IsRentalVehicleDestroyedOrMissing()
@@ -303,6 +664,7 @@ public class BenefactorScript : Script
             _rentalLossSequenceActive = true;
             _rentalLossNoticeSent = false;
             _rentalLossPenaltyApplied = false;
+            _rentalLossCompensation = ComputeRentalCompensation(_rentedBasePrice);
             _rentalLossNoticeDueGameTime = Game.GameTime + RENT_LOST_NOTICE_DELAY_MS;
             _rentalLossPenaltyDueGameTime = -1;
             _rentalCleanupStartGameTime = -1;
@@ -323,12 +685,17 @@ public class BenefactorScript : Script
             if (_rentalLossPenaltyApplied)
                 return;
 
+            int compensation = _rentalLossCompensation > 0
+                ? _rentalLossCompensation
+                : ComputeRentalCompensation(_rentedBasePrice);
+
+            if (compensation <= 0)
+                compensation = 0;
+
             if (!_rentalLossNoticeSent)
             {
                 if (Game.GameTime < _rentalLossNoticeDueGameTime)
                     return;
-
-                int compensation = ComputeRentalCompensation(_rentedBasePrice);
 
                 ShowBenefactorNotification(
                     string.Format(
@@ -359,7 +726,10 @@ public class BenefactorScript : Script
     {
         try
         {
-            int compensation = ComputeRentalCompensation(_rentedBasePrice);
+            int compensation = _rentalLossCompensation > 0
+                ? _rentalLossCompensation
+                : ComputeRentalCompensation(_rentedBasePrice);
+
             if (compensation <= 0)
                 return;
 
@@ -369,34 +739,29 @@ public class BenefactorScript : Script
                 return;
             }
 
+            int currentMoney = 0;
+            try { currentMoney = Math.Max(0, Game.Player.Money); } catch { currentMoney = 0; }
+
+            int moneyToRemove = currentMoney / 2;
+            int remainingMoney = currentMoney - moneyToRemove;
+
+            Game.Player.Money = remainingMoney;
+
+            int currentWanted = 0;
+            try { currentWanted = Game.Player.WantedLevel; } catch { }
+
+            int newWanted = Math.Min(RENT_LOST_WANTED_STAR_MAX, currentWanted + RENT_LOST_WANTED_STAR_GAIN);
+
+            try { Game.Player.WantedLevel = newWanted; } catch { }
+
             try
             {
-                int currentMoney = 0;
-                try { currentMoney = Math.Max(0, Game.Player.Money); } catch { currentMoney = 0; }
-
-                int moneyToRemove = currentMoney / 2;
-                int remainingMoney = currentMoney - moneyToRemove;
-
-                Game.Player.Money = remainingMoney;
-
-                int currentWanted = 0;
-                try { currentWanted = Game.Player.WantedLevel; } catch { }
-
-                int newWanted = Math.Min(RENT_LOST_WANTED_STAR_MAX, currentWanted + RENT_LOST_WANTED_STAR_GAIN);
-
-                try { Game.Player.WantedLevel = newWanted; } catch { }
-
-                try
-                {
-                    Function.Call(Hash.SET_PLAYER_WANTED_LEVEL, Game.Player, newWanted, false);
-                    Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, Game.Player, false);
-                }
-                catch { }
+                Function.Call(Hash.SET_PLAYER_WANTED_LEVEL, Game.Player, newWanted, false);
+                Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, Game.Player, false);
             }
-            catch (Exception ex)
-            {
-                Log("ApplyLostRentalPenalty wanted-level failed: " + ex);
-            }
+            catch { }
+
+            ShowBenefactorNotification(BenefactorRentalPenaltySeizureText);
         }
         catch (Exception ex)
         {
@@ -492,6 +857,106 @@ public class BenefactorScript : Script
         catch
         {
             return 0;
+        }
+    }
+
+    private static bool IsAirVehicleClass(int vehicleClass)
+    {
+        return vehicleClass == 15 || vehicleClass == 16; // Helicopters / Planes
+    }
+
+    private bool IsExpiredRentalAirVehicle()
+    {
+        try
+        {
+            return _rentedVehicleIsAir
+                && _rentedVehicle != null
+                && _rentedVehicle.Exists();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsEntityOnGroundSafe(Vehicle veh)
+    {
+        try
+        {
+            if (veh == null || !veh.Exists())
+                return false;
+
+            return !veh.IsInAir;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsBoatVehicleClass(int vehicleClass)
+    {
+        return vehicleClass == 14; // Boats
+    }
+
+    private static int GetVehicleClassFromModel(Model model)
+    {
+        try
+        {
+            if (model == null || !model.IsValid || !model.IsInCdImage)
+                return -1;
+
+            return SafeCallInt(
+                () => Function.Call<int>(Hash.GET_VEHICLE_CLASS_FROM_NAME, model.Hash),
+                -1);
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    private bool IsPlaneOrHeliModel(Model model)
+    {
+        try
+        {
+            int vehicleClass = GetVehicleClassFromModel(model);
+            return IsAirVehicleClass(vehicleClass);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private SpawnPoint GetRandomRentalSpawnPoint(Model model)
+    {
+        try
+        {
+            int vehicleClass = GetVehicleClassFromModel(model);
+
+            SpawnPoint[] pool;
+            if (IsBoatVehicleClass(vehicleClass))
+            {
+                pool = BOAT_RENT_SPAWN_POINTS;
+            }
+            else if (IsAirVehicleClass(vehicleClass))
+            {
+                pool = AIR_RENT_SPAWN_POINTS;
+            }
+            else
+            {
+                pool = GROUND_RENT_SPAWN_POINTS;
+            }
+
+            if (pool == null || pool.Length == 0)
+                return new SpawnPoint(-167.0612f, -625.1726f, 31.92324f, 69.95976f);
+
+            return pool[_rng.Next(pool.Length)];
+        }
+        catch
+        {
+            return new SpawnPoint(-167.0612f, -625.1726f, 31.92324f, 69.95976f);
         }
     }
 
@@ -886,6 +1351,7 @@ public class BenefactorScript : Script
             Game.Player.Money -= _selectedFee;
             _rentedVehicle = vehicle;
             _rentedBasePrice = Math.Max(0, _selectedBasePrice);
+            _rentalLossCompensation = ComputeRentalCompensation(_rentedBasePrice);
 
             _rentalLossSequenceActive = false;
             _rentalLossNoticeSent = false;
@@ -938,7 +1404,12 @@ public class BenefactorScript : Script
             if (!model.IsLoaded)
                 return false;
 
-            Vehicle veh = World.CreateVehicle(model, RENT_SPAWN_POS, RENT_SPAWN_HEADING);
+            SpawnPoint spawnPoint = GetRandomRentalSpawnPoint(model);
+
+            // Nạp map/collision trước khi tạo xe
+            PrewarmSpawnArea(spawnPoint.Position);
+
+            Vehicle veh = World.CreateVehicle(model, spawnPoint.Position, spawnPoint.Heading);
             if (veh == null || !veh.Exists())
                 return false;
 
@@ -948,16 +1419,19 @@ public class BenefactorScript : Script
                 veh.Repair();
                 veh.DirtLevel = 0f;
                 veh.IsEngineRunning = true;
-                veh.IsPersistent = false;
+                veh.IsPersistent = true;
                 veh.LockStatus = VehicleLockStatus.Unlocked;
+
+                Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, veh.Handle, true, true);
+                Function.Call(Hash.SET_VEHICLE_HAS_BEEN_OWNED_BY_PLAYER, veh.Handle, true);
             }
             catch { }
 
-            try
-            {
-                Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, veh.Handle, true, true);
-            }
-            catch { }
+            _rentedVehicleIsAir = IsAirVehicleClassName(entry?.Class) || IsPlaneOrHeliModel(model);
+            _airWantedZoneTriggered = false;
+
+            // Giữ vùng spawn này được streamed trong suốt thời gian thuê
+            StartRentalStreamAnchor(spawnPoint.Position);
 
             CreateRentalSpawnBlip(veh);
 
@@ -968,8 +1442,35 @@ public class BenefactorScript : Script
         {
             Log("TrySpawnRentalVehicle failed: " + ex);
             spawned = null;
+            _rentedVehicleIsAir = false;
+            _airWantedZoneTriggered = false;
+            StopRentalStreamAnchor();
             return false;
         }
+    }
+
+    private void KeepRentedVehicleAlive()
+    {
+        try
+        {
+            if (_rentedVehicle == null || !_rentedVehicle.Exists())
+                return;
+
+            _rentedVehicle.IsPersistent = true;
+
+            try
+            {
+                Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, _rentedVehicle.Handle, true, true);
+            }
+            catch { }
+
+            try
+            {
+                Function.Call(Hash.SET_VEHICLE_HAS_BEEN_OWNED_BY_PLAYER, _rentedVehicle.Handle, true);
+            }
+            catch { }
+        }
+        catch { }
     }
 
     private void CreateRentalSpawnBlip(Vehicle veh)
@@ -1117,8 +1618,19 @@ public class BenefactorScript : Script
                 _rentalLossNoticeDueGameTime = -1;
                 _rentalLossPenaltyDueGameTime = -1;
                 _rentalCleanupStartGameTime = -1;
+
+                _airWantedZoneTriggered = false;
+                _rentedVehicleIsAir = false;
+                ClearAirWantedFreeze();
+
+                StopRentalStreamAnchor();
                 return;
             }
+
+            KeepRentedVehicleAlive();
+
+            // Giữ khu vực spawn được nạp theo nhịp thưa
+            PulseRentalStreamAnchor();
 
             if (!_rentalEndsAt.HasValue)
                 return;
@@ -1186,6 +1698,28 @@ public class BenefactorScript : Script
             }
             catch { }
 
+            // Thêm đoạn mã xử lý vật lý cho máy bay sau khi tắt engine / undriveable
+            if (_rentedVehicleIsAir)
+            {
+                try
+                {
+                    Function.Call(Hash.SET_ENTITY_HAS_GRAVITY, _rentedVehicle.Handle, true);
+                }
+                catch { }
+
+                try
+                {
+                    Function.Call(Hash.SET_ENTITY_DYNAMIC, _rentedVehicle.Handle, true);
+                }
+                catch { }
+
+                try
+                {
+                    Function.Call(Hash.ACTIVATE_PHYSICS, _rentedVehicle.Handle);
+                }
+                catch { }
+            }
+
             try
             {
                 Function.Call(Hash.SET_VEHICLE_DOORS_LOCKED, _rentedVehicle.Handle, 2);
@@ -1233,14 +1767,85 @@ public class BenefactorScript : Script
             float elapsed = Game.GameTime - _rentalDecayStartedAt;
             float t = Math.Max(0f, Math.Min(1f, elapsed / (float)RENT_DECAY_DURATION_MS));
 
-            float factor = 1f - t;
-            factor = factor * factor;
+            bool isAirVehicle = IsExpiredRentalAirVehicle();
 
-            try
+            if (isAirVehicle)
             {
-                _rentedVehicle.Velocity = _rentalDecayStartVelocity * factor;
+                try
+                {
+                    Function.Call(Hash.SET_ENTITY_HAS_GRAVITY, _rentedVehicle.Handle, true);
+                }
+                catch { }
+
+                try
+                {
+                    Function.Call(Hash.SET_ENTITY_DYNAMIC, _rentedVehicle.Handle, true);
+                }
+                catch { }
+
+                try
+                {
+                    Function.Call(Hash.ACTIVATE_PHYSICS, _rentedVehicle.Handle);
+                }
+                catch { }
+
+                Vector3 currentVelocity = Vector3.Zero;
+                try
+                {
+                    currentVelocity = _rentedVehicle.Velocity;
+                }
+                catch { }
+
+                // Giảm dần lực ngang để máy bay/trực thăng không còn bay tiếp,
+                // nhưng vẫn giữ trọng lực để hạ xuống mượt.
+                float horizontalFactor = 1f - (0.85f * t);
+                if (horizontalFactor < 0f)
+                    horizontalFactor = 0f;
+
+                // Tạo tốc độ rơi xuống tăng dần theo thời gian, nhưng vẫn mềm.
+                float targetDownSpeed = -(0.25f + (3.5f * t));
+                if (targetDownSpeed < -4.5f)
+                    targetDownSpeed = -4.5f;
+
+                Vector3 newVelocity = new Vector3(
+                    currentVelocity.X * horizontalFactor,
+                    currentVelocity.Y * horizontalFactor,
+                    currentVelocity.Z);
+
+                // Ép Z xuống thấp dần để mất lift và hạ từ từ.
+                if (newVelocity.Z > targetDownSpeed)
+                    newVelocity.Z = targetDownSpeed;
+
+                try
+                {
+                    if (!IsEntityOnGroundSafe(_rentedVehicle))
+                        _rentedVehicle.Velocity = newVelocity;
+                    else
+                        _rentedVehicle.Velocity = Vector3.Zero;
+                }
+                catch { }
             }
-            catch { }
+            else
+            {
+                // Xe thường: giữ nguyên logic cũ
+                float factor = 1f - t;
+                factor = factor * factor;
+
+                try
+                {
+                    _rentedVehicle.Velocity = _rentalDecayStartVelocity * factor;
+                }
+                catch { }
+
+                if (t >= 1f || _rentedVehicle.Velocity.Length() <= 0.03f)
+                {
+                    try
+                    {
+                        _rentedVehicle.Velocity = Vector3.Zero;
+                    }
+                    catch { }
+                }
+            }
 
             bool playerInsideRental = false;
             try
@@ -1250,15 +1855,6 @@ public class BenefactorScript : Script
                     playerInsideRental = true;
             }
             catch { }
-
-            if (t >= 1f || _rentedVehicle.Velocity.Length() <= 0.03f)
-            {
-                try
-                {
-                    _rentedVehicle.Velocity = Vector3.Zero;
-                }
-                catch { }
-            }
 
             if (!playerInsideRental)
             {
@@ -1306,6 +1902,7 @@ public class BenefactorScript : Script
         }
         finally
         {
+            StopRentalStreamAnchor();
             ClearRentalState();
         }
     }
@@ -1313,6 +1910,8 @@ public class BenefactorScript : Script
     private void ClearRentalState()
     {
         ClearRentalSpawnBlip();
+        StopRentalStreamAnchor();
+
         _rentedVehicle = null;
         _rentalStartedAt = null;
         _rentalEndsAt = null;
@@ -1321,16 +1920,24 @@ public class BenefactorScript : Script
         _rentalDecayStartedAt = -1;
         _rentalDecayStartVelocity = Vector3.Zero;
 
+        _rentedVehicleIsAir = false;
+        _airWantedZoneTriggered = false;
+        ClearAirWantedFreeze();
+
         _rentedBasePrice = 0;
         _rentalLossSequenceActive = false;
         _rentalLossNoticeSent = false;
         _rentalLossPenaltyApplied = false;
         _rentalLossNoticeDueGameTime = -1;
         _rentalLossPenaltyDueGameTime = -1;
+
+        _rentalLossCompensation = -1;
     }
 
     private void ShowBenefactorNotification(string message)
     {
+        PlayFrontendSound(BenefactorMessageSoundName, BenefactorMessageSoundSet);
+
         try
         {
             Notification.Show(NotificationIcon.Bikesite, BenefactorContactName, L("Benefactor_NotificationTitle", "Dịch vụ thuê xe"), message);
@@ -1338,6 +1945,24 @@ public class BenefactorScript : Script
         catch
         {
             try { GTA.UI.Screen.ShowSubtitle(message, 3000); } catch { }
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
         }
     }
 

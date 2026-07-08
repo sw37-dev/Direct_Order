@@ -40,17 +40,30 @@ public class Violet : Script
     private const int TrialDurationMs = 200000;      // 200 giây
     private const float SearchCenterDistance = 550f; // tâm vùng cách player 550m
     private const float SearchRadius = 300f;         // vùng tìm kiếm chỉ 300m
-    private const int MinSpawnVehicles = 3;
-    private const int MaxSpawnVehicles = 4;
+    private const int MinSpawnVehicles = 2;
+    private const int MaxSpawnVehicles = 3;
 
     private const int ContactAnswerDelayMs = 750;
     private const int ModelLoadTimeoutMs = 3000;
     private const int SpawnAttemptsPerVehicle = 24;
-    private const float MinVehicleSeparation = 50f;
+    private const float MinVehicleSeparation = 70f;
 
     private const int VioletTrialWarningRemainingMs = 25000;
+    private const float VioletTrialTimerX = 0.865f;
+    private const float VioletTrialTimerY = 0.850f;
+    private const float VioletTrialTimerScale = 1.25f;
+    private const float VioletTrialBarX = 0.865f;
+    private const float VioletTrialBarY = 0.800f;
+    private const float VioletTrialBarWidth = 0.140f;
+    private const float VioletTrialBarHeight = 0.030f;
+    private const int VioletDoubleWarningSoundDelayMs = 140;
     private const double VioletSpawnIconChance = 0.05;
     private const int VioletDailyMaxUses = 3;
+
+    private const int FranklinHash = -1692214353;
+    private const int MichaelHash = 225514697;
+    private const int TrevorHash = -1686040670;
+    private const int SearchAreaBlipAlpha = 98;
 
     private int _violetDailyOwnerHash = 0;
     private int _violetDailyDayKey = -1;
@@ -58,6 +71,8 @@ public class Violet : Script
 
     private bool _violet25SecWarningSent = false;
     private bool _violetTrialIconsEnabled = false;
+    private int _violetLastWarningSoundSecond = -1;
+    private int _violetPendingWarningSoundAt = -1;
 
     private readonly Random _rng = new Random();
 
@@ -451,7 +466,7 @@ public class Violet : Script
         _singleton = this;
         _isPrimaryInstance = true;
 
-        Interval = 500;
+        Interval = 0; // cần tick mỗi frame để timer HUD hiển thị liên tục
         Tick += OnTick;
 
         EnsureVioletContactRegistered();
@@ -486,10 +501,16 @@ public class Violet : Script
                     );
                 }
 
+                UpdateVioletWarningCountdownSound(remainingMs);
+
                 if (Game.GameTime >= _trialEndGameTime)
                     EndTrial();
                 else
+                {
                     KeepContactDisabledWhileActive();
+                    DrawVioletTrialCountdownTimer(remainingMs);
+                    DrawVioletTrialCountdownBar(remainingMs);
+                }
             }
             else
             {
@@ -589,9 +610,148 @@ public class Violet : Script
                     c.Active = true;
             }
         }
+        catch { }
+    }
+
+    private void DrawVioletTrialCountdownTimer(int remainingMs)
+    {
+        try
+        {
+            if (!_trialActive || remainingMs <= 0)
+                return;
+
+            int totalSeconds = (remainingMs + 999) / 1000;
+            if (totalSeconds < 0)
+                totalSeconds = 0;
+
+            int minutes = totalSeconds / 60;
+            int seconds = totalSeconds % 60;
+
+            string timerText = remainingMs <= VioletTrialWarningRemainingMs
+                ? string.Format(CultureInfo.InvariantCulture, "~w~{0:00} : ~r~{1:00}~s~", minutes, seconds)
+                : string.Format(CultureInfo.InvariantCulture, "~w~{0:00} : {1:00}~s~", minutes, seconds);
+
+            DrawCenteredHudText(timerText, VioletTrialTimerX, VioletTrialTimerY, VioletTrialTimerScale);
+        }
         catch
         {
         }
+    }
+
+    private static void DrawCenteredHudText(string text, float x, float y, float scale)
+    {
+        try
+        {
+            Function.Call(Hash.SET_TEXT_FONT, 0);
+            Function.Call(Hash.SET_TEXT_SCALE, scale, scale);
+            Function.Call(Hash.SET_TEXT_COLOUR, 255, 255, 255, 255);
+            Function.Call(Hash.SET_TEXT_CENTRE, true);
+            Function.Call(Hash.SET_TEXT_PROPORTIONAL, true);
+            Function.Call(Hash.SET_TEXT_OUTLINE);
+            Function.Call(Hash.BEGIN_TEXT_COMMAND_DISPLAY_TEXT, "STRING");
+            Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, text);
+            Function.Call(Hash.END_TEXT_COMMAND_DISPLAY_TEXT, x, y);
+        }
+        catch { }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+        }
+        catch { }
+    }
+
+    private void UpdateVioletWarningCountdownSound(int remainingMs)
+    {
+        try
+        {
+            if (!_trialActive || remainingMs <= 0)
+            {
+                _violetLastWarningSoundSecond = -1;
+                _violetPendingWarningSoundAt = -1;
+                return;
+            }
+
+            if (_violetPendingWarningSoundAt >= 0 && Game.GameTime >= _violetPendingWarningSoundAt)
+            {
+                _violetPendingWarningSoundAt = -1;
+                PlayFrontendSound("5_SEC_WARNING", "HUD_MINI_GAME_SOUNDSET");
+            }
+
+            int totalSeconds = (remainingMs + 999) / 1000;
+
+            if (totalSeconds > 25)
+            {
+                _violetLastWarningSoundSecond = -1;
+                _violetPendingWarningSoundAt = -1;
+                return;
+            }
+
+            if (totalSeconds != _violetLastWarningSoundSecond)
+            {
+                _violetLastWarningSoundSecond = totalSeconds;
+                PlayFrontendSound("5_SEC_WARNING", "HUD_MINI_GAME_SOUNDSET");
+
+                if (totalSeconds <= 10)
+                    _violetPendingWarningSoundAt = Game.GameTime + VioletDoubleWarningSoundDelayMs;
+                else
+                    _violetPendingWarningSoundAt = -1;
+            }
+        }
+        catch { }
+    }
+
+    private void DrawVioletTrialCountdownBar(int remainingMs)
+    {
+        try
+        {
+            if (!_trialActive || remainingMs <= 0)
+                return;
+
+            float progress = remainingMs / (float)TrialDurationMs;
+            if (progress < 0f) progress = 0f;
+            if (progress > 1f) progress = 1f;
+
+            int r, g, b;
+            if (remainingMs <= 10000)
+            {
+                r = 220; g = 45; b = 45;      // đỏ
+            }
+            else if (remainingMs <= VioletTrialWarningRemainingMs)
+            {
+                r = 245; g = 195; b = 35;     // vàng
+            }
+            else
+            {
+                r = 65; g = 210; b = 85;      // xanh lá
+            }
+
+            float left = VioletTrialBarX - (VioletTrialBarWidth * 0.5f);
+            float fillWidth = VioletTrialBarWidth * progress;
+            if (fillWidth < 0.001f)
+                fillWidth = 0.001f;
+
+            // nền
+            DrawHudRect(VioletTrialBarX, VioletTrialBarY, VioletTrialBarWidth + 0.003f, VioletTrialBarHeight + 0.003f, 0, 0, 0, 175);
+            DrawHudRect(VioletTrialBarX, VioletTrialBarY, VioletTrialBarWidth, VioletTrialBarHeight, 18, 18, 18, 180);
+
+            // phần đã còn lại (shrink từ phải sang trái)
+            float fillX = left + (fillWidth * 0.5f);
+            DrawHudRect(fillX, VioletTrialBarY, fillWidth, VioletTrialBarHeight, r, g, b, 220);
+        }
+        catch { }
+    }
+
+    private static void DrawHudRect(float x, float y, float w, float h, int r, int g, int b, int a)
+    {
+        try
+        {
+            Function.Call(Hash.DRAW_RECT, x, y, w, h, r, g, b, a);
+        }
+        catch { }
     }
 
     private void OnVioletAnswered(iFruitContact sender)
@@ -668,6 +828,8 @@ public class Violet : Script
             _trialEndGameTime = Game.GameTime + TrialDurationMs;
             _searchCenter = center;
             _violet25SecWarningSent = false;
+            _violetLastWarningSoundSecond = -1;
+            _violetPendingWarningSoundAt = -1;
 
             _violetTrialIconsEnabled = (_rng.NextDouble() < VioletSpawnIconChance);
 
@@ -682,7 +844,7 @@ public class Violet : Script
             ClearSearchAreaBlip();
             ClearTrialStorageFile();
 
-            CreateSearchAreaBlip(center);
+            CreateSearchAreaBlip(center, GetCurrentCharacterHashSafe());
 
             if (!SpawnTrialVehicles(center))
             {
@@ -719,6 +881,8 @@ public class Violet : Script
             _trialEndGameTime = 0;
             _violet25SecWarningSent = false;
             _violetTrialIconsEnabled = false;
+            _violetLastWarningSoundSecond = -1;
+            _violetPendingWarningSoundAt = -1;
 
             CleanupSpawnedTrialVehicles(deleteVehicles: false);
             ClearSearchAreaBlip();
@@ -1095,7 +1259,7 @@ public class Violet : Script
         }
     }
 
-    private void CreateSearchAreaBlip(Vector3 center)
+    private void CreateSearchAreaBlip(Vector3 center, int ownerHash)
     {
         try
         {
@@ -1122,17 +1286,35 @@ public class Violet : Script
 
             if (blip != null)
             {
-                blip.Color = BlipColor.Green;
+                blip.Color = GetSearchAreaBlipColorByCharacter(ownerHash);
                 blip.IsShortRange = false;
                 blip.Name = VioletVioletSearchAreaName;
                 try { blip.ShowRoute = false; } catch { }
-                try { Function.Call(Hash.SET_BLIP_ALPHA, blip.Handle, 80); } catch { }
+                try { Function.Call(Hash.SET_BLIP_ALPHA, blip.Handle, SearchAreaBlipAlpha); } catch { }
                 _searchAreaBlip = blip;
             }
         }
         catch
         {
         }
+    }
+
+    private BlipColor GetSearchAreaBlipColorByCharacter(int ownerHash)
+    {
+        try
+        {
+            if (ownerHash == FranklinHash)
+                return BlipColor.Green;
+
+            if (ownerHash == MichaelHash)
+                return BlipColor.Blue;
+
+            if (ownerHash == TrevorHash)
+                return BlipColor.Orange;
+        }
+        catch { }
+
+        return BlipColor.Green;
     }
 
     private void ClearSearchAreaBlip()

@@ -73,6 +73,7 @@ public partial class LombankScript : Script
 
     // Lưu thời điểm rút tiền đầu tiên thành công trong chu kỳ hiện tại
     private DateTime? _firstWithdrawAt = null;
+    private DateTime _lastLoadedStateFileWriteUtc = DateTime.MinValue;
 
     private const int HASH_MICHAEL = 225514697;
     private const int HASH_FRANKLIN = -1692214353;
@@ -179,6 +180,7 @@ public partial class LombankScript : Script
                 return;
 
             SyncCharacterState();
+            ReloadStateIfDiskChanged();
             EnsureLombankContactRegistered();
             EnsureMainMenuCreated();
             EnsureTerminalPropSpawned();
@@ -211,6 +213,30 @@ public partial class LombankScript : Script
         catch (Exception ex)
         {
             Log("OnTick failed: " + ex);
+        }
+    }
+
+    private void ReloadStateIfDiskChanged()
+    {
+        try
+        {
+            if (_activeCharacterHash == 0)
+                return;
+
+            string file = GetStateFileForOwner(_activeCharacterHash);
+            if (!File.Exists(file))
+                return;
+
+            DateTime currentWriteUtc = File.GetLastWriteTimeUtc(file);
+            if (currentWriteUtc <= _lastLoadedStateFileWriteUtc)
+                return;
+
+            LoadStateForCurrentCharacter();
+            RefreshMainMenu();
+        }
+        catch (Exception ex)
+        {
+            Log("ReloadStateIfDiskChanged failed: " + ex);
         }
     }
 
@@ -414,6 +440,8 @@ public partial class LombankScript : Script
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+
             Function.Call(Hash.BEGIN_TEXT_COMMAND_THEFEED_POST, "STRING");
             Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, message);
 
@@ -436,6 +464,24 @@ public partial class LombankScript : Script
             catch
             {
                 GTA.UI.Screen.ShowSubtitle($"{title}: {message}", timeout);
+            }
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
             }
         }
     }
@@ -500,11 +546,26 @@ public partial class LombankScript : Script
 
             string file = GetStateFileForOwner(_activeCharacterHash);
             if (!File.Exists(file))
+            {
+                // Cập nhật thời gian ghi file trước khi return sớm nếu file không tồn tại
+                _lastLoadedStateFileWriteUtc = DateTime.MinValue;
                 return;
+            }
 
             string text = File.ReadAllText(file).Trim();
             if (string.IsNullOrWhiteSpace(text))
+            {
+                // Cập nhật thời gian ghi file trước khi return sớm nếu file rỗng
+                try
+                {
+                    _lastLoadedStateFileWriteUtc = File.GetLastWriteTimeUtc(file);
+                }
+                catch
+                {
+                    _lastLoadedStateFileWriteUtc = DateTime.MinValue;
+                }
                 return;
+            }
 
             // 2. Xử lý kiểu dữ liệu Legacy (không có dấu =)
             if (!text.Contains("="))
@@ -524,6 +585,15 @@ public partial class LombankScript : Script
                     }
                 }
 
+                // Cập nhật thời gian ghi file trước khi return cho trường hợp Legacy
+                try
+                {
+                    _lastLoadedStateFileWriteUtc = File.GetLastWriteTimeUtc(file);
+                }
+                catch
+                {
+                    _lastLoadedStateFileWriteUtc = DateTime.MinValue;
+                }
                 return;
             }
 
@@ -592,6 +662,17 @@ public partial class LombankScript : Script
             {
                 _lastPenaltyAppliedAt = _loanOpenedAt.Value.AddDays(7);
             }
+
+            // 8. Cập nhật thời gian ghi file sau khi load xong hoàn toàn dữ liệu mới
+            try
+            {
+                if (File.Exists(file))
+                    _lastLoadedStateFileWriteUtc = File.GetLastWriteTimeUtc(file);
+            }
+            catch
+            {
+                _lastLoadedStateFileWriteUtc = DateTime.MinValue;
+            }
         }
         catch (Exception ex)
         {
@@ -605,6 +686,9 @@ public partial class LombankScript : Script
             _lastPenaltyAppliedAt = null;
             _overdueNoticeShown = false;
             _repayUnlockNoticeShown = false;
+
+            // Đảm bảo biến được reset an toàn khi xảy ra ngoại lệ
+            _lastLoadedStateFileWriteUtc = DateTime.MinValue;
         }
     }
 
@@ -631,6 +715,12 @@ public partial class LombankScript : Script
             sb.AppendLine("repayUnlockNoticeShown=" + (_repayUnlockNoticeShown ? "1" : "0"));
 
             File.WriteAllText(file, sb.ToString());
+
+            try
+            {
+                _lastLoadedStateFileWriteUtc = File.GetLastWriteTimeUtc(file);
+            }
+            catch { }
         }
         catch (Exception ex)
         {

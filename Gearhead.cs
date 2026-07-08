@@ -54,8 +54,16 @@ public class Gearhead : Script
     private const int UpgradeFeePercentBranch40 = 21;
     private const int UpgradeFeePercentBranch60 = 27;
 
+    private const int PersistentUpgradeTimeMinMinutes = 80;
+    private const int PersistentUpgradeTimeMaxMinutes = 120;
+    private const int StreetLootUpgradeTimeMinMinutes = 60;
+    private const int StreetLootUpgradeTimeMaxMinutes = 90;
+
     private readonly Random _rng = new Random();
     private readonly ObjectPool _uiPool = new ObjectPool();
+
+    private const string GearheadMessageSoundName = "Text_Arrive_Tone";
+    private const string GearheadMessageSoundSet = "Phone_SoundSet_Default";
 
     private static readonly string DataFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -88,6 +96,7 @@ public class Gearhead : Script
     private string _targetCustomerName = string.Empty;
     private string _targetVehicleName = string.Empty;
     private string _targetPlate = string.Empty;
+    private int _pendingTimeAdvanceMinutes = 0;
 
     private int _gameReadySince = -1;
     private bool _modReady = false;
@@ -479,6 +488,7 @@ public class Gearhead : Script
         _targetCustomerName = string.Empty;
         _targetVehicleName = string.Empty;
         _targetPlate = string.Empty;
+        _pendingTimeAdvanceMinutes = 0;
         _lastRejectMessage = null;
     }
 
@@ -573,6 +583,9 @@ public class Gearhead : Script
                     return;
                 }
 
+                ApplyGearheadUpgradeTimeAdvance(_pendingTimeAdvanceMinutes);
+                _pendingTimeAdvanceMinutes = 0;
+
                 GTA.UI.Screen.FadeIn(FadeOutMs);
                 _flowState = FlowState.WaitingFadeIn;
                 _flowStateSince = Game.GameTime;
@@ -615,6 +628,8 @@ public class Gearhead : Script
             if (!ValidateCurrentUpgradeTarget())
                 return false;
 
+            _pendingTimeAdvanceMinutes = RollGearheadUpgradeTimeAdvanceMinutes();
+
             if (_targetRecord != null)
             {
                 if (_targetRecord.HaoUpgradeApplied)
@@ -654,6 +669,47 @@ public class Gearhead : Script
         {
             Log("ApplyGearheadUpgradeToCurrentVehicle failed: " + ex);
             return false;
+        }
+    }
+
+    private int RollGearheadUpgradeTimeAdvanceMinutes()
+    {
+        try
+        {
+            if (_targetRecord != null)
+                return _rng.Next(PersistentUpgradeTimeMinMinutes, PersistentUpgradeTimeMaxMinutes + 1);
+
+            return _rng.Next(StreetLootUpgradeTimeMinMinutes, StreetLootUpgradeTimeMaxMinutes + 1);
+        }
+        catch
+        {
+            return _targetRecord != null ? 100 : 75;
+        }
+    }
+
+    private void ApplyGearheadUpgradeTimeAdvance(int minutes)
+    {
+        try
+        {
+            if (minutes <= 0)
+                return;
+
+            int hours = Function.Call<int>(Hash.GET_CLOCK_HOURS);
+            int mins = Function.Call<int>(Hash.GET_CLOCK_MINUTES);
+
+            int total = (hours * 60) + mins + minutes;
+            total %= 24 * 60;
+            if (total < 0)
+                total += 24 * 60;
+
+            int newHours = total / 60;
+            int newMins = total % 60;
+
+            Function.Call(Hash.SET_CLOCK_TIME, newHours, newMins, 0);
+        }
+        catch (Exception ex)
+        {
+            Log("ApplyGearheadUpgradeTimeAdvance failed: " + ex);
         }
     }
 
@@ -1745,6 +1801,7 @@ public class Gearhead : Script
     {
         try
         {
+            PlayFrontendSound(GearheadMessageSoundName, GearheadMessageSoundSet);
             Notification.Show(NotificationIcon.HitcherGirl, GearheadContactName, subject, body);
             return;
         }
@@ -1761,15 +1818,29 @@ public class Gearhead : Script
         }
     }
 
+    private static void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch { }
+        }
+    }
+
     private void EnsureHelpBoxCooldownSet()
     {
         try
         {
             _lastMenuUpdateTime = Game.GameTime + 5000;
         }
-        catch
-        {
-        }
+        catch { }
     }
 
     private bool SafeExists(Entity e)
@@ -1792,8 +1863,6 @@ public class Gearhead : Script
             Directory.CreateDirectory(root);
             File.AppendAllText(Path.Combine(root, "gearhead_log.txt"), DateTime.Now.ToString("s") + "  " + msg + Environment.NewLine, Encoding.UTF8);
         }
-        catch
-        {
-        }
+        catch { }
     }
 }

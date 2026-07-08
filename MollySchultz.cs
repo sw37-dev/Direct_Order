@@ -28,6 +28,12 @@ public class MollySchultz : Script
     private const double MOLLY_REFUND_RATE_MIN = 0.48;
     private const double MOLLY_REFUND_RATE_MAX = 0.62;
 
+    private const double MOLLY_ZERO_PRICE_SUPER_SHOW_RATE = 0.35;
+    private const int MOLLY_ZERO_PRICE_SUPER_FIXED_PRICE = 300000;
+
+    private readonly Dictionary<object, bool> _mollyZeroPriceSuperVisibilityCache =
+        new Dictionary<object, bool>(ReferenceEqualityComparer.Instance);
+
     private static readonly Random _mollyRefundRandom = new Random();
     private readonly Dictionary<object, double> _mollyRefundRateCache =
         new Dictionary<object, double>(ReferenceEqualityComparer.Instance);
@@ -216,6 +222,90 @@ public class MollySchultz : Script
         catch
         {
             return MOLLY_REFUND_RATE_MIN;
+        }
+    }
+
+    private bool ShouldShowSuperVehicleInMollyMenu(object vehicleEntry)
+    {
+        try
+        {
+            if (vehicleEntry == null)
+                return false;
+
+            uint modelHash = GetUIntField(vehicleEntry, "ModelHash", 0);
+            if (!IsSuperVehicle(modelHash))
+                return false;
+
+            int purchasePrice = GetIntField(vehicleEntry, "PurchasePrice", 0);
+
+            // Xe Super có giá > 0: luôn hiện
+            if (purchasePrice > 0)
+                return true;
+
+            // Xe Super giá 0: chỉ hiện 35%
+            lock (_mollyZeroPriceSuperVisibilityCache)
+            {
+                bool show;
+                if (_mollyZeroPriceSuperVisibilityCache.TryGetValue(vehicleEntry, out show))
+                    return show;
+
+                show = _mollyRefundRandom.NextDouble() < MOLLY_ZERO_PRICE_SUPER_SHOW_RATE;
+                _mollyZeroPriceSuperVisibilityCache[vehicleEntry] = show;
+                return show;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int GetMollyDisplayPurchasePrice(object vehicleEntry)
+    {
+        try
+        {
+            if (vehicleEntry == null)
+                return 0;
+
+            int purchasePrice = GetIntField(vehicleEntry, "PurchasePrice", 0);
+            if (purchasePrice > 0)
+                return purchasePrice;
+
+            uint modelHash = GetUIntField(vehicleEntry, "ModelHash", 0);
+            if (IsSuperVehicle(modelHash))
+                return MOLLY_ZERO_PRICE_SUPER_FIXED_PRICE;
+
+            return 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private int GetMollyEffectiveRefundPrice(object vehicleEntry)
+    {
+        try
+        {
+            if (vehicleEntry == null)
+                return 0;
+
+            int purchasePrice = GetIntField(vehicleEntry, "PurchasePrice", 0);
+            if (purchasePrice > 0)
+            {
+                double refundRate = GetMollyRefundRate(vehicleEntry);
+                return ComputeRefundByRate(purchasePrice, refundRate);
+            }
+
+            uint modelHash = GetUIntField(vehicleEntry, "ModelHash", 0);
+            if (IsSuperVehicle(modelHash))
+                return MOLLY_ZERO_PRICE_SUPER_FIXED_PRICE;
+
+            return 0;
+        }
+        catch
+        {
+            return 0;
         }
     }
 
@@ -1238,16 +1328,21 @@ public class MollySchultz : Script
                         int itemOwnerHash = GetIntField(item, "OwnerModelHash", 0);
                         uint modelHash = GetUIntField(item, "ModelHash", 0);
 
+                        // Thay đổi đoạn lọc tại đây theo hướng dẫn
                         if (itemOwnerHash != ownerHash)
                             continue;
 
                         if (!IsSuperVehicle(modelHash))
                             continue;
 
+                        if (!ShouldShowSuperVehicleInMollyMenu(item))
+                            continue;
+
                         result.Add(item);
                     }
                     catch
                     {
+                        // Bỏ qua lỗi của từng item riêng lẻ để tiếp tục vòng lặp
                     }
                 }
             }
@@ -1550,9 +1645,9 @@ public class MollySchultz : Script
                     {
                         uint modelHash = GetUIntField(pv, "ModelHash", 0);
                         bool locked = GetBoolField(pv, "IsCollateralLocked", false);
-                        int purchasePrice = GetIntField(pv, "PurchasePrice", 0);
+                        int displayPrice = GetMollyDisplayPurchasePrice(pv);
                         string modelName = GetVehicleName(modelHash);
-                        string priceText = locked ? string.Empty : FormatMoney(purchasePrice);
+                        string priceText = locked ? string.Empty : FormatMoney(displayPrice);
                         string desc = locked ? MollyCollateralLockedDesc : MollyVehicleItemDesc;
 
                         var item = new NativeItem(
@@ -1631,9 +1726,9 @@ public class MollySchultz : Script
 
             uint modelHash = GetUIntField(pv, "ModelHash", 0);
             string vehicleName = GetVehicleName(modelHash);
-            int purchasePrice = GetIntField(pv, "PurchasePrice", 0);
-            double refundRate = GetMollyRefundRate(pv);
-            int refund = ComputeRefundByRate(purchasePrice, refundRate);
+            int rawPurchasePrice = GetIntField(pv, "PurchasePrice", 0);
+            int purchasePrice = GetMollyDisplayPurchasePrice(pv);
+            int refund = GetMollyEffectiveRefundPrice(pv);
             int loss = Math.Max(0, purchasePrice - refund);
             string plateText = GetStringField(pv, "Plate", string.Empty);
             string ownerName = GetCharacterDisplayNameFromHash(GetIntField(pv, "OwnerModelHash", 0));
@@ -1671,12 +1766,23 @@ public class MollySchultz : Script
                 L("MollySchultz_OwnerDesc", "Chủ sở hữu của chiếc xe này trong danh sách persistent."));
             _detailMenu.Add(line4);
 
-            var line5 = new NativeItem(
-                string.Format(CultureInfo.InvariantCulture, MollyDetailPriceLabel, FormatMoney(refund)),
-                string.Format(
+            string refundDesc;
+            if (rawPurchasePrice > 0)
+            {
+                double refundRate = GetMollyRefundRate(pv);
+                refundDesc = string.Format(
                     CultureInfo.InvariantCulture,
                     L("MollySchultz_RefundRateDesc", "Molly đang áp dụng mức ~HUD_COLOUR_DEGEN_GREEN~{0}%~s~ giá gốc của xe."),
-                    FormatRefundRate(refundRate)));
+                    FormatRefundRate(refundRate));
+            }
+            else
+            {
+                refundDesc = L("MollySchultz_RefundRateFixedDesc", "Xe không có giá gốc nên áp dụng mức thanh lý cố định.");
+            }
+
+            var line5 = new NativeItem(
+                string.Format(CultureInfo.InvariantCulture, MollyDetailPriceLabel, FormatMoney(refund)),
+                refundDesc);
             _detailMenu.Add(line5);
 
             var line6 = new NativeItem(
@@ -1772,9 +1878,7 @@ public class MollySchultz : Script
                     }
                     else
                     {
-                        int purchasePrice = GetIntField(pv, "PurchasePrice", 0);
-                        double refundRate = GetMollyRefundRate(pv);
-                        int refund = ComputeRefundByRate(purchasePrice, refundRate);
+                        int refund = GetMollyEffectiveRefundPrice(pv);
                         string desc = string.Format(CultureInfo.InvariantCulture,
                             L("MollySchultz_BulkVehicleDesc", "Chọn hoặc bỏ chọn chiếc xe này.\nGiá thanh lý dự kiến: {0}"),
                             FormatMoney(refund));
@@ -1846,9 +1950,7 @@ public class MollySchultz : Script
             int total = 0;
             foreach (var pv in _bulkSelected.ToList())
             {
-                int purchasePrice = GetIntField(pv, "PurchasePrice", 0);
-                double refundRate = GetMollyRefundRate(pv);
-                total += ComputeRefundByRate(purchasePrice, refundRate);
+                total += GetMollyEffectiveRefundPrice(pv);
             }
             return total;
         }
@@ -1873,9 +1975,7 @@ public class MollySchultz : Script
             }
 
             uint modelHash = GetUIntField(vehicleEntry, "ModelHash", 0);
-            int purchasePrice = GetIntField(vehicleEntry, "PurchasePrice", 0);
-            double refundRate = GetMollyRefundRate(vehicleEntry);
-            int refund = ComputeRefundByRate(purchasePrice, refundRate);
+            int refund = GetMollyEffectiveRefundPrice(vehicleEntry);
 
             if (refund > 0)
                 Game.Player.Money += refund;
@@ -1921,9 +2021,7 @@ public class MollySchultz : Script
                     if (GetBoolField(pv, "IsCollateralLocked", false))
                         continue;
 
-                    int purchasePrice = GetIntField(pv, "PurchasePrice", 0);
-                    double refundRate = GetMollyRefundRate(pv);
-                    totalRefund += ComputeRefundByRate(purchasePrice, refundRate);
+                    totalRefund += GetMollyEffectiveRefundPrice(pv);
                     soldCount++;
                 }
                 catch

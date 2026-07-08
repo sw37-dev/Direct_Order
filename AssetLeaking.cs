@@ -544,8 +544,9 @@ public partial class AssetLeaking : Script
     {
         try
         {
-            GTA.UI.Notification.Show(
-                GTA.UI.NotificationIcon.LesterDeathwish,
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+
+            Notification.Show(NotificationIcon.LesterDeathwish,
                 title,
                 T("AssetLeaking.NotificationSubtitle", "Mole"),
                 message);
@@ -553,6 +554,24 @@ public partial class AssetLeaking : Script
         catch
         {
             try { GTA.UI.Notification.Show(message); } catch { }
+        }
+    }
+
+    private static void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
         }
     }
 

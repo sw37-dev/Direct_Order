@@ -101,6 +101,9 @@ public class PlaneDeliveryContractEvent : Script
     private const float DestinationCompleteRadius = 6.0f;
     private const float DeliveryAltitudeTolerance = 3.0f;
 
+    private const string PlaneMessageSoundName = "ATM_WINDOW";
+    private const string PlaneMessageSoundSet = "HUD_FRONTEND_DEFAULT_SOUNDSET";
+
     // Thêm hằng số mới
     private const float WantedImmunityActivationRadius = 300.0f;
 
@@ -108,6 +111,15 @@ public class PlaneDeliveryContractEvent : Script
     private static readonly Vector3 PostCutscenePlayerPosition = new Vector3(1697.248000f, 3291.199000f, 48.920480f);
     private static readonly Vector3 MissionVehicleSpawnPosition = new Vector3(1698.675000f, 3248.991000f, 40.465130f);
     private const float MissionVehicleSpawnHeading = 105.3598f;
+
+    private static readonly Hash SetWeatherNowPersistNative = Hash.SET_WEATHER_TYPE_NOW_PERSIST;
+    private static readonly Hash SetWeatherPersistNative = Hash.SET_WEATHER_TYPE_PERSIST;
+    private static readonly Hash SetOverrideWeatherNative = Hash.SET_OVERRIDE_WEATHER;
+    private static readonly Hash ClearOverrideWeatherNative = Hash.CLEAR_OVERRIDE_WEATHER;
+    private static readonly Hash ClearWeatherTypePersistNative = Hash.CLEAR_WEATHER_TYPE_PERSIST;
+
+    private bool _missionWeatherPrepared = false;
+    private string _weatherBeforeMission = string.Empty;
 
     private static readonly Vector3[] DestinationPoints =
     {
@@ -295,6 +307,8 @@ public class PlaneDeliveryContractEvent : Script
     {
         try
         {
+            PlayFrontendSound(PlaneMessageSoundName, PlaneMessageSoundSet);
+
             Notification.Show(
                 NotificationIcon.Planesite,
                 LT("PlaneOffer_Title", "Plane Site"),
@@ -312,6 +326,77 @@ public class PlaneDeliveryContractEvent : Script
         }
     }
 
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private void PrepareMissionWeatherForFadeTransition()
+    {
+        if (_missionWeatherPrepared)
+            return;
+
+        try
+        {
+            // Chỉ để ghi nhận trạng thái hiện tại trước khi reset.
+            // Nếu sau này muốn log/debug thì có sẵn biến này.
+            _weatherBeforeMission = string.Empty;
+        }
+        catch
+        {
+            _weatherBeforeMission = string.Empty;
+        }
+
+        try
+        {
+            // Reset Weather trước
+            Function.Call(ClearOverrideWeatherNative);
+            Function.Call(ClearWeatherTypePersistNative);
+
+            // Sau đó ép Thunder 1 lần để lúc fadein xong sẽ thấy Thunder
+            Function.Call(SetWeatherNowPersistNative, "THUNDER");
+            Function.Call(SetWeatherPersistNative, "THUNDER");
+            Function.Call(SetOverrideWeatherNative, "THUNDER");
+
+            _missionWeatherPrepared = true;
+        }
+        catch
+        {
+            // Bỏ qua lỗi native
+        }
+    }
+
+    private void RestoreWeatherToReset()
+    {
+        try
+        {
+            Function.Call(ClearOverrideWeatherNative);
+            Function.Call(ClearWeatherTypePersistNative);
+        }
+        catch
+        {
+            // Bỏ qua lỗi native
+        }
+        finally
+        {
+            _missionWeatherPrepared = false;
+            _weatherBeforeMission = string.Empty;
+        }
+    }
+
     private void UpdateMarkerState()
     {
         DrawPickupMarker();
@@ -326,7 +411,7 @@ public class PlaneDeliveryContractEvent : Script
         {
             ShowHelpBox(LT(
                 "PlaneMarkerAcceptPrompt",
-                "~HUD_COLOUR_FRANKLIN~Bạn có muốn nhận nhiệm vụ máy bay này không? Nhiệm vụ máy bay sẽ nguy hiểm hơn giao xe đấy?"
+                "~HUD_COLOUR_REDLIGHT~Bạn có muốn nhận nhiệm vụ máy bay này không? Nhiệm vụ máy bay sẽ nguy hiểm hơn giao xe đấy?"
             ));
             HandleMarkerInput();
         }
@@ -367,6 +452,8 @@ public class PlaneDeliveryContractEvent : Script
 
         DeletePickupBlip();
         GTA.UI.Screen.FadeOut(FadeOutMs);
+
+        PrepareMissionWeatherForFadeTransition();
     }
 
     private int RollMissionBaseReward()
@@ -386,6 +473,7 @@ public class PlaneDeliveryContractEvent : Script
 
         if (!SpawnMission())
         {
+            RestoreWeatherToReset();
             GTA.UI.Screen.FadeIn(FadeOutMs);
             CleanupAllAndReturnToIdle(true);
             return;
@@ -714,6 +802,8 @@ public class PlaneDeliveryContractEvent : Script
         }
         catch { }
 
+        RestoreWeatherToReset();
+
         ReleaseMissionVehicleWithDeferredCleanup();
         CleanupDestinationObjects();
         ResetMissionFlags();
@@ -746,6 +836,8 @@ public class PlaneDeliveryContractEvent : Script
         }
         catch { }
 
+        RestoreWeatherToReset();
+
         ReleaseMissionVehicleWithDeferredCleanup();
         CleanupDestinationObjects();
         ResetMissionFlags();
@@ -762,6 +854,8 @@ public class PlaneDeliveryContractEvent : Script
     private void AbortMissionImmediate()
     {
         ClearHelpBox();
+
+        RestoreWeatherToReset();
 
         CleanupDestinationObjects();
         DeleteMissionVehicleNow();
@@ -987,6 +1081,8 @@ public class PlaneDeliveryContractEvent : Script
     {
         ClearHelpBox();
 
+        RestoreWeatherToReset();
+
         CleanupPickupObjects();
         CleanupDestinationObjects();
         DeleteMissionVehicleNow();
@@ -1008,6 +1104,8 @@ public class PlaneDeliveryContractEvent : Script
     private void ResetRuntimeState()
     {
         ClearHelpBox();
+
+        RestoreWeatherToReset();
 
         CleanupPickupObjects();
         CleanupDestinationObjects();

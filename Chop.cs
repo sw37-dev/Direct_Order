@@ -25,7 +25,7 @@ public class Chop : Script
     private static string ChopBarkFoundText => L("Chop_BarkFoundText", "Gâu gâu, GÂUUU!!");
 
     private const int TickIntervalMs = 250;
-    private const float ReachClearRadius = 8.0f;
+    private const float ReachClearRadius = 5.0f;
     private const double TargetRevealChance = 0.33;
 
     private static Chop _instance;
@@ -661,9 +661,7 @@ public class Chop : Script
             else
                 ClearRevealRouteOnly();
         }
-        catch
-        {
-        }
+        catch { }
 
         _revealedTargetVehicle = null;
         _routeClearedNearTarget = false;
@@ -672,6 +670,8 @@ public class Chop : Script
 
     private void ShowChopMessage(string msg)
     {
+        PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+
         try
         {
             Notification.Show(NotificationIcon.Chop, ChopContactName, ChopNotificationTitle, msg);
@@ -686,6 +686,24 @@ public class Chop : Script
             Screen.ShowSubtitle(msg, 2500);
         }
         catch { }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch
+            {
+            }
+        }
     }
 
     private void SetContactActive(bool active)

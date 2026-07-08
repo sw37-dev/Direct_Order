@@ -1017,6 +1017,8 @@ public class Icebreaker : Script
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+
             Function.Call(Hash.BEGIN_TEXT_COMMAND_THEFEED_POST, "STRING");
             Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, message);
 
@@ -1035,6 +1037,24 @@ public class Icebreaker : Script
             try
             {
                 GTA.UI.Screen.ShowSubtitle($"{title}: {message}", timeout);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
             }
             catch
             {

@@ -38,6 +38,13 @@ public partial class InstantRefill : Script
     // --- PDM daily pool: chỉ dùng cho showroom PDM ---
     private const int PdmDailyVehicleMenuCount = 20;
 
+    private const string VehicleAddedBannerSoundName = "Mission_Pass_Notify";
+    private const string VehicleAddedBannerSoundSet = "DLC_HEISTS_GENERAL_FRONTEND_SOUNDS";
+
+    private bool _vehicleAddedBannerExitStarted = false;
+    private int _vehicleAddedBannerExitStartTime = 0;
+    private const int VehicleAddedBannerExitMs = 650;
+
     private int _pdmDailySelectionLastDayOfWeek = -1;
     private int _pdmDailySelectionWeekSerial = 0;
     private int _pdmDailySelectionDaySerial = int.MinValue;
@@ -190,6 +197,216 @@ public partial class InstantRefill : Script
         HoveredDictionary = "commonmenu",
         HoveredTexture = "shop_lock_b"
     };
+
+    // ========================= Vehicle.cs =========================
+
+    // 1) Thêm gần nhóm field UI của class InstantRefill
+    private bool _vehicleAddedBannerQueued = false;
+    private bool _vehicleAddedBannerShown = false;
+    private int _vehicleAddedBannerCount = 0;
+    private int _vehicleAddedBannerStartTime = 0;
+    private int _vehicleAddedBannerNotifyTime = 0;
+    private int _vehicleAddedBannerHandle = -1;
+
+    private const int VehicleAddedBannerHoldMs = 6000;
+
+    private void QueueVehicleAddedBanner(int count)
+    {
+        try
+        {
+            if (count <= 0)
+                return;
+
+            _vehicleAddedBannerQueued = true;
+            _vehicleAddedBannerShown = false;
+            _vehicleAddedBannerCount = count;
+            _vehicleAddedBannerStartTime = 0;
+            _vehicleAddedBannerNotifyTime = 0;
+            _vehicleAddedBannerHandle = -1;
+        }
+        catch { }
+    }
+
+    private void PlayVehicleAddedBannerSound()
+    {
+        try
+        {
+            Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, VehicleAddedBannerSoundName, VehicleAddedBannerSoundSet, true);
+        }
+        catch { }
+    }
+
+    private void EnsureVehicleAddedBannerRequested()
+    {
+        try
+        {
+            if (_vehicleAddedBannerHandle != -1)
+                return;
+
+            _vehicleAddedBannerHandle = Function.Call<int>(
+                Hash.REQUEST_SCALEFORM_MOVIE,
+                "MP_BIG_MESSAGE_FREEMODE"
+            );
+        }
+        catch
+        {
+            _vehicleAddedBannerHandle = -1;
+        }
+    }
+
+    private void StartVehicleAddedBannerIfNeeded()
+    {
+        try
+        {
+            if (_vehicleAddedBannerShown)
+                return;
+
+            EnsureVehicleAddedBannerRequested();
+
+            if (_vehicleAddedBannerHandle == -1)
+                return;
+
+            if (!Function.Call<bool>(Hash.HAS_SCALEFORM_MOVIE_LOADED, _vehicleAddedBannerHandle))
+                return;
+
+            Function.Call(
+                Hash.BEGIN_SCALEFORM_MOVIE_METHOD,
+                _vehicleAddedBannerHandle,
+                "SHOW_MISSION_PASSED_MESSAGE"
+            );
+
+            // Tiêu đề lớn
+            Function.Call(
+                Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_TEXTURE_NAME_STRING,
+                "DIRECT ORDER - ONLINE SHOPPING"
+            );
+
+            // Dòng phụ bên dưới
+            Function.Call(
+                Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_TEXTURE_NAME_STRING,
+                "Chào mừng bạn đã đến với thế giới của tài chính ngầm"
+            );
+
+            // Giữ nguyên kiểu hiển thị mission passed
+            Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_INT, 100);
+            Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_BOOL, true);
+            Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_INT, 0);
+            Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_BOOL, true);
+
+            Function.Call(Hash.END_SCALEFORM_MOVIE_METHOD);
+
+            PlayVehicleAddedBannerSound();
+
+            _vehicleAddedBannerShown = true;
+            _vehicleAddedBannerExitStarted = false;
+            _vehicleAddedBannerStartTime = Game.GameTime;
+            _vehicleAddedBannerNotifyTime = _vehicleAddedBannerStartTime + VehicleAddedBannerHoldMs;
+        }
+        catch { }
+    }
+
+    private void RenderVehicleAddedBanner()
+    {
+        try
+        {
+            if (_vehicleAddedBannerHandle == -1)
+                return;
+
+            if (!Function.Call<bool>(Hash.HAS_SCALEFORM_MOVIE_LOADED, _vehicleAddedBannerHandle))
+                return;
+
+            Function.Call(
+                Hash.DRAW_SCALEFORM_MOVIE,
+                _vehicleAddedBannerHandle,
+                0.500f,
+                0.260f,
+                1.2f,
+                0.85f,
+                255, 255, 255, 255,
+                0
+            );
+        }
+        catch { }
+    }
+
+    private void StartVehicleAddedBannerExitIfNeeded()
+    {
+        try
+        {
+            if (!_vehicleAddedBannerShown || _vehicleAddedBannerExitStarted)
+                return;
+
+            if (Game.GameTime < _vehicleAddedBannerNotifyTime)
+                return;
+
+            if (_vehicleAddedBannerHandle == -1)
+                return;
+
+            if (!Function.Call<bool>(Hash.HAS_SCALEFORM_MOVIE_LOADED, _vehicleAddedBannerHandle))
+                return;
+
+            Function.Call(
+                Hash.BEGIN_SCALEFORM_MOVIE_METHOD,
+                _vehicleAddedBannerHandle,
+                "TRANSITION_OUT"
+            );
+            Function.Call(Hash.END_SCALEFORM_MOVIE_METHOD);
+
+            _vehicleAddedBannerExitStarted = true;
+            _vehicleAddedBannerExitStartTime = Game.GameTime;
+        }
+        catch { }
+    }
+
+    private void ClearVehicleAddedBannerState()
+    {
+        _vehicleAddedBannerQueued = false;
+        _vehicleAddedBannerShown = false;
+        _vehicleAddedBannerExitStarted = false;
+        _vehicleAddedBannerCount = 0;
+        _vehicleAddedBannerStartTime = 0;
+        _vehicleAddedBannerNotifyTime = 0;
+        _vehicleAddedBannerExitStartTime = 0;
+        _vehicleAddedBannerHandle = -1;
+    }
+
+    private void ProcessVehicleAddedBanner()
+    {
+        try
+        {
+            if (!_vehicleAddedBannerQueued)
+                return;
+
+            if (Game.IsLoading || Game.IsPaused || Game.IsCutsceneActive)
+                return;
+
+            if (!_modReady)
+                return;
+
+            Interval = 0;
+
+            StartVehicleAddedBannerIfNeeded();
+            StartVehicleAddedBannerExitIfNeeded();
+            RenderVehicleAddedBanner();
+
+            if (_vehicleAddedBannerExitStarted)
+            {
+                if (Game.GameTime >= _vehicleAddedBannerExitStartTime + VehicleAddedBannerExitMs)
+                {
+                    int addedCount = _vehicleAddedBannerCount; // giữ lại trước khi reset state
+
+                    ClearVehicleAddedBannerState();
+
+                    Notification.Show(LT(
+                        "Vehicle_Custom_AddedCount",
+                        "~h~Đã thêm mới thành công {count} phương tiện.~h~",
+                        "{count}", addedCount.ToString()
+                    ));
+                }
+            }
+        }
+        catch { }
+    }
 
     private bool _luiDetailDirtyOnlyVehicle = false;
 
@@ -432,11 +649,9 @@ public partial class InstantRefill : Script
             }
 
             if (added > 0)
-                Notification.Show(LT(
-                    "Vehicle_Custom_AddedCount",
-                    "~h~Đã thêm mới thành công {count} phương tiện.~h~",
-                    "{count}", added.ToString()
-                ));
+            {
+                QueueVehicleAddedBanner(added);
+            }
         }
         catch
         {
