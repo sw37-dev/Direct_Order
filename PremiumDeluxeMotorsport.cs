@@ -121,7 +121,7 @@ public class SimeonsShowroomFix : Script
     public SimeonsShowroomFix()
     {
         Tick += OnTick;
-        Interval = 1000; // giữ nhẹ tài nguyên
+        Interval = 1000;
     }
 
     private void OnTick(object sender, EventArgs e)
@@ -310,6 +310,7 @@ public class SimeonsShowroomFix : Script
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
             Notification.Show(NotificationIcon.Simeon, PdmContactName, title, message);
         }
         catch
@@ -322,6 +323,22 @@ public class SimeonsShowroomFix : Script
             {
                 GTA.UI.Screen.ShowSubtitle($"{title}: {message}", timeout);
             }
+        }
+    }
+
+    private void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch { }
         }
     }
 

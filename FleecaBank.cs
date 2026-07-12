@@ -13,6 +13,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Media;
+using System.Threading.Tasks;
 using static InstantRefill;
 
 public partial class FleecaBankLoanScript : Script
@@ -20,6 +22,13 @@ public partial class FleecaBankLoanScript : Script
     private static readonly string HackerStateRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "GTA V Mods", "Hacker");
+
+    private readonly string FleecaAudioRoot = Path.Combine(
+        GetScriptsDirectory(),
+        "Audio"
+    );
+
+    private readonly string FleecaIntroWavFileName = "FleecaBank.wav";
 
     private const long MAX_LOAN_PRINCIPAL = 260_000_000L;
     private string ContactName => L("Credit_ContactName", "Fleeca Bank");
@@ -223,7 +232,6 @@ public partial class FleecaBankLoanScript : Script
         SyncStateForCurrentCharacter();
     }
 
-    // 2) Thêm class này בתוך cùng file, داخل class FleecaBankLoanScript
     private sealed class QuickPayDebtItem : NativeItem
     {
         public QuickPayDebtItem(string title, string description)
@@ -312,6 +320,73 @@ public partial class FleecaBankLoanScript : Script
         catch (Exception ex)
         {
             Log("OnTick failed: " + ex);
+        }
+    }
+
+    private static string GetScriptsDirectory()
+    {
+        try
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string scriptsDir = Path.Combine(baseDir, "scripts");
+
+            if (Directory.Exists(scriptsDir))
+            {
+                return scriptsDir;
+            }
+
+            return baseDir;
+        }
+        catch
+        {
+            return ".";
+        }
+    }
+
+    private string GetFleecaBankWavPath()
+    {
+        try
+        {
+            Directory.CreateDirectory(FleecaAudioRoot);
+        }
+        catch
+        {
+        }
+
+        return Path.Combine(FleecaAudioRoot, FleecaIntroWavFileName);
+    }
+
+    private void PlayFleecaBankIntroWav()
+    {
+        try
+        {
+            string path = GetFleecaBankWavPath();
+
+            if (!File.Exists(path))
+                return;
+
+            GTA.UI.Screen.ShowSubtitle(
+                "Welcome to Fleeca Bank. Which banking service would you like to use today?",
+                4300
+            );
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (var sp = new SoundPlayer(path))
+                    {
+                        sp.Load();
+                        sp.PlaySync();
+                    }
+                }
+                catch
+                {
+                }
+            });
+        }
+        catch
+        {
         }
     }
 
@@ -2288,6 +2363,8 @@ public partial class FleecaBankLoanScript : Script
             ApplyLoanMenuTheme(_loanMenu);
             ApplyLoanMenuTheme(_loanDetailMenu);
             UpdateLemonUiMouseState();
+
+            PlayFleecaBankIntroWav();
 
             if (_loanMenu != null)
                 _loanMenu.Visible = true;

@@ -90,38 +90,10 @@ public class Violet : Script
 
     private static readonly uint[] _fallbackVehiclePool =
     {
-        0x46699F47u,
-        0x20314B42u,
-        0x81BD2ED0u,
-        0xB779A091u,
-        0xED552C74u,
-        0x9A474B5Eu,
-        0xFE5F0722u,
-        0x31F0B376u,
-        0xF7004C86u,
-        0x2189D250u,
-        0x64DE07A1u,
-        0xD8A914D3u,
-        0x4BFCF28Bu,
-        0xA1355F67u,
-        0x25C5AF13u,
-        0xFD231729u,
-        0x43779C54u,
-        0xF9300CC5u,
-        0xCADD5D2Du,
-        0x05283265u,
-        0x55365079u,
-        0x09E478B3u,
-        0xB1D95DA0u,
-        0xC972A155u,
-        0x52FF9437u,
-        0x00ABB0C0u,
-        0x53174EEFu,
-        0xC1AE4D16u,
-        0x991EFC04u,
-        0xE384DD25u,
-        0x067BC037u,
-        0x98F65A5Eu,
+        0x46699F47u, 0x20314B42u, 0x81BD2ED0u, 0xB779A091u, 0xED552C74u, 0x9A474B5Eu, 0xFE5F0722u, 0x31F0B376u,
+        0xF7004C86u, 0x2189D250u, 0x64DE07A1u, 0xD8A914D3u, 0x4BFCF28Bu, 0xA1355F67u, 0x25C5AF13u, 0xFD231729u,
+        0x43779C54u, 0xF9300CC5u, 0xCADD5D2Du, 0x05283265u, 0x55365079u, 0x09E478B3u, 0xB1D95DA0u, 0xC972A155u,
+        0x52FF9437u, 0x00ABB0C0u, 0x53174EEFu, 0xC1AE4D16u, 0x991EFC04u, 0xE384DD25u, 0x067BC037u, 0x98F65A5Eu,
         0x0796B7A5u,
         0x79C12D73u,
         0x5B531351u,
@@ -344,7 +316,7 @@ public class Violet : Script
             }
             catch
             {
-                GTA.UI.Screen.ShowSubtitle($"{title}: {message}", timeout);
+                Screen.ShowSubtitle($"{title}: {message}", timeout);
             }
         }
     }
@@ -466,7 +438,7 @@ public class Violet : Script
         _singleton = this;
         _isPrimaryInstance = true;
 
-        Interval = 0; // cần tick mỗi frame để timer HUD hiển thị liên tục
+        Interval = 0;
         Tick += OnTick;
 
         EnsureVioletContactRegistered();

@@ -13,6 +13,8 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
+using System.Media;
+using System.Threading.Tasks;
 
 public class VentureCapital : Script
 {
@@ -33,6 +35,38 @@ public class VentureCapital : Script
     private const decimal OverdueIncomeTaxRate = 0.66m;
     private const int WantedStarsOnTrigger = 2;
     private const int WantedWindowSpanHours = 2;
+
+    private const int VentureCapitalIntroDelayMs = 800;
+
+    private static string GetScriptsDirectory()
+    {
+        try
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string scriptsDir = Path.Combine(baseDir, "scripts");
+
+            if (Directory.Exists(scriptsDir))
+            {
+                return scriptsDir;
+            }
+
+            return baseDir;
+        }
+        catch
+        {
+            return ".";
+        }
+    }
+
+    private readonly string VentureCapitalAudioRoot = Path.Combine(
+        GetScriptsDirectory(),
+        "Audio"
+    );
+
+    private readonly string VentureCapitalIntroWavFileName = "Paradigm_Royalty.wav";
+
+    private bool _introWavPlaying = false;
+    private int _introWavStartedAt = 0;
 
     private const int OVERDUE_WANTED_STRIKES_BEFORE_HANDOFF = 4;
     private const decimal PARADIGM_TO_FLEECA_DAILY_RATE = 0.0093m;
@@ -288,6 +322,74 @@ public class VentureCapital : Script
         }
     }
 
+    private void CancelManualIncomeTaxEntry()
+    {
+        _manualIncomeTaxRatePending = false;
+        _manualIncomeTaxRateInput = string.Empty;
+        _selectedIncomeTaxRate = IncomeTaxRate;
+
+        UpdateContactAvailability();
+    }
+
+    private void PlayParadigmRoyaltyIntroWav()
+    {
+        try
+        {
+            string path = GetParadigmRoyaltyWavPath();
+
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            GTA.UI.Screen.ShowSubtitle(
+                "Thank you for reaching out. Paradigm Royalty has successfully received your request.",
+                5000
+            );
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (var sp = new SoundPlayer(path))
+                    {
+                        sp.Load();
+                        sp.PlaySync();
+                    }
+                }
+                catch { }
+            });
+        }
+        catch { }
+    }
+
+    private string GetParadigmRoyaltyWavPath()
+    {
+        try
+        {
+            Directory.CreateDirectory(VentureCapitalAudioRoot);
+        }
+        catch
+        {
+        }
+
+        return Path.Combine(VentureCapitalAudioRoot, VentureCapitalIntroWavFileName);
+    }
+
+    private void StartParadigmRoyaltyIntroSequence()
+    {
+        try
+        {
+            _introWavPlaying = true;
+            _introWavStartedAt = Game.GameTime;
+            PlayParadigmRoyaltyIntroWav();
+        }
+        catch
+        {
+            _introWavPlaying = false;
+        }
+    }
+
     private static long SafeAddLong(long a, long b)
     {
         try
@@ -512,6 +614,7 @@ public class VentureCapital : Script
                !_manualIncomeTaxRatePending &&
                !IsMenuVisible() &&
                !_loanActive &&
+               !_introWavPlaying &&
                ParadigmRoyaltyTransferBridge.IsParadigmRoyaltyContactAvailableForCurrentCharacter();
     }
 
@@ -526,11 +629,39 @@ public class VentureCapital : Script
             EnsureContactRegistered();
             UpdateContactAvailability();
 
+            if (_introWavPlaying)
+            {
+                if (Game.GameTime - _introWavStartedAt >= VentureCapitalIntroDelayMs)
+                {
+                    _introWavPlaying = false;
+                    _consentPending = true;
+                }
+                else
+                {
+                    Interval = 0;
+                    return;
+                }
+            }
+
+            if (_introWavPlaying)
+            {
+                if (Game.GameTime - _introWavStartedAt >= VentureCapitalIntroDelayMs)
+                {
+                    _introWavPlaying = false;
+                    _consentPending = true;
+                }
+                else
+                {
+                    Interval = 0;
+                    return;
+                }
+            }
+
             if (_consentPending)
             {
                 GTA.UI.Screen.ShowHelpTextThisFrame(
                     L("VentureCapital_ConsentPrompt",
-                    "Tổ chức cấp cho lượng tiền ngay và ~y~tự động~s~ trích % thu nhập hoặc ~y~tự thỏa thuận~s~ % tùy thích?\n~INPUT_FRONTEND_ACCEPT~ để đồng ý\n~INPUT_FRONTEND_LEFT~ để nhập %")
+                    "Tổ chức cấp tiền ngay và ~y~tự động~s~ trích % thu nhập hoặc ~y~tự thỏa thuận~s~ % tùy ý?")
                 );
             }
             else if (_manualIncomeTaxRatePending)
@@ -538,8 +669,7 @@ public class VentureCapital : Script
                 GTA.UI.Screen.ShowHelpTextThisFrame(
                     L("VentureCapital_ManualRatePrompt",
                     "Tổ chức đang muốn ~g~an toàn~s~ cho bạn mà lại không chịu? Vậy bạn muốn ~y~trích %~s~ là ") +
-                    GetManualIncomeTaxInputDisplay(_manualIncomeTaxRateInput) +
-                    L("VentureCapital_ManualRatePromptTail", "\n~INPUT_FRONTEND_ACCEPT~ để đồng ý\n~INPUT_FRONTEND_LEFT~ để hủy")
+                    GetManualIncomeTaxInputDisplay(_manualIncomeTaxRateInput)
                 );
             }
 
@@ -582,6 +712,7 @@ public class VentureCapital : Script
                 }
             }
 
+            // Khối lệnh đã được cập nhật theo hướng dẫn
             if (_manualIncomeTaxRatePending)
             {
                 if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Return)
@@ -595,6 +726,11 @@ public class VentureCapital : Script
                     if (!string.IsNullOrEmpty(_manualIncomeTaxRateInput))
                     {
                         _manualIncomeTaxRateInput = _manualIncomeTaxRateInput.Substring(0, _manualIncomeTaxRateInput.Length - 1);
+                    }
+                    else
+                    {
+                        // Không còn số nào để xóa -> hủy luôn help-box nhập thủ công
+                        CancelManualIncomeTaxEntry();
                     }
                     return;
                 }
@@ -636,6 +772,7 @@ public class VentureCapital : Script
         }
         catch
         {
+            // Có thể cân nhắc ghi log lỗi ở đây nếu cần thiết thay vì bỏ trống catch
         }
     }
 
@@ -729,7 +866,8 @@ public class VentureCapital : Script
             _selectedIncomeTaxRate = IncomeTaxRate;
             _manualIncomeTaxRateInput = string.Empty;
             _manualIncomeTaxRatePending = false;
-            _consentPending = true;
+
+            StartParadigmRoyaltyIntroSequence();
         }
         finally
         {

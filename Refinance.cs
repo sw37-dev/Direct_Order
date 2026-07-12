@@ -12,6 +12,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Windows.Forms;
+using System.Media;
+using System.Threading.Tasks;
 
 public class MinotaurScript : Script
 {
@@ -23,6 +25,38 @@ public class MinotaurScript : Script
 
     private int _lastSyncedCollateralCount = -1;
     private long _lastSyncedRemainingDebt = -1;
+
+    private const int MINOTAUR_INTRO_DELAY_MS = 1000;
+
+    private static string GetScriptsDirectory()
+    {
+        try
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string scriptsDir = Path.Combine(baseDir, "scripts");
+
+            if (Directory.Exists(scriptsDir))
+            {
+                return scriptsDir;
+            }
+
+            return baseDir;
+        }
+        catch
+        {
+            return ".";
+        }
+    }
+
+    private readonly string MinotaurAudioRoot = Path.Combine(
+        GetScriptsDirectory(),
+        "Audio"
+    );
+
+    private readonly string MinotaurIntroWavFileName = "Minotaur.wav";
+
+    private bool _introWavPlaying = false;
+    private int _introWavStartedAt = 0;
 
     private static readonly string DataRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -41,6 +75,53 @@ public class MinotaurScript : Script
     {
         if (value < 0) value = 0;
         return string.Format(CultureInfo.InvariantCulture, "${0:N0}", value);
+    }
+
+    private string GetMinotaurWavPath()
+    {
+        try
+        {
+            Directory.CreateDirectory(MinotaurAudioRoot);
+        }
+        catch
+        {
+        }
+
+        return Path.Combine(MinotaurAudioRoot, MinotaurIntroWavFileName);
+    }
+
+    private void PlayMinotaurIntroWav()
+    {
+        try
+        {
+            string path = GetMinotaurWavPath();
+
+            if (!File.Exists(path))
+                return;
+
+            GTA.UI.Screen.ShowSubtitle(
+                "This is Minotaur, specializing in debt acquisition and restructuring. Are you looking for solutions to manage an existing debt?",
+                7300
+            );
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (var sp = new SoundPlayer(path))
+                    {
+                        sp.Load();
+                        sp.PlaySync();
+                    }
+                }
+                catch
+                {
+                }
+            });
+        }
+        catch
+        {
+        }
     }
 
     private sealed class MinotaurState
@@ -105,6 +186,22 @@ public class MinotaurScript : Script
             SyncActiveMinotaurState();   // NEW: đồng bộ trạng thái Minotaur <-> Fleeca mỗi tick
 
             EnsureMinotaurContactRegistered();
+
+            if (_introWavPlaying)
+            {
+                if (Game.GameTime - _introWavStartedAt >= MINOTAUR_INTRO_DELAY_MS)
+                {
+                    _introWavPlaying = false;
+                    _promptPending = true;
+                    _promptExpireAt = Game.GameTime + PROMPT_TIMEOUT_MS;
+                }
+                else
+                {
+                    Interval = 0;
+                    return;
+                }
+            }
+
             UpdatePromptState();
             ProcessUi();
         }
@@ -396,8 +493,11 @@ public class MinotaurScript : Script
 
             _cachedState = state;
             _serviceOwnerHash = state.OwnerHash;
-            _promptPending = true;
-            _promptExpireAt = Game.GameTime + PROMPT_TIMEOUT_MS;
+
+            _promptPending = false;
+            _introWavPlaying = true;
+            _introWavStartedAt = Game.GameTime;
+            PlayMinotaurIntroWav();
 
             TryClosePhone();
         }

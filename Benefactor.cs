@@ -12,12 +12,34 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Windows.Forms;
+using System.Media;
+using System.Threading.Tasks;
 
 public class BenefactorScript : Script
 {
     private static string L(string key, string fallback)
     {
         return Language.Get(key, fallback);
+    }
+
+    private static string GetScriptsDirectory()
+    {
+        try
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string scriptsDir = Path.Combine(baseDir, "scripts");
+
+            if (Directory.Exists(scriptsDir))
+            {
+                return scriptsDir;
+            }
+
+            return baseDir;
+        }
+        catch
+        {
+            return ".";
+        }
     }
 
     private static string BenefactorContactName => L("Benefactor_ContactName", "Benefactor");
@@ -37,13 +59,13 @@ public class BenefactorScript : Script
     private static string BenefactorRentalLostNoticeText => L("Benefactor_RentalLostNoticeText",
          "Chiếc phương tiện mà bạn đã thuê từ công ty đâu rồi, sao không thấy trả lại? Nếu không trả sẽ phải đền bù một khoảng tiền ~HUD_COLOUR_DEGEN_YELLOW~{0}~s~ đấy!");
     private static string BenefactorRentalPenaltySeizureText = L(
-    "Benefactor_RentalPenaltySeizureText",
-    "Vì bạn không đủ tiền đền nên công ty chúng tôi buộc phải tịch thu chút đỉnh từ số tiền hiện tại của bạn. Mong lần sau bạn thuê phương tiện sẽ cẩn thận hơn!");
+        "Benefactor_RentalPenaltySeizureText",
+        "Vì bạn không đủ tiền đền nên công ty chúng tôi buộc phải tịch thu chút đỉnh từ số tiền hiện tại của bạn. Mong lần sau bạn thuê phương tiện sẽ cẩn thận hơn!");
 
     private const int CONTACT_DIAL_TIMEOUT_MS = 2000;
     private const int RENT_CHECK_INTERVAL_MS = 30000;
     private const int RENT_DURATION_HOURS = 3;
-    private const double RENT_FEE_PERCENT = 0.0175;
+    private const double RENT_FEE_PERCENT = 0.0167;
     private const int RENTAL_SPAWN_BLIP_DURATION_MS = 60000;
     private const int RENT_DECAY_STOP_DELETE_DELAY_MS = 60000;
 
@@ -60,6 +82,16 @@ public class BenefactorScript : Script
     private const float RENTAL_STREAM_PRELOAD_RADIUS = 120f;
     private const float RENTAL_STREAM_KEEPALIVE_DISTANCE = 300f;
 
+    private const int BENEFCTOR_INTRO_DELAY_MS = 500;
+
+    private readonly string BenefactorAudioRoot = Path.Combine(
+        GetScriptsDirectory(),
+        "Audio"
+    );
+
+    private bool _benefactorIntroPlaying = false; 
+    private int _benefactorIntroStartedAt = 0;
+
     // Trạng thái giữ vùng spawn luôn được load
     private Vector3 _rentalStreamAnchor = Vector3.Zero;
     private bool _rentalStreamActive = false;
@@ -67,7 +99,7 @@ public class BenefactorScript : Script
 
     private int _rentalLossCompensation = -1;
 
-    private const float AIR_WANTED_ZONE_RADIUS = 800f;
+    private const float AIR_WANTED_ZONE_RADIUS = 200f;
     private const int AIR_WANTED_FREEZE_DURATION_MS = 70000;
 
     private bool _rentedVehicleIsAir = false;
@@ -357,16 +389,31 @@ public class BenefactorScript : Script
                 return;
             }
 
+            int remainingToday = _currentOptions != null ? _currentOptions.Count : 0;
+
+            if (remainingToday < 0)
+            {
+                remainingToday = 0;
+            }
+            else if (remainingToday > 12)
+            {
+                remainingToday = 12;
+            }
+
             _callPending = true;
-            _callDueTime = Game.GameTime + 1;
+            _callDueTime = Game.GameTime + BENEFCTOR_INTRO_DELAY_MS;
+
+            StartBenefactorIntroSequence();
+            PlayBenefactorIntroAudio(remainingToday);
         }
         catch (Exception ex)
         {
             Log("OnBenefactorAnswered failed: " + ex);
         }
+        // Gộp khối try-catch trống trong finally bằng toán tử điều kiện và loại bỏ catch thừa
         finally
         {
-            try { CustomiFruit.GetCurrentInstance()?.Close(0); } catch { }
+            CustomiFruit.GetCurrentInstance()?.Close(0);
         }
     }
 
@@ -374,13 +421,11 @@ public class BenefactorScript : Script
     {
         try
         {
-            if (!_callPending)
-                return;
-
-            if (Game.GameTime < _callDueTime)
-                return;
+            if (!_callPending) return;
+            if (Game.GameTime < _callDueTime) return;
 
             _callPending = false;
+            _benefactorIntroPlaying = false;
 
             SyncDailyRentalPoolState();
 
@@ -842,6 +887,108 @@ public class BenefactorScript : Script
             value = 0;
 
         return string.Format(CultureInfo.InvariantCulture, "${0:N0}", value);
+    }
+
+    private string GetBenefactorIntroWavPath(int remainingToday)
+    {
+        try
+        {
+            Directory.CreateDirectory(BenefactorAudioRoot);
+        }
+        catch
+        {
+            // Tránh nuốt ngoại lệ âm thầm trừ khi thực sự cần thiết
+        }
+
+        int suffix = 12 - Math.Max(0, Math.Min(12, remainingToday));
+
+        if (suffix <= 0)
+        {
+            return Path.Combine(BenefactorAudioRoot, "Benefactor.wav");
+        }
+
+        return Path.Combine(BenefactorAudioRoot, $"Benefactor_-{suffix}.wav");
+    }
+
+    private string GetBenefactorIntroSubtitle(int remainingToday)
+    {
+        switch (Math.Max(0, Math.Min(12, remainingToday)))
+        {
+            case 12:
+                return "Hi, I'm with Benefactor Rentals. Which vehicle are you looking to rent?";
+            case 11:
+                return "Benefactor has only 11 vehicles left for today.";
+            case 10:
+                return "Only 10 Benefactor vehicles remain available today.";
+            case 9:
+                return "We are down to our last 9 vehicles for the day.";
+            case 8:
+                return "Just 8 Benefactor vehicles left on the lot today.";
+            case 7:
+                return "Benefactor’s daily availability is now down to 7 vehicles.";
+            case 6:
+                return "Securing one of our last 6 vehicles for today is highly recommended.";
+            case 5:
+                return "Only 5 spots left for today’s Benefactor fleet.";
+            case 4:
+                return "Hurry, Benefactor has just 4 vehicles remaining today.";
+            case 3:
+                return "We have only 3 vehicles left to offer for the rest of the day.";
+            case 2:
+                return "Just 2 Benefactor vehicles left available.";
+            case 1:
+                return "There is only 1 last Benefactor vehicle up for grabs today.";
+            default:
+                return "Benefactor has no remaining rentals for the rest of the day. Kindly return tomorrow, and thank you for utilizing our services!";
+        }
+    }
+
+    private void PlayBenefactorIntroAudio(int remainingToday)
+    {
+        try
+        {
+            string path = GetBenefactorIntroWavPath(remainingToday);
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            string subtitle = GetBenefactorIntroSubtitle(remainingToday);
+            GTA.UI.Screen.ShowSubtitle(subtitle, 4000);
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (var sp = new SoundPlayer(path))
+                    {
+                        sp.Load();
+                        sp.PlaySync();
+                    }
+                }
+                catch
+                {
+                    // Xử lý lỗi phát âm thanh nếu cần
+                }
+            });
+        }
+        catch
+        {
+            // Xử lý lỗi chung nếu cần
+        }
+    }
+
+    private void StartBenefactorIntroSequence()
+    {
+        try
+        {
+            _benefactorIntroPlaying = true;
+            _benefactorIntroStartedAt = Game.GameTime;
+        }
+        catch
+        {
+            _benefactorIntroPlaying = false;
+        }
     }
 
     private static int ComputeRentalFee(int basePrice)

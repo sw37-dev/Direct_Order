@@ -38,7 +38,7 @@ public partial class PersistentManager : Script
     private const double INSURANCE_RESTORE_PERCENT = 0.07;
 
     private const int MIN_CUSTOM_ICON_ID = 0;
-    private const int MAX_CUSTOM_ICON_ID = 866;
+    private const int MAX_CUSTOM_ICON_ID = 957;
 
     private const float MIN_CUSTOM_BLIP_SCALE = 0.50f;
     private const float MAX_CUSTOM_BLIP_SCALE = 2.00f;
@@ -4765,11 +4765,28 @@ public partial class PersistentManager : Script
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
             Notification.Show(NotificationIcon.MpMorsMutual, sender, subject, body);
         }
         catch
         {
             GTA.UI.Notification.Show(body);
+        }
+    }
+
+    private static void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch { }
         }
     }
 

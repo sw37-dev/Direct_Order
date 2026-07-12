@@ -13,6 +13,8 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
+using System.Media;
+using System.Threading.Tasks;
 
 public class CreditDefaultSwap : Script
 {
@@ -25,6 +27,40 @@ public class CreditDefaultSwap : Script
     private const int PAYMENT_CHECK_INTERVAL_MS = 15000;
 
     private const decimal DAILY_FEE_RATE = 0.0004m; // 0.04%
+
+    private const int CDS_INTRO_DELAY_MS = 800;
+
+    private static string GetScriptsDirectory()
+    {
+        try
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string scriptsDir = Path.Combine(baseDir, "scripts");
+
+            if (Directory.Exists(scriptsDir))
+            {
+                return scriptsDir;
+            }
+
+            return baseDir;
+        }
+        catch
+        {
+            return ".";
+        }
+    }
+
+    private readonly string CDSAudioRoot = Path.Combine(
+        GetScriptsDirectory(),
+        "Audio"
+    );
+
+    private readonly string CDSIntroFileName = "CDS.wav";
+    private readonly string CDSDeclineFileName = "CDS_Decline.wav";
+
+    private bool _introWavPlaying = false;
+    private bool _introIsCancelFlow = false;
+    private int _introWavStartedAt = 0;
 
     private static readonly string DataFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -146,6 +182,21 @@ public class CreditDefaultSwap : Script
 
             EnsureContactRegistered();
             RefreshCurrentSnapshotIfNeeded();
+
+            if (_introWavPlaying)
+            {
+                if (Game.GameTime - _introWavStartedAt >= CDS_INTRO_DELAY_MS)
+                {
+                    _introWavPlaying = false;
+                    _promptPending = true;
+                    _promptDueAt = Game.GameTime + 1;
+                }
+                else
+                {
+                    Interval = 0;
+                    return;
+                }
+            }
 
             if (_promptPending)
                 Interval = 0;
@@ -363,9 +414,11 @@ public class CreditDefaultSwap : Script
             if (IsPolicyActiveForCurrentOwner())
             {
                 _promptIsCancelFlow = true;
-                _promptPending = true;
+                _promptPending = false;
                 _promptOwnerHash = _snapshot.OwnerHash;
-                _promptDueAt = Game.GameTime + 1;
+                _promptDueAt = 0;
+
+                StartCdsIntroSequence(decline: true);
                 TryClosePhone();
                 return;
             }
@@ -378,9 +431,11 @@ public class CreditDefaultSwap : Script
             }
 
             _promptIsCancelFlow = false;
-            _promptPending = true;
+            _promptPending = false;
             _promptOwnerHash = _snapshot.OwnerHash;
-            _promptDueAt = Game.GameTime + 1;
+            _promptDueAt = 0;
+
+            StartCdsIntroSequence(decline: false);
             TryClosePhone();
         }
         catch
@@ -403,13 +458,13 @@ public class CreditDefaultSwap : Script
             {
                 ShowHelpText(L(
                     "CDS_Help_CancelFlow",
-                    "Bạn đang sử dụng ~HUD_COLOUR_DEGEN_GREEN~Hợp đồng Chuyển đổi Rủi ro Tín dụng~s~, có chắc sẽ hủy?\n~INPUT_FRONTEND_ACCEPT~ để đồng ý\n~INPUT_FRONTEND_LEFT~ để hủy"));
+                    "Bạn đang sử dụng ~g~Hợp đồng Chuyển đổi Rủi ro Tín dụng~s~, có chắc sẽ hủy?"));
             }
             else
             {
                 ShowHelpText(L(
                     "CDS_Help_BuyFlow",
-                    "Nếu mua gói bảo hiểm này, bạn cần ~y~trả phí định kỳ hằng ngày~s~ để bảo vệ khoản vay của mình?\n~INPUT_FRONTEND_ACCEPT~ để đồng ý\n~INPUT_FRONTEND_LEFT~ để từ chối"));
+                    "Nếu mua gói bảo hiểm này, bạn cần ~y~trả phí định kỳ hằng ngày~s~ để bảo vệ khoản vay của mình?"));
             }
         }
         catch { }
@@ -853,6 +908,78 @@ public class CreditDefaultSwap : Script
         if (value < 0)
             value = 0;
         return string.Format(CultureInfo.InvariantCulture, "${0:N0}", value);
+    }
+
+    private string GetCdsAudioPath(bool decline)
+    {
+        try
+        {
+            Directory.CreateDirectory(CDSAudioRoot);
+        }
+        catch
+        {
+        }
+
+        return Path.Combine(CDSAudioRoot, decline ? CDSDeclineFileName : CDSIntroFileName);
+    }
+
+    private void PlayCdsIntroWav(bool decline)
+    {
+        try
+        {
+            string path = GetCdsAudioPath(decline);
+
+            if (!File.Exists(path))
+                return;
+
+            if (decline)
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    "Our records show you are an active insurance policyholder. Are you calling to temporarily suspend your service?",
+                    7200
+                );
+            }
+            else
+            {
+                GTA.UI.Screen.ShowSubtitle(
+                    "I represent our insurance organization. Do you need to purchase insurance for your collateral vehicles at Fleeca Bank?",
+                    6100
+                );
+            }
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (var sp = new SoundPlayer(path))
+                    {
+                        sp.Load();
+                        sp.PlaySync();
+                    }
+                }
+                catch
+                {
+                }
+            });
+        }
+        catch
+        {
+        }
+    }
+
+    private void StartCdsIntroSequence(bool decline)
+    {
+        try
+        {
+            _introWavPlaying = true;
+            _introIsCancelFlow = decline;
+            _introWavStartedAt = Game.GameTime;
+            PlayCdsIntroWav(decline);
+        }
+        catch
+        {
+            _introWavPlaying = false;
+        }
     }
 
     private static bool HasActiveLoan(int ownerHash)

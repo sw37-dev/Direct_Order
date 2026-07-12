@@ -282,7 +282,7 @@ public class Hacker : Script
     {
         try
         {
-            PlayFrontendSound("CHECKPOINT_NORMAL", "HUD_MINI_GAME_SOUNDSET");
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
 
             Notification.Show(
                 NotificationIcon.HumanDefault,
@@ -1439,7 +1439,7 @@ public class Hacker : Script
                 // ưu tiên wrapper an toàn
                 try
                 {
-                    GTA.Audio.PlaySoundFrontend(_cfgExplosionSound, _cfgExplosionSoundSet);
+                    Audio.PlaySoundFrontend(_cfgExplosionSound, _cfgExplosionSoundSet);
                 }
                 catch
                 {
@@ -1454,7 +1454,7 @@ public class Hacker : Script
             {
                 try
                 {
-                    GTA.Audio.PlaySoundAt(pos, _cfgExplosionSound, _cfgExplosionSoundSet);
+                    Audio.PlaySoundAt(pos, _cfgExplosionSound, _cfgExplosionSoundSet);
                 }
                 catch
                 {
@@ -1472,7 +1472,7 @@ public class Hacker : Script
     private void TriggerPowerOnSound()
     {
         // Sử dụng âm thanh "tạch" của cầu dao khi có điện lại
-        GTA.Audio.PlaySoundFrontend("Breaker_01", "DLC_HALLOWEEN_FVJ_Sounds");
+        Audio.PlaySoundFrontend("Breaker_01", "DLC_HALLOWEEN_FVJ_Sounds");
     }
 
     private void StartSmoothingSequence()

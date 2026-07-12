@@ -13,6 +13,8 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
+using System.Media;
+using System.Threading.Tasks;
 
 public partial class LombankScript : Script
 {
@@ -31,6 +33,13 @@ public partial class LombankScript : Script
     private static string TerminalBusyMessage =>
         L("Lombank_TerminalBusyMessage",
             "Hãy hoàn tất giao dịch hiện tại trước khi giao dịch mới! Xin cảm ơn quý khách!");
+
+    private readonly string LombankAudioRoot = Path.Combine(
+        GetScriptsDirectory(),
+        "Audio"
+    );
+
+    private readonly string LombankIntroWavFileName = "LomBank.wav";
 
     private static string LombankNotificationBrand =>
         L("Lombank_NotificationBrand", "Lom Bank");
@@ -213,6 +222,73 @@ public partial class LombankScript : Script
         catch (Exception ex)
         {
             Log("OnTick failed: " + ex);
+        }
+    }
+
+    private static string GetScriptsDirectory()
+    {
+        try
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string scriptsDir = Path.Combine(baseDir, "scripts");
+
+            if (Directory.Exists(scriptsDir))
+            {
+                return scriptsDir;
+            }
+
+            return baseDir;
+        }
+        catch
+        {
+            return ".";
+        }
+    }
+
+    private string GetLombankWavPath()
+    {
+        try
+        {
+            Directory.CreateDirectory(LombankAudioRoot);
+        }
+        catch
+        {
+        }
+
+        return Path.Combine(LombankAudioRoot, LombankIntroWavFileName);
+    }
+
+    private void PlayLombankIntroWav()
+    {
+        try
+        {
+            string path = GetLombankWavPath();
+
+            if (!File.Exists(path))
+                return;
+
+            GTA.UI.Screen.ShowSubtitle(
+                "Thank you for calling Lom Bank. Which of our services would you like to use?",
+                4000
+            );
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (var sp = new SoundPlayer(path))
+                    {
+                        sp.Load();
+                        sp.PlaySync();
+                    }
+                }
+                catch
+                {
+                }
+            });
+        }
+        catch
+        {
         }
     }
 
@@ -1199,6 +1275,8 @@ public partial class LombankScript : Script
             EnsureMainMenuCreated();
             ProcessLoanTimeEffects(force: true, showNotice: true);
             RefreshMainMenu();
+
+            PlayLombankIntroWav();
 
             _mainMenu.Visible = true;
             _menuOpen = true;

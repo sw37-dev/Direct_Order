@@ -21,7 +21,7 @@ public class SymbolixIcons : Script
     private const int TREVOR_HASH = -1686040670;
 
     private const int MIN_ICON_ID = 0;
-    private const int MAX_ICON_ID = 866;
+    private const int MAX_ICON_ID = 957;
     private const int CONTACT_DIAL_TIMEOUT_MS = 2000;
     private const int MENU_IDLE_INTERVAL_MS = 500;
     private const int MENU_VISIBLE_INTERVAL_MS = 0;
@@ -57,6 +57,9 @@ public class SymbolixIcons : Script
     private readonly List<NativeItem> _detailItems = new List<NativeItem>();
     private int _currentOwnerHash;
 
+    private readonly List<string> _selectedVehicleKeys = new List<string>();
+    private bool _ownerSelectionSyncGuard = false;
+
     private bool _keyboardPromptActive;
     private string _keyboardPromptKey = string.Empty;
     private string _keyboardPromptDefaultText = string.Empty;
@@ -71,8 +74,8 @@ public class SymbolixIcons : Script
     private NativeItem _detailSizeItem;
     private bool _keyboardPromptIsScale;
 
-    private const float MIN_SCALE = 0.70f;
-    private const float MAX_SCALE = 2.30f;
+    private const float MIN_SCALE = 0.50f;
+    private const float MAX_SCALE = 2.00f;
     private const float SCALE_STEP = 0.01f;
 
     private readonly List<NativeCheckboxItem> _ownerCheckboxItems = new List<NativeCheckboxItem>();
@@ -141,6 +144,7 @@ public class SymbolixIcons : Script
             if (_keyboardPromptActive)
                 return;
 
+            // Xử lý khi Menu Detail đang hiển thị
             if (IsDetailMenuVisible())
             {
                 int selectedIndex = GetSelectedMenuIndex(_detailMenu, _detailItems);
@@ -167,6 +171,7 @@ public class SymbolixIcons : Script
                 return;
             }
 
+            // Xử lý khi các Menu khác đang hiển thị
             if (IsOwnerVehiclesMenuVisible())
             {
                 if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Escape)
@@ -184,6 +189,25 @@ public class SymbolixIcons : Script
         }
     }
 
+    private static bool TryParseScaleFlexible(string text, out float scale)
+    {
+        scale = 0f;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            // cho phép cả 1.25 và 1,25
+            string normalized = text.Trim().Replace(',', '.');
+            return float.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out scale);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void AdjustSelectedVehicleScale(int delta)
     {
         try
@@ -198,7 +222,8 @@ public class SymbolixIcons : Script
             float currentScale = GetWorkingScale(entry.Key);
             float newScale = ClampScale(currentScale + (delta * SCALE_STEP));
 
-            CommitDraftScale(entry.Key, newScale, previewOnly: true);
+            CommitDraftScale(entry.Key, newScale, previewOnly: true, refreshMenu: false);
+            UpdateDetailVehicleVisuals();
         }
         catch
         {
@@ -295,13 +320,15 @@ public class SymbolixIcons : Script
             _currentOwnerHash = ownerHash;
             BuildOwnerVehicleCache(ownerHash);
 
-            // Khởi tạo lại toàn bộ các danh sách lưu trữ cache
+            _selectedVehicleKeys.Clear();
+            _selectedVehicleIndex = -1;
+            _selectedVehicleKey = string.Empty;
+
             _baselineIcons.Clear();
             _previewIcons.Clear();
             _baselineScales.Clear();
             _previewScales.Clear();
 
-            // Duyệt qua danh sách phương tiện và nạp dữ liệu từ PersistentManager
             foreach (var v in _ownerVehicles)
             {
                 int? savedIcon = PersistentManager.GetPersistedVehicleIconByKey(v.Key);
@@ -314,7 +341,6 @@ public class SymbolixIcons : Script
                 _previewScales[v.Key] = savedScale;
             }
 
-            // Các logic xử lý giao diện hiển thị Menu phía sau
             EnsureMainMenuCreated();
             BuildMainMenu();
             CloseVisibleMenusExcept(_mainMenu);
@@ -367,7 +393,7 @@ public class SymbolixIcons : Script
                 return;
 
             _mainMenu = new NativeMenu(
-                L("Symbolix_Menu_MainTitle", "Vehicle Icons"),
+                L("Symbolix_Menu_MainTitle", "Information"),
                 L("Symbolix_Menu_MainSubtitle", "CHỌN BIỂU TƯỢNG PHƯƠNG TIỆN"));
             _uiPool.Add(_mainMenu);
             ConfigureKeyboardOnlyMenu(_mainMenu);
@@ -434,6 +460,27 @@ public class SymbolixIcons : Script
         }
     }
 
+    private void ForceDetailPreviewRefresh(string vehicleKey)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(vehicleKey))
+                return;
+
+            _selectedVehicleKey = vehicleKey;
+
+            // Ép cập nhật lại các dòng hiển thị đang mở
+            UpdateDetailVehicleVisuals();
+
+            // Nếu menu đang mở thì cho UI redraw sớm hơn
+            if (IsDetailMenuVisible())
+                Interval = MENU_VISIBLE_INTERVAL_MS;
+        }
+        catch
+        {
+        }
+    }
+
     private void BuildMainMenu()
     {
         try
@@ -489,8 +536,9 @@ public class SymbolixIcons : Script
 
             _ownerVehiclesMenu.Clear();
             _ownerCheckboxItems.Clear();
-            _selectedVehicleKey = string.Empty;
+            _selectedVehicleKeys.Clear();
             _selectedVehicleIndex = -1;
+            _selectedVehicleKey = string.Empty;
 
             if (_ownerVehicles.Count == 0)
             {
@@ -511,33 +559,45 @@ public class SymbolixIcons : Script
 
                     item.CheckboxChanged += (s, e) =>
                     {
-                        if (_singleSelectGuard)
+                        if (_ownerSelectionSyncGuard)
                             return;
 
                         try
                         {
-                            _singleSelectGuard = true;
+                            _ownerSelectionSyncGuard = true;
 
                             if (item.Checked)
                             {
+                                if (!_selectedVehicleKeys.Any(k =>
+                                    string.Equals(k, entry.Key, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    _selectedVehicleKeys.Add(entry.Key);
+                                }
+
                                 _selectedVehicleIndex = index;
                                 _selectedVehicleKey = entry.Key;
-
-                                for (int j = 0; j < _ownerCheckboxItems.Count; j++)
-                                {
-                                    if (!ReferenceEquals(_ownerCheckboxItems[j], item))
-                                        _ownerCheckboxItems[j].Checked = false;
-                                }
                             }
                             else
                             {
-                                if (string.Equals(_selectedVehicleKey, entry.Key, StringComparison.OrdinalIgnoreCase))
-                                    item.Checked = true;
+                                _selectedVehicleKeys.RemoveAll(k =>
+                                    string.Equals(k, entry.Key, StringComparison.OrdinalIgnoreCase));
+
+                                if (_selectedVehicleKeys.Count == 0)
+                                {
+                                    _selectedVehicleIndex = -1;
+                                    _selectedVehicleKey = string.Empty;
+                                }
+                                else if (string.Equals(_selectedVehicleKey, entry.Key, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    _selectedVehicleKey = _selectedVehicleKeys[0];
+                                    _selectedVehicleIndex = _ownerVehicles.FindIndex(v =>
+                                        string.Equals(v.Key, _selectedVehicleKey, StringComparison.OrdinalIgnoreCase));
+                                }
                             }
                         }
                         finally
                         {
-                            _singleSelectGuard = false;
+                            _ownerSelectionSyncGuard = false;
                         }
                     };
 
@@ -547,7 +607,7 @@ public class SymbolixIcons : Script
             }
 
             var confirm = new NativeItem(
-                L("Symbolix_Owner_Confirm", "Thay đổi biểu tượng cho chiếc này"));
+                L("Symbolix_Owner_Confirm", "Thay đổi biểu tượng cho các xe đã chọn"));
             confirm.Activated += (s, e) => OpenDetailMenuForSelectedVehicle();
 
             var back = new NativeItem(
@@ -557,13 +617,15 @@ public class SymbolixIcons : Script
             _ownerVehiclesMenu.Add(confirm);
             _ownerVehiclesMenu.Add(back);
 
-            if (_ownerVehicles.Count > 0 && _selectedVehicleIndex < 0)
+            if (_ownerVehicles.Count > 0 && _selectedVehicleKeys.Count == 0)
             {
                 _selectedVehicleIndex = 0;
                 _selectedVehicleKey = _ownerVehicles[0].Key;
-                _singleSelectGuard = true;
+                _selectedVehicleKeys.Add(_selectedVehicleKey);
+
+                _ownerSelectionSyncGuard = true;
                 _ownerCheckboxItems[0].Checked = true;
-                _singleSelectGuard = false;
+                _ownerSelectionSyncGuard = false;
             }
         }
         catch
@@ -571,15 +633,68 @@ public class SymbolixIcons : Script
         }
     }
 
+    private List<string> GetTargetVehicleKeys(string primaryKey)
+    {
+        try
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (_selectedVehicleKeys != null && _selectedVehicleKeys.Count > 0)
+            {
+                foreach (var key in _selectedVehicleKeys)
+                {
+                    if (!string.IsNullOrWhiteSpace(key))
+                        set.Add(key);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(primaryKey))
+                set.Add(primaryKey);
+
+            return set.ToList();
+        }
+        catch
+        {
+            return string.IsNullOrWhiteSpace(primaryKey)
+                ? new List<string>()
+                : new List<string> { primaryKey };
+        }
+    }
+
+    private int GetPrimarySelectedVehicleIndex()
+    {
+        try
+        {
+            if (_selectedVehicleIndex >= 0 && _selectedVehicleIndex < _ownerVehicles.Count)
+                return _selectedVehicleIndex;
+
+            if (_selectedVehicleKeys.Count > 0)
+            {
+                string key = _selectedVehicleKeys[0];
+                return _ownerVehicles.FindIndex(v =>
+                    string.Equals(v.Key, key, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        catch
+        {
+        }
+
+        return -1;
+    }
+
     private void OpenDetailMenuForSelectedVehicle()
     {
         try
         {
-            if (_selectedVehicleIndex < 0 || _selectedVehicleIndex >= _ownerVehicles.Count)
+            int index = GetPrimarySelectedVehicleIndex();
+            if (index < 0 || index >= _ownerVehicles.Count)
             {
-                ShowSubtitle(L("Symbolix_Detail_SelectVehicle", "Hãy ~HUD_COLOUR_DEGEN_YELLOW~chọn một phương tiện~s~ trước."));
+                ShowSubtitle(L("Symbolix_Detail_SelectVehicle", "Hãy ~HUD_COLOUR_DEGEN_YELLOW~chọn ít nhất một phương tiện~s~ trước."));
                 return;
             }
+
+            _selectedVehicleIndex = index;
+            _selectedVehicleKey = _ownerVehicles[index].Key;
 
             EnsureDetailMenuCreated();
             BuildDetailMenuForSelectedVehicle();
@@ -700,7 +815,13 @@ public class SymbolixIcons : Script
 
             var entry = _ownerVehicles[_selectedVehicleIndex];
             int currentIcon = GetWorkingIconId(entry.Key);
-            StartKeyboardPrompt(entry.Key, Math.Max(0, GetWorkingIconId(entry.Key)).ToString(CultureInfo.InvariantCulture), _selectedVehicleIndex, false);
+            if (currentIcon < 0) currentIcon = 0;
+
+            StartKeyboardPrompt(
+                entry.Key,
+                currentIcon.ToString(CultureInfo.InvariantCulture),
+                _selectedVehicleIndex,
+                isScalePrompt: false);
         }
         catch
         {
@@ -716,7 +837,12 @@ public class SymbolixIcons : Script
 
             var entry = _ownerVehicles[_selectedVehicleIndex];
             float currentScale = GetWorkingScale(entry.Key);
-            StartKeyboardPrompt(entry.Key, currentScale.ToString("0.00", CultureInfo.InvariantCulture), _selectedVehicleIndex, true);
+
+            StartKeyboardPrompt(
+                entry.Key,
+                currentScale.ToString("0.00", CultureInfo.InvariantCulture),
+                _selectedVehicleIndex,
+                isScalePrompt: true);
         }
         catch
         {
@@ -741,11 +867,21 @@ public class SymbolixIcons : Script
             if (newIcon < MIN_ICON_ID) newIcon = MIN_ICON_ID;
             if (newIcon > MAX_ICON_ID) newIcon = MAX_ICON_ID;
 
-            CommitDraftIcon(entry.Key, newIcon, previewOnly: true);
+            CommitDraftIcon(entry.Key, newIcon, previewOnly: true, refreshMenu: false);
+            UpdateDetailVehicleVisuals();
         }
         catch
         {
         }
+    }
+
+    private void ResetKeyboardPromptState()
+    {
+        _keyboardPromptActive = false;
+        _keyboardPromptIsScale = false;
+        _keyboardPromptKey = string.Empty;
+        _keyboardPromptDefaultText = string.Empty;
+        _keyboardPromptTargetIndex = -1;
     }
 
     private void StartKeyboardPrompt(string vehicleKey, string currentText, int index, bool isScalePrompt)
@@ -758,26 +894,24 @@ public class SymbolixIcons : Script
             _keyboardPromptActive = true;
             _keyboardPromptIsScale = isScalePrompt;
             _keyboardPromptKey = vehicleKey;
-            _keyboardPromptDefaultText = currentText;
+            _keyboardPromptDefaultText = currentText ?? string.Empty;
             _keyboardPromptTargetIndex = index;
 
-            try
-            {
-                Function.Call(Hash.DISPLAY_ONSCREEN_KEYBOARD, 1, "FMMC_KEY_TIP8", "", _keyboardPromptDefaultText, "", "", "", 3);
-            }
-            catch
-            {
-                _keyboardPromptActive = false;
-                _keyboardPromptIsScale = false;
-                _keyboardPromptKey = string.Empty;
-                _keyboardPromptDefaultText = string.Empty;
-                _keyboardPromptTargetIndex = -1;
-            }
+            Function.Call(
+                Hash.DISPLAY_ONSCREEN_KEYBOARD,
+                0,
+                "FMMC_KEY_TIP8",
+                "",
+                _keyboardPromptDefaultText,
+                "",
+                "",
+                "",
+                8
+            );
         }
         catch
         {
-            _keyboardPromptActive = false;
-            _keyboardPromptIsScale = false;
+            ResetKeyboardPromptState();
         }
     }
 
@@ -788,88 +922,91 @@ public class SymbolixIcons : Script
             if (!_keyboardPromptActive)
                 return;
 
-            int status = 0;
+            int status;
             try
             {
                 status = Function.Call<int>(Hash.UPDATE_ONSCREEN_KEYBOARD);
             }
             catch
             {
-                _keyboardPromptActive = false;
+                ResetKeyboardPromptState();
                 return;
             }
 
-            if (status == 2)
+            if (status == 0)
+                return; // vẫn đang nhập
+
+            string key = _keyboardPromptKey;
+            bool isScalePrompt = _keyboardPromptIsScale;
+
+            string result = null;
+            if (status == 1)
             {
-                string result = null;
-                try { result = Function.Call<string>(Hash.GET_ONSCREEN_KEYBOARD_RESULT); } catch { result = null; }
-
-                _keyboardPromptActive = false;
-
-                if (!string.IsNullOrWhiteSpace(result))
+                try
                 {
-                    if (_keyboardPromptIsScale)
-                    {
-                        if (float.TryParse(result.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float value))
-                        {
-                            CommitDraftScale(_keyboardPromptKey, value, previewOnly: true);
-                            _detailMenuNeedsRefreshAfterKeyboardCommit = true;
-                            RefreshDetailMenuAfterKeyboardCommit();
-                        }
-                    }
-                    else
-                    {
-                        if (int.TryParse(result.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
-                        {
-                            CommitDraftIcon(_keyboardPromptKey, value, previewOnly: true);
-                            _detailMenuNeedsRefreshAfterKeyboardCommit = true;
-                            RefreshDetailMenuAfterKeyboardCommit();
-                        }
-                    }
+                    result = Function.Call<string>(Hash.GET_ONSCREEN_KEYBOARD_RESULT);
+                }
+                catch
+                {
+                    result = null;
+                }
+            }
+
+            ResetKeyboardPromptState();
+
+            if (status != 1 || string.IsNullOrWhiteSpace(result))
+                return;
+
+            result = result.Trim();
+
+            if (isScalePrompt)
+            {
+                if (!TryParseScaleFlexible(result, out float value))
+                {
+                    GTA.UI.Screen.ShowSubtitle(
+                        L("Symbolix_Error_InvalidScale", "~r~Kích cỡ không hợp lệ."),
+                        2500);
+                    return;
                 }
 
-                _keyboardPromptIsScale = false;
-                _keyboardPromptKey = string.Empty;
-                _keyboardPromptDefaultText = string.Empty;
-                _keyboardPromptTargetIndex = -1;
-            }
-            else if (status == 1)
-            {
-                _keyboardPromptActive = false;
-                _keyboardPromptIsScale = false;
-                _keyboardPromptKey = string.Empty;
-                _keyboardPromptDefaultText = string.Empty;
-                _keyboardPromptTargetIndex = -1;
-            }
-        }
-        catch
-        {
-            _keyboardPromptActive = false;
-            _keyboardPromptKey = string.Empty;
-            _keyboardPromptDefaultText = string.Empty;
-            _keyboardPromptTargetIndex = -1;
-        }
-    }
-
-    private void CommitDraftScale(string vehicleKey, float scale, bool previewOnly)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(vehicleKey))
-                return;
-
-            float normalized = ClampScale(scale);
-
-            if (previewOnly)
-            {
-                _previewScales[vehicleKey] = normalized;
-                PersistentManager.SetVehicleCustomScaleByKey(vehicleKey, normalized, false);
+                CommitDraftScale(key, value, previewOnly: false, refreshMenu: true);
             }
             else
             {
-                _baselineScales[vehicleKey] = normalized;
-                _previewScales[vehicleKey] = normalized;
-                PersistentManager.SetVehicleCustomScaleByKey(vehicleKey, normalized, true);
+                if (!int.TryParse(result, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                {
+                    GTA.UI.Screen.ShowSubtitle(
+                        L("Symbolix_Error_InvalidIcon", "~r~ID biểu tượng không hợp lệ."),
+                        2500);
+                    return;
+                }
+
+                value = Math.Max(MIN_ICON_ID, Math.Min(MAX_ICON_ID, value));
+
+                CommitDraftIcon(key, value, previewOnly: false, refreshMenu: true);
+            }
+
+            _detailMenuNeedsRefreshAfterKeyboardCommit = true;
+
+            // Ép refresh ngay để preview icon/size hiện ra dù nhập trực tiếp
+            ForceDetailPreviewRefresh(key);
+
+            RefreshDetailMenuAfterKeyboardCommit();
+        }
+        catch
+        {
+            ResetKeyboardPromptState();
+        }
+    }
+
+    private void ApplyIconPreview(string vehicleKey, int iconId)
+    {
+        try
+        {
+            foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+            {
+                _previewIcons[targetKey] = iconId;
+                PersistentManager.SetVehicleCustomIconByKey(targetKey, iconId, false);
             }
 
             _selectedVehicleKey = vehicleKey;
@@ -880,34 +1017,101 @@ public class SymbolixIcons : Script
         }
     }
 
-    private void CommitDraftIcon(string vehicleKey, int iconId, bool previewOnly)
+    private void ApplyScalePreview(string vehicleKey, float scale)
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(vehicleKey))
-                return;
+            float normalized = ClampScale(scale);
 
-            if (iconId < MIN_ICON_ID || iconId > MAX_ICON_ID)
+            foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
             {
-                ShowSubtitle(string.Format(CultureInfo.InvariantCulture,
-                    L("Symbolix_Error_IconRange", "Biểu tượng phải nằm trong khoảng {0} đến {1}."),
-                    MIN_ICON_ID, MAX_ICON_ID));
-                return;
-            }
-
-            if (previewOnly)
-            {
-                _previewIcons[vehicleKey] = iconId;
-                PersistentManager.SetVehicleCustomIconByKey(vehicleKey, iconId, false);
-            }
-            else
-            {
-                _baselineIcons[vehicleKey] = iconId;
-                _previewIcons[vehicleKey] = iconId;
-                PersistentManager.SetVehicleCustomIconByKey(vehicleKey, iconId, true);
+                _previewScales[targetKey] = normalized;
+                PersistentManager.SetVehicleCustomScaleByKey(targetKey, normalized, false);
             }
 
             _selectedVehicleKey = vehicleKey;
+            UpdateDetailVehicleVisuals();
+        }
+        catch
+        {
+        }
+    }
+
+    private void CommitDraftScale(string vehicleKey, float scale, bool previewOnly, bool refreshMenu = false)
+    {
+        try
+        {
+            float normalized = ClampScale(scale);
+
+            // 1) Preview trước cho toàn bộ xe đã tick
+            foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+            {
+                _previewScales[targetKey] = normalized;
+                PersistentManager.SetVehicleCustomScaleByKey(targetKey, normalized, false);
+            }
+
+            // 2) Nếu là xác nhận cuối cùng thì lưu thật
+            if (!previewOnly)
+            {
+                foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+                {
+                    _baselineScales[targetKey] = normalized;
+                    _previewScales[targetKey] = normalized;
+                    PersistentManager.SetVehicleCustomScaleByKey(targetKey, normalized, true);
+                }
+
+                // 3) Re-apply preview sau khi lưu để giữ hiển thị tức thì
+                foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+                {
+                    PersistentManager.SetVehicleCustomScaleByKey(targetKey, normalized, false);
+                }
+            }
+
+            if (refreshMenu)
+                _detailMenuNeedsRefreshAfterKeyboardCommit = true;
+
+            ForceDetailPreviewRefresh(vehicleKey);
+        }
+        catch
+        {
+        }
+    }
+
+    private void CommitDraftIcon(string vehicleKey, int iconId, bool previewOnly, bool refreshMenu = false)
+    {
+        try
+        {
+            if (iconId < MIN_ICON_ID || iconId > MAX_ICON_ID)
+                return;
+
+            // 1) Preview trước cho toàn bộ xe đã tick
+            foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+            {
+                _previewIcons[targetKey] = iconId;
+                PersistentManager.SetVehicleCustomIconByKey(targetKey, iconId, false);
+            }
+
+            // 2) Nếu là xác nhận cuối cùng thì lưu thật
+            if (!previewOnly)
+            {
+                foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+                {
+                    _baselineIcons[targetKey] = iconId;
+                    _previewIcons[targetKey] = iconId;
+                    PersistentManager.SetVehicleCustomIconByKey(targetKey, iconId, true);
+                }
+
+                // 3) Re-apply preview sau khi lưu để giữ hiển thị tức thì
+                foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+                {
+                    PersistentManager.SetVehicleCustomIconByKey(targetKey, iconId, false);
+                }
+            }
+
+            if (refreshMenu)
+                _detailMenuNeedsRefreshAfterKeyboardCommit = true;
+
+            ForceDetailPreviewRefresh(vehicleKey);
         }
         catch
         {
@@ -918,42 +1122,39 @@ public class SymbolixIcons : Script
     {
         try
         {
-            // 1. Kiểm tra chỉ số phương tiện hợp lệ
-            if (_selectedVehicleIndex < 0 || _selectedVehicleIndex >= _ownerVehicles.Count)
+            int index = GetPrimarySelectedVehicleIndex();
+            if (index < 0 || index >= _ownerVehicles.Count)
             {
-                ShowSubtitle(L("Symbolix_Error_SelectVehicle", "Hãy ~y~chọn~s~ ~HUD_COLOUR_DEGEN_CYAN~một phương tiện~s~ trước."));
+                ShowSubtitle(L("Symbolix_Error_SelectVehicle", "Hãy ~y~chọn~s~ ~HUD_COLOUR_DEGEN_CYAN~ít nhất một phương tiện~s~ trước."));
                 return;
             }
 
-            var entry = _ownerVehicles[_selectedVehicleIndex];
+            var entry = _ownerVehicles[index];
             int iconId = GetWorkingIconId(entry.Key);
 
-            // 2. Kiểm tra tính hợp lệ của Icon ID
             if (iconId < MIN_ICON_ID || iconId > MAX_ICON_ID)
             {
                 ShowSubtitle(L("Symbolix_Error_InvalidIcon", "Biểu tượng ~HUD_COLOUR_REDLIGHT~không hợp lệ.~s~"));
                 return;
             }
 
-            // Lấy giá trị Scale (Size) hiện tại
             float scale = GetWorkingScale(entry.Key);
 
-            // 3. Lưu trực tiếp Icon và Scale vào PersistentManager
-            PersistentManager.SetVehicleCustomIconByKey(entry.Key, iconId, true);
-            PersistentManager.SetVehicleCustomScaleByKey(entry.Key, scale, true);
+            foreach (var targetKey in GetTargetVehicleKeys(entry.Key))
+            {
+                PersistentManager.SetVehicleCustomIconByKey(targetKey, iconId, true);
+                PersistentManager.SetVehicleCustomScaleByKey(targetKey, scale, true);
 
-            // 4. Cập nhật dữ liệu vào các danh sách bộ nhớ đệm (Cache)
-            _baselineIcons[entry.Key] = iconId;
-            _previewIcons[entry.Key] = iconId;
-            _baselineScales[entry.Key] = scale;
-            _previewScales[entry.Key] = scale;
+                _baselineIcons[targetKey] = iconId;
+                _previewIcons[targetKey] = iconId;
+                _baselineScales[targetKey] = scale;
+                _previewScales[targetKey] = scale;
+            }
 
-            // 5. Đóng toàn bộ Menu sau khi hoàn tất
             CloseAllMenus();
         }
         catch
         {
-            // Xử lý ngoại lệ nếu có lỗi xảy ra (giữ nguyên cấu trúc catch cũ)
         }
     }
 
@@ -972,35 +1173,6 @@ public class SymbolixIcons : Script
         }
     }
 
-    private void ApplyPreviewIcon(string vehicleKey, int iconId)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(vehicleKey))
-                return;
-
-            if (iconId < MIN_ICON_ID || iconId > MAX_ICON_ID)
-            {
-                ShowSubtitle(string.Format(CultureInfo.InvariantCulture, "Biểu tượng phải nằm trong ~HUD_COLOUR_DEGEN_YELLOW~khoảng {0} đến {1}~s~.", MIN_ICON_ID, MAX_ICON_ID));
-                return;
-            }
-
-            _previewIcons[vehicleKey] = iconId;
-
-            // live preview trên map/minimap
-            PersistentManager.SetVehicleCustomIconByKey(vehicleKey, iconId, false);
-
-            if (_detailMenu != null && _detailMenu.Visible)
-                BuildDetailMenuForSelectedVehicle();
-
-            if (_ownerVehiclesMenu != null && _ownerVehiclesMenu.Visible)
-                UpdateOwnerVehicleMenuLabels(GetSelectedMenuIndex(_ownerVehiclesMenu, _ownerCheckboxItems.Cast<NativeItem>()));
-        }
-        catch
-        {
-        }
-    }
-
     private void RefreshDetailMenuAfterKeyboardCommit()
     {
         try
@@ -1011,21 +1183,16 @@ public class SymbolixIcons : Script
             if (_selectedVehicleIndex < 0 || _selectedVehicleIndex >= _ownerVehicles.Count)
                 return;
 
-            // Tắt menu rồi dựng lại để ép LemonUI render lại AltTitle/label
             _detailMenuNeedsRefreshAfterKeyboardCommit = false;
 
             _detailMenu.Visible = false;
             BuildDetailMenuForSelectedVehicle();
 
-            // đảm bảo menu được bật lại ngay trong cùng trạng thái đang xem
             CloseVisibleMenusExcept(_detailMenu);
             _detailMenu.Visible = true;
 
-            Interval = MENU_VISIBLE_INTERVAL_MS;
-            _uiPool.Process();
-
-            // gọi thêm 1 lần để chắc chắn AltTitle mới được vẽ ra ngay
             UpdateDetailVehicleVisuals();
+            Interval = MENU_VISIBLE_INTERVAL_MS;
             _uiPool.Process();
         }
         catch
@@ -1071,8 +1238,11 @@ public class SymbolixIcons : Script
             _keyboardPromptTargetIndex = -1;
             _selectedVehicleKey = string.Empty;
             _selectedVehicleIndex = -1;
+            _selectedVehicleKeys.Clear();
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private void ReturnToMainMenu()
