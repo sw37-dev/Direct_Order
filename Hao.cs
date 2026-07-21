@@ -11,6 +11,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Drawing;
 
 public class Hao : Script
 {
@@ -64,6 +65,23 @@ public class Hao : Script
     private const int StreetLootMinComponentFee = 500000;
     private const int StreetLootMaxComponentFee = 1000000;
 
+    private const int HaoPreviewBlipLifetimeMs = 10000;
+    private const float HaoPreviewInteractRadius = 4f;
+
+    private static readonly Vector3[] HaoPreviewLocations = new[]
+    {
+        new Vector3(-962.8352f, -1974.9480f, 13.19158f),
+        new Vector3(-946.4146f, -1966.8780f, 13.19158f),
+        new Vector3(867.1649f, -1061.4060f, 28.93521f),
+        new Vector3(841.5558f, -1161.7150f, 25.26783f),
+        new Vector3(36.01333f, -1095.7110f, 29.48212f),
+        new Vector3(-363.0708f, -227.2436f, 37.12526f),
+        new Vector3(1137.4270f, 2653.9170f, 37.99837f),
+        new Vector3(151.0670f, 6607.6260f, 31.87792f),
+        new Vector3(2410.6560f, 5023.7310f, 46.19401f),
+        new Vector3(-3155.9820f, 1085.1210f, 20.70576f)
+    };
+
     private const string HaoMessageSoundName = "Text_Arrive_Tone";
     private const string HaoMessageSoundSet = "Phone_SoundSet_Default";
 
@@ -81,6 +99,10 @@ public class Hao : Script
 
     private iFruitContact _haoContact = null;
     private bool _haoContactAdded = false;
+
+    private bool _haoPreviewActive = false;
+    private int _haoPreviewBlipsExpireAt = 0;
+    private readonly List<Blip> _haoPreviewBlips = new List<Blip>();
 
     private enum FlowState
     {
@@ -288,6 +310,7 @@ public class Hao : Script
             }
 
             HandleDeferredUpgradeFlow();
+            HandleHaoLocationPreview();
 
             if (_haoMenu != null && _haoMenu.Visible)
             {
@@ -298,7 +321,7 @@ public class Hao : Script
             else
             {
                 UpdateLemonUiMouseState();
-                Interval = _flowState == FlowState.Idle ? 1000 : 0;
+                Interval = (_flowState == FlowState.Idle && !_haoPreviewActive) ? 1000 : 0;
             }
         }
         catch (Exception ex)
@@ -442,15 +465,8 @@ public class Hao : Script
                 return;
             }
 
-            EnsureHaoMenuCreated();
-            BuildHaoMenu();
-            ConfigureKeyboardOnlyMenu(_haoMenu);
-
-            if (_haoMenu != null)
-            {
-                _haoMenu.Visible = true;
-                Interval = 0;
-            }
+            StartHaoLocationPreview();
+            Interval = 0;
         }
         catch (Exception ex)
         {
@@ -551,6 +567,7 @@ public class Hao : Script
                     return;
                 }
 
+                CloseHaoMenu(false); // đóng ngay
                 Game.Player.Money -= _upgradeTarget.UpgradeFee;
                 StartUpgradeSequence();
             }
@@ -564,6 +581,7 @@ public class Hao : Script
         _cancelItem.Activated += (s, e) =>
         {
             CloseHaoMenu(true);
+            ClearHaoLocationPreview();
             ClearTargetState();
         };
 
@@ -715,9 +733,11 @@ public class Hao : Script
                     GTA.UI.Screen.FadeIn(FadeOutMs);
                     _flowState = FlowState.Idle;
                     ShowHaoMessage(HaoFailedTitle, HaoUpgradeFailedText);
-                    ClearTargetState();
                     return;
                 }
+
+                ClearHaoLocationPreview();
+                ClearTargetState();
 
                 // Lúc màn hình còn đang fade out, đồng hồ game đã được đẩy tới thời điểm hoàn tất.
                 GTA.UI.Screen.FadeIn(FadeOutMs);
@@ -741,6 +761,167 @@ public class Hao : Script
             try { GTA.UI.Screen.FadeIn(FadeOutMs); } catch { }
             _flowState = FlowState.Idle;
             ClearTargetState();
+        }
+    }
+
+    private void StartHaoLocationPreview()
+    {
+        try
+        {
+            ClearHaoLocationPreview();
+
+            _haoPreviewActive = true;
+            _haoPreviewBlipsExpireAt = Game.GameTime + HaoPreviewBlipLifetimeMs;
+
+            foreach (var pos in HaoPreviewLocations)
+            {
+                try
+                {
+                    var blip = World.CreateBlip(pos);
+                    if (blip == null || !blip.Exists())
+                        continue;
+
+                    blip.Sprite = BlipSprite.Standard;
+                    blip.Color = BlipColor.Yellow;
+                    blip.Scale = 0.9f;
+                    blip.IsShortRange = false;
+                    blip.Alpha = 255;
+
+                    _haoPreviewBlips.Add(blip);
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("StartHaoLocationPreview failed: " + ex);
+        }
+    }
+
+    private void HandleHaoLocationPreview()
+    {
+        try
+        {
+            if (!_haoPreviewActive)
+                return;
+
+            if (_flowState != FlowState.Idle)
+                return;
+
+            int now = Game.GameTime;
+            if (_haoPreviewBlipsExpireAt > 0 && now >= _haoPreviewBlipsExpireAt)
+            {
+                ClearHaoPreviewBlips();
+            }
+
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+                return;
+
+            Vector3 checkPos;
+            bool inVehicle = player.IsInVehicle() && player.CurrentVehicle != null && player.CurrentVehicle.Exists();
+
+            if (inVehicle)
+                checkPos = player.CurrentVehicle.Position;
+            else
+                checkPos = player.Position;
+
+            foreach (var pos in HaoPreviewLocations)
+            {
+                try
+                {
+                    World.DrawMarker(
+                        MarkerType.VerticalCylinder,
+                        pos + new Vector3(0.0f, 0.0f, -1.42f),
+                        Vector3.Zero,
+                        Vector3.Zero,
+                        new Vector3(0.85f, 0.85f, 0.85f),
+                        Color.FromArgb(180, 0, 120, 255));
+
+                    if (inVehicle && checkPos.DistanceTo(pos) <= HaoPreviewInteractRadius)
+                    {
+                        TryOpenHaoMenuFromPreview();
+                        break;
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("HandleHaoLocationPreview failed: " + ex);
+        }
+    }
+
+    private void TryOpenHaoMenuFromPreview()
+    {
+        try
+        {
+            if (_haoMenu != null && _haoMenu.Visible)
+                return;
+
+            if (_upgradeTarget == null)
+                return;
+
+            if (!ValidateCurrentUpgradeTarget())
+                return;
+
+            EnsureHaoMenuCreated();
+            BuildHaoMenu();
+            ConfigureKeyboardOnlyMenu(_haoMenu);
+
+            if (_haoMenu != null)
+            {
+                _haoMenu.Visible = true;
+                Interval = 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("TryOpenHaoMenuFromPreview failed: " + ex);
+        }
+    }
+
+    private void ClearHaoLocationPreview()
+    {
+        try
+        {
+            ClearHaoPreviewBlips();
+            _haoPreviewActive = false;
+            _haoPreviewBlipsExpireAt = 0;
+        }
+        catch
+        {
+        }
+    }
+
+    private void ClearHaoPreviewBlips()
+    {
+        try
+        {
+            for (int i = 0; i < _haoPreviewBlips.Count; i++)
+            {
+                try
+                {
+                    var blip = _haoPreviewBlips[i];
+                    if (blip != null && blip.Exists())
+                        blip.Delete();
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _haoPreviewBlips.Clear();
         }
     }
 

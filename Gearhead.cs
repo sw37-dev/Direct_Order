@@ -11,13 +11,11 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Drawing;
 
 public class Gearhead : Script
 {
     private static string L(string key, string fallback) => Language.Get(key, fallback);
-    private static string LT(string key, string fallback, params string[] tokensAndValues)
-        => Language.ReplaceTokens(Language.Get(key, fallback), tokensAndValues);
-
     private static string GearheadContactName => L("Gearhead_ContactName", "Gearhead");
     private static string GearheadMenuTitle => L("VehicleUpgrade_Title", "Upgrade Mod Kit");
     private static string GearheadMenuSubtitle => L("VehicleUpgrade_Subtitle", "CHI TIẾT NÂNG CẤP");
@@ -58,6 +56,24 @@ public class Gearhead : Script
     private const int PersistentUpgradeTimeMaxMinutes = 120;
     private const int StreetLootUpgradeTimeMinMinutes = 60;
     private const int StreetLootUpgradeTimeMaxMinutes = 90;
+
+    private const int GearheadPreviewBlipLifetimeMs = 10000;
+    private const float GearheadPreviewInteractRadius = 4f;
+
+    private static readonly Vector3[] GearheadPreviewLocations = new[]
+    {
+        new Vector3(-382.6038f, 1218.9040f, 325.6418f),
+        new Vector3(648.5650f, 590.6057f, 128.9109f),
+        new Vector3(1190.3460f, -3246.1960f, 6.028768f),
+        new Vector3(857.1020f, -2120.5760f, 30.66189f),
+        new Vector3(-723.6638f, -916.5033f, 19.0139f),
+        new Vector3(345.1430f, 3414.0490f, 36.54552f),
+        new Vector3(1465.0460f, 6556.5650f, 13.9358f)
+    };
+
+    private bool _gearheadPreviewActive = false;
+    private int _gearheadPreviewBlipsExpireAt = 0;
+    private readonly List<Blip> _gearheadPreviewBlips = new List<Blip>();
 
     private readonly Random _rng = new Random();
     private readonly ObjectPool _uiPool = new ObjectPool();
@@ -171,6 +187,7 @@ public class Gearhead : Script
         {
             if (Game.IsLoading)
             {
+                ClearGearheadLocationPreview();
                 Interval = 1000;
                 return;
             }
@@ -188,6 +205,7 @@ public class Gearhead : Script
             }
 
             HandleDeferredUpgradeFlow();
+            HandleGearheadLocationPreview();
 
             if (_gearheadMenu != null && _gearheadMenu.Visible)
             {
@@ -198,7 +216,7 @@ public class Gearhead : Script
             else
             {
                 UpdateLemonUiMouseState();
-                Interval = _flowState == FlowState.Idle ? 1000 : 0;
+                Interval = (_flowState == FlowState.Idle && !_gearheadPreviewActive) ? 1000 : 0;
             }
         }
         catch (Exception ex)
@@ -320,15 +338,8 @@ public class Gearhead : Script
             _targetVehicleName = target.VehicleName ?? L("Gearhead_DefaultVehicleName", "Phương tiện");
             _targetPlate = target.Plate ?? SafeGetPlate(veh);
 
-            EnsureGearheadMenuCreated();
-            BuildGearheadMenu();
-            ConfigureKeyboardOnlyMenu(_gearheadMenu);
-
-            if (_gearheadMenu != null)
-            {
-                _gearheadMenu.Visible = true;
-                Interval = 0;
-            }
+            StartGearheadLocationPreview();
+            Interval = 0;
         }
         catch (Exception ex)
         {
@@ -427,6 +438,7 @@ public class Gearhead : Script
                     return;
                 }
 
+                CloseGearheadMenu(false); // đóng ngay
                 Game.Player.Money -= _targetUpgradeFee;
                 StartUpgradeSequence();
             }
@@ -440,6 +452,7 @@ public class Gearhead : Script
         _cancelItem.Activated += (s, e) =>
         {
             CloseGearheadMenu(true);
+            ClearGearheadLocationPreview();
             ClearTargetState();
         };
 
@@ -579,12 +592,15 @@ public class Gearhead : Script
                     GTA.UI.Screen.FadeIn(FadeOutMs);
                     _flowState = FlowState.Idle;
                     ShowGearheadMessage(GearheadFailedTitle, GearheadUpgradeFailedText);
+                    ClearGearheadLocationPreview();
                     ClearTargetState();
                     return;
                 }
 
                 ApplyGearheadUpgradeTimeAdvance(_pendingTimeAdvanceMinutes);
                 _pendingTimeAdvanceMinutes = 0;
+
+                ClearGearheadLocationPreview();
 
                 GTA.UI.Screen.FadeIn(FadeOutMs);
                 _flowState = FlowState.WaitingFadeIn;
@@ -606,7 +622,196 @@ public class Gearhead : Script
             Log("HandleDeferredUpgradeFlow failed: " + ex);
             try { GTA.UI.Screen.FadeIn(FadeOutMs); } catch { }
             _flowState = FlowState.Idle;
+            ClearGearheadLocationPreview();
             ClearTargetState();
+        }
+    }
+
+    private void StartGearheadLocationPreview()
+    {
+        try
+        {
+            ClearGearheadLocationPreview();
+
+            _gearheadPreviewActive = true;
+            _gearheadPreviewBlipsExpireAt = Game.GameTime + GearheadPreviewBlipLifetimeMs;
+
+            foreach (var pos in GearheadPreviewLocations)
+            {
+                try
+                {
+                    var blip = World.CreateBlip(pos);
+                    if (blip == null || !blip.Exists())
+                        continue;
+
+                    blip.Sprite = BlipSprite.Standard;
+                    blip.Color = BlipColor.Pink;
+                    blip.Scale = 0.9f;
+                    blip.IsShortRange = false;
+                    blip.Alpha = 255;
+
+                    _gearheadPreviewBlips.Add(blip);
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("StartGearheadLocationPreview failed: " + ex);
+        }
+    }
+
+    private void HandleGearheadLocationPreview()
+    {
+        try
+        {
+            if (!_gearheadPreviewActive)
+                return;
+
+            if (_flowState != FlowState.Idle)
+                return;
+
+            int now = Game.GameTime;
+            if (_gearheadPreviewBlipsExpireAt > 0 && now >= _gearheadPreviewBlipsExpireAt)
+            {
+                ClearGearheadPreviewBlips();
+            }
+
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+                return;
+
+            if (!player.IsInVehicle() || player.CurrentVehicle == null || !player.CurrentVehicle.Exists())
+                return;
+
+            Vehicle veh = player.CurrentVehicle;
+            Vector3 vehPos = veh.Position;
+
+            foreach (var pos in GearheadPreviewLocations)
+            {
+                try
+                {
+                    World.DrawMarker(
+                        MarkerType.VerticalCylinder,
+                        pos + new Vector3(0.0f, 0.0f, -1.42f),
+                        Vector3.Zero,
+                        Vector3.Zero,
+                        new Vector3(0.85f, 0.85f, 0.85f),
+                        Color.FromArgb(220, 255, 20, 147));
+
+                    if (vehPos.DistanceTo(pos) <= GearheadPreviewInteractRadius)
+                    {
+                        TryOpenGearheadMenuFromPreview();
+                        break;
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("HandleGearheadLocationPreview failed: " + ex);
+        }
+    }
+
+    private void TryOpenGearheadMenuFromPreview()
+    {
+        try
+        {
+            if (_gearheadMenu != null && _gearheadMenu.Visible)
+                return;
+
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists() || !player.IsInVehicle())
+                return;
+
+            Vehicle veh = player.CurrentVehicle;
+            if (veh == null || !veh.Exists())
+                return;
+
+            _lastRejectMessage = null;
+
+            if (!TryResolveUpgradeTarget(veh, out UpgradeTarget target))
+            {
+                if (!string.IsNullOrWhiteSpace(_lastRejectMessage))
+                {
+                    ShowGearheadMessage(GearheadFailedTitle, _lastRejectMessage);
+                    _lastRejectMessage = null;
+                }
+                else
+                {
+                    ShowGearheadMessage(GearheadFailedTitle, GearheadMenuFailureBody);
+                }
+                return;
+            }
+
+            _targetVehicle = target.Vehicle;
+            _targetRecord = target.Record;
+            _targetOwnerHash = target.Record != null ? target.Record.OwnerModelHash : 0;
+            _targetPurchasePrice = Math.Max(0, target.PurchasePrice);
+            _targetUpgradeFee = Math.Max(0, target.UpgradeFee);
+            _targetFeePercent = Math.Max(0, target.FeePercent);
+            _targetCustomerName = target.CustomerName ?? GetCurrentCharacterDisplayName();
+            _targetVehicleName = target.VehicleName ?? L("Gearhead_DefaultVehicleName", "Phương tiện");
+            _targetPlate = target.Plate ?? SafeGetPlate(veh);
+
+            EnsureGearheadMenuCreated();
+            BuildGearheadMenu();
+            ConfigureKeyboardOnlyMenu(_gearheadMenu);
+
+            if (_gearheadMenu != null)
+            {
+                _gearheadMenu.Visible = true;
+                Interval = 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("TryOpenGearheadMenuFromPreview failed: " + ex);
+        }
+    }
+
+    private void ClearGearheadLocationPreview()
+    {
+        try
+        {
+            ClearGearheadPreviewBlips();
+        }
+        catch
+        {
+        }
+
+        _gearheadPreviewActive = false;
+        _gearheadPreviewBlipsExpireAt = 0;
+    }
+
+    private void ClearGearheadPreviewBlips()
+    {
+        try
+        {
+            for (int i = 0; i < _gearheadPreviewBlips.Count; i++)
+            {
+                try
+                {
+                    var blip = _gearheadPreviewBlips[i];
+                    if (blip != null && blip.Exists())
+                        blip.Delete();
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _gearheadPreviewBlips.Clear();
         }
     }
 

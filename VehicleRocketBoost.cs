@@ -9,11 +9,11 @@ using GTAControl = GTA.Control;
 public class RaceBoostOnHorn : Script
 {
     // ===== TUNING =====
-    private const float BoostAccelPerSecond = 45.0f;
-    private const float MaxForwardSpeed = 58.0f;
+    private const float BoostAccelPerSecond = 48.0f;
+    private const float MaxForwardSpeed = 60.0f;
     private const int BoostHoldMs = 1500;
     private const int BoostFadeMs = 900;
-    private const int CooldownMs = 6000;
+    private const int CooldownMs = 5000;
     private const int MinApplyIntervalMs = 15;
 
     // ===== STATE =====
@@ -38,7 +38,6 @@ public class RaceBoostOnHorn : Script
 
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
-        // Đổi sang F7
         if (e.KeyCode != Keys.F7)
             return;
 

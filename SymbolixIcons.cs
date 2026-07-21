@@ -22,6 +22,8 @@ public class SymbolixIcons : Script
 
     private const int MIN_ICON_ID = 0;
     private const int MAX_ICON_ID = 957;
+    private const int MIN_COLOR_ID = 0;
+    private const int MAX_COLOR_ID = 85;
     private const int CONTACT_DIAL_TIMEOUT_MS = 2000;
     private const int MENU_IDLE_INTERVAL_MS = 500;
     private const int MENU_VISIBLE_INTERVAL_MS = 0;
@@ -37,6 +39,11 @@ public class SymbolixIcons : Script
         "GTA V Mods", "PersistentManager");
 
     private static readonly string VehiclesFile = Path.Combine(DataFolder, "persistent_vehicles.txt");
+
+    private readonly Dictionary<string, int?> _baselineColors = new Dictionary<string, int?>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int?> _previewColors = new Dictionary<string, int?>(StringComparer.OrdinalIgnoreCase);
+
+    private NativeItem _detailColorItem;
 
     private readonly ObjectPool _uiPool = new ObjectPool();
     private NativeMenu _mainMenu;
@@ -163,6 +170,13 @@ public class SymbolixIcons : Script
                     else if (e.KeyCode == Keys.Enter) BeginEditingSelectedVehicleScale();
                     else if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Escape) CancelDetailAndReturn();
                 }
+                else if (selectedIndex == 2)
+                {
+                    if (e.KeyCode == Keys.Left) AdjustSelectedVehicleColor(-1);
+                    else if (e.KeyCode == Keys.Right) AdjustSelectedVehicleColor(+1);
+                    else if (e.KeyCode == Keys.Enter) BeginEditingSelectedVehicleColor();
+                    else if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Escape) CancelDetailAndReturn();
+                }
                 else if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Escape)
                 {
                     CancelDetailAndReturn();
@@ -186,6 +200,124 @@ public class SymbolixIcons : Script
         catch
         {
             // Xử lý ngoại lệ nếu cần thiết
+        }
+    }
+
+    private static string FormatColorId(int colorId)
+    {
+        return colorId.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private int GetWorkingColorId(string vehicleKey)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(vehicleKey))
+                return -1;
+
+            if (_previewColors.TryGetValue(vehicleKey, out int? preview) && preview.HasValue)
+                return preview.Value;
+
+            int persisted = PersistentManager.GetVehicleEffectiveColorByKey(vehicleKey);
+            return persisted >= 0 ? persisted : -1;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    private void BeginEditingSelectedVehicleColor()
+    {
+        try
+        {
+            if (_selectedVehicleIndex < 0 || _selectedVehicleIndex >= _ownerVehicles.Count)
+                return;
+
+            var entry = _ownerVehicles[_selectedVehicleIndex];
+            int currentColor = GetWorkingColorId(entry.Key);
+            if (currentColor < 0)
+                currentColor = 0;
+
+            StartKeyboardPrompt(
+                entry.Key,
+                currentColor.ToString(CultureInfo.InvariantCulture),
+                _selectedVehicleIndex,
+                isScalePrompt: false
+            );
+        }
+        catch
+        {
+            // Thực thi khi có lỗi (bỏ trống theo code gốc)
+        }
+    }
+
+    private void AdjustSelectedVehicleColor(int delta)
+    {
+        try
+        {
+            if (!IsDetailMenuVisible())
+                return;
+
+            if (_selectedVehicleIndex < 0 || _selectedVehicleIndex >= _ownerVehicles.Count)
+                return;
+
+            var entry = _ownerVehicles[_selectedVehicleIndex];
+            int currentColor = GetWorkingColorId(entry.Key);
+            if (currentColor < 0)
+                currentColor = 0;
+
+            int newColor = currentColor + delta;
+            if (newColor < MIN_COLOR_ID)
+                newColor = MIN_COLOR_ID;
+            if (newColor > MAX_COLOR_ID)
+                newColor = MAX_COLOR_ID;
+
+            CommitDraftColor(entry.Key, newColor, previewOnly: true, refreshMenu: false);
+            UpdateDetailVehicleVisuals();
+        }
+        catch
+        {
+            // Thực thi khi có lỗi (bỏ trống theo code gốc)
+        }
+    }
+
+    private void CommitDraftColor(string vehicleKey, int colorId, bool previewOnly, bool refreshMenu = false)
+    {
+        try
+        {
+            if (colorId < MIN_COLOR_ID || colorId > MAX_COLOR_ID)
+                return;
+
+            foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+            {
+                _previewColors[targetKey] = colorId;
+                PersistentManager.SetVehicleCustomColorByKey(targetKey, colorId, false);
+            }
+
+            if (!previewOnly)
+            {
+                foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+                {
+                    _baselineColors[targetKey] = colorId;
+                    _previewColors[targetKey] = colorId;
+                    PersistentManager.SetVehicleCustomColorByKey(targetKey, colorId, true);
+                }
+
+                foreach (var targetKey in GetTargetVehicleKeys(vehicleKey))
+                {
+                    PersistentManager.SetVehicleCustomColorByKey(targetKey, colorId, false);
+                }
+            }
+
+            if (refreshMenu)
+                _detailMenuNeedsRefreshAfterKeyboardCommit = true;
+
+            ForceDetailPreviewRefresh(vehicleKey);
+        }
+        catch
+        {
+            // Thực thi khi có lỗi (bỏ trống theo code gốc)
         }
     }
 
@@ -329,6 +461,10 @@ public class SymbolixIcons : Script
             _baselineScales.Clear();
             _previewScales.Clear();
 
+            // Thêm phần clear danh sách màu sắc baseline và preview
+            _baselineColors.Clear();
+            _previewColors.Clear();
+
             foreach (var v in _ownerVehicles)
             {
                 int? savedIcon = PersistentManager.GetPersistedVehicleIconByKey(v.Key);
@@ -339,6 +475,12 @@ public class SymbolixIcons : Script
 
                 _baselineScales[v.Key] = savedScale;
                 _previewScales[v.Key] = savedScale;
+
+                // Thêm phần lấy và lưu thông tin màu sắc đã lưu
+                int? savedColor = PersistentManager.GetPersistedVehicleColorByKey(v.Key);
+
+                _baselineColors[v.Key] = savedColor;
+                _previewColors[v.Key] = savedColor;
             }
 
             EnsureMainMenuCreated();
@@ -726,7 +868,6 @@ public class SymbolixIcons : Script
             float currentScale = GetWorkingScale(entry.Key);
 
             // 3. Khởi tạo mục chỉnh sửa Biểu tượng
-            // Giữ lại BuildDetailVehicleLabel(entry.DisplayName) từ hàm gốc để đảm bảo hiển thị đúng tên phương tiện
             _detailVehicleItem = new NativeItem(BuildDetailVehicleLabel(entry.DisplayName));
             _detailVehicleItem.AltTitle = string.Format(CultureInfo.InvariantCulture, "\u2190 {0} \u2192", currentIcon);
             _detailVehicleItem.Activated += (s, e) => BeginEditingSelectedVehicleIcon();
@@ -737,9 +878,15 @@ public class SymbolixIcons : Script
             _detailSizeItem.AltTitle = string.Format(CultureInfo.InvariantCulture, "\u2190 {0} \u2192", FormatScale(currentScale));
             _detailSizeItem.Activated += (s, e) => BeginEditingSelectedVehicleScale();
 
-            // 5. Khởi tạo các nút Xác nhận và Quay lại
+            // 4.5. Khởi tạo mục chỉnh sửa Màu sắc (Thêm mới sau _detailSizeItem)
+            _detailColorItem = new NativeItem(
+                L("Symbolix_Detail_ColorLabel", "Màu sắc"));
+            _detailColorItem.AltTitle = string.Format(CultureInfo.InvariantCulture, "\u2190 {0} \u2192", FormatColorId(GetWorkingColorId(entry.Key)));
+            _detailColorItem.Activated += (s, e) => BeginEditingSelectedVehicleColor();
+
+            // 5. Khởi tạo các nút Xác nhận và Quay lại (Đã cập nhật)
             var confirm = new NativeItem(
-                 L("Symbolix_Detail_Confirm", "Xác nhận biểu tượng và kích thước"));
+                L("Symbolix_Detail_Confirm", "Xác nhận biểu tượng, kích thước và màu sắc"));
             confirm.Activated += (s, e) => ConfirmSelectedVehicleIcon();
 
             var back = new NativeItem(
@@ -749,6 +896,7 @@ public class SymbolixIcons : Script
             // 6. Thêm các mục vào Menu giao diện (_detailMenu)
             _detailMenu.Add(_detailVehicleItem);
             _detailMenu.Add(_detailSizeItem);
+            _detailMenu.Add(_detailColorItem);
             _detailMenu.Add(confirm);
             _detailMenu.Add(back);
 
@@ -757,6 +905,7 @@ public class SymbolixIcons : Script
             {
                 _detailItems.Add(_detailVehicleItem);
                 _detailItems.Add(_detailSizeItem);
+                _detailItems.Add(_detailColorItem);
                 _detailItems.Add(confirm);
                 _detailItems.Add(back);
             }
@@ -1140,8 +1289,12 @@ public class SymbolixIcons : Script
 
             float scale = GetWorkingScale(entry.Key);
 
+            // Đọc và lưu màu hiện tại của phương tiện được chọn
+            int colorId = GetWorkingColorId(entry.Key);
+
             foreach (var targetKey in GetTargetVehicleKeys(entry.Key))
             {
+                // --- Xử lý Icon và Scale ---
                 PersistentManager.SetVehicleCustomIconByKey(targetKey, iconId, true);
                 PersistentManager.SetVehicleCustomScaleByKey(targetKey, scale, true);
 
@@ -1149,12 +1302,24 @@ public class SymbolixIcons : Script
                 _previewIcons[targetKey] = iconId;
                 _baselineScales[targetKey] = scale;
                 _previewScales[targetKey] = scale;
+
+                // --- Xử lý Màu sắc (Color) ---
+                // Lưu màu vào dữ liệu cấu hình (true)
+                PersistentManager.SetVehicleCustomColorByKey(targetKey, colorId, true);
+
+                // Sync preview ngay sau khi lưu (false)
+                PersistentManager.SetVehicleCustomColorByKey(targetKey, colorId, false);
+
+                // Cập nhật vào bộ nhớ tạm cache
+                _baselineColors[targetKey] = colorId;
+                _previewColors[targetKey] = colorId;
             }
 
             CloseAllMenus();
         }
         catch
         {
+            // Bạn có thể cân nhắc log lỗi ở đây nếu cần thiết trong quá trình debug
         }
     }
 
@@ -1216,9 +1381,17 @@ public class SymbolixIcons : Script
                 PersistentManager.ClearVehiclePreviewScaleByKey(kv.Key);
                 _previewScales[kv.Key] = kv.Value;
             }
+
+            // Đoạn mã mới được thêm vào theo hướng dẫn
+            foreach (var kv in _baselineColors)
+            {
+                PersistentManager.ClearVehiclePreviewColorByKey(kv.Key);
+                _previewColors[kv.Key] = kv.Value;
+            }
         }
         catch
         {
+            // Xử lý ngoại lệ nếu có (hiện tại đang để trống theo code gốc)
         }
     }
 
@@ -1307,6 +1480,8 @@ public class SymbolixIcons : Script
     {
         try
         {
+            // Kiểm tra thêm điều kiện _detailColorItem để đảm bảo an toàn nếu cần, 
+            // hoặc giữ nguyên các điều kiện cũ tùy thuộc vào cấu trúc khởi tạo của bạn.
             if (_detailMenu == null || _detailVehicleItem == null || _detailSizeItem == null)
                 return;
 
@@ -1317,14 +1492,24 @@ public class SymbolixIcons : Script
             int currentIcon = GetWorkingIconId(entry.Key);
             float currentScale = GetWorkingScale(entry.Key);
 
+            // Cập nhật nhãn và giá trị cho Biểu tượng (Icon)
             SetMenuItemLabel(_detailVehicleItem, L("Symbolix_Detail_IconLabel", "Biểu tượng"));
             _detailVehicleItem.AltTitle = string.Format(CultureInfo.InvariantCulture, "\u2190 {0} \u2192", currentIcon);
 
-            SetMenuItemLabel(_detailSizeItem, L("Symbolix_Detail_SizeLabel", "Kích thước"));
+            // Cập nhật nhãn và giá trị cho Kích thước (Size)
+            SetMenuItemLabel(_detailSizeItem, L("Symbolix_Detail_SizeLabel", "Kích thước biểu tượng"));
             _detailSizeItem.AltTitle = string.Format(CultureInfo.InvariantCulture, "\u2190 {0} \u2192", FormatScale(currentScale));
+
+            // Cập nhật nhãn và giá trị cho Màu sắc (Color) theo hướng dẫn mới
+            if (_detailColorItem != null)
+            {
+                SetMenuItemLabel(_detailColorItem, L("Symbolix_Detail_ColorLabel", "Màu sắc biểu tượng"));
+                _detailColorItem.AltTitle = string.Format(CultureInfo.InvariantCulture, "\u2190 {0} \u2192", FormatColorId(GetWorkingColorId(entry.Key)));
+            }
         }
         catch
         {
+            // Catch block trống như hàm gốc của bạn để tránh crash ứng dụng khi có lỗi xảy ra
         }
     }
 

@@ -130,8 +130,6 @@ public partial class FleecaBankLoanScript : Script
         try
         {
             // Giữ lại mode dịch vụ hiện tại (Loan / Savings) trong lúc respawn NPC.
-            // Nếu gọi DespawnBankerNpc() kiểu cũ ở đây thì nó sẽ reset mode về None,
-            // làm prompt + Enter luôn rơi về logic vay tiền.
             FleecaServiceMode serviceMode = _activeBankerServiceMode;
             DespawnBankerNpc(false);
             _activeBankerServiceMode = serviceMode;

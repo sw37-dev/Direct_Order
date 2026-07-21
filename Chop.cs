@@ -793,9 +793,7 @@ public class Chop : Script
                 return list;
             }
         }
-        catch
-        {
-        }
+        catch { }
 
         return null;
     }

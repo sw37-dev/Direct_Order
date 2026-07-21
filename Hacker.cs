@@ -2800,6 +2800,8 @@ internal static class CityBlackoutHackerState
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+
             Function.Call(Hash.BEGIN_TEXT_COMMAND_THEFEED_POST, "STRING");
             Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, T("CityBlackout_BankUnlockedBody", "Ngân hàng đã mở khóa lại giao dịch của anh rồi!"));
 
@@ -2823,6 +2825,8 @@ internal static class CityBlackoutHackerState
     {
         try
         {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+
             Notification.Show(
                 NotificationIcon.BankFleeca,
                 "Fleeca Bank",
@@ -2832,6 +2836,22 @@ internal static class CityBlackoutHackerState
         catch
         {
             try { GTA.UI.Screen.ShowSubtitle(T("CityBlackout_FleecaUnlockedFallback", "Fleeca Bank: Ngân hàng đã mở khóa lại giao dịch của anh rồi!"), 3000); } catch { }
+        }
+    }
+
+    private static void PlayFrontendSound(string soundName, string soundSet)
+    {
+        try
+        {
+            Audio.PlaySoundFrontend(soundName, soundSet);
+        }
+        catch
+        {
+            try
+            {
+                Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
+            }
+            catch { }
         }
     }
 

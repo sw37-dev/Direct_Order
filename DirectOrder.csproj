@@ -58,7 +58,7 @@
     </Reference>
     <Reference Include="ScriptHookVDotNet3, Version=3.7.0.105, Culture=neutral, processorArchitecture=AMD64">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\iFruitAddon2 v3.1.1 (fix)\bin\x64\Release\ScriptHookVDotNet3.dll</HintPath>
+      <HintPath>..\..\ScriptHookVDotNet-v3.7.0-nightly.176\ScriptHookVDotNet3.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
@@ -79,7 +79,11 @@
     <Compile Include="Banker.cs" />
     <Compile Include="Benefactor.cs" />
     <Compile Include="Chop.cs" />
+    <Compile Include="Collateral.cs" />
     <Compile Include="CreditDefaultSwap.cs" />
+    <Compile Include="Distance.cs" />
+    <Compile Include="Navigation.cs" />
+    <Compile Include="PlayerIcon.cs" />
     <Compile Include="SymbolixIcons.cs" />
     <Compile Include="Davey.cs" />
     <Compile Include="DevinWeston.cs" />

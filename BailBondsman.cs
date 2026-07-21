@@ -1097,9 +1097,7 @@ public class SentenceReduction : Script
             {
                 Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, soundName, soundSet, true);
             }
-            catch
-            {
-            }
+            catch { }
         }
     }
 

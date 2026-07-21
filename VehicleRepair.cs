@@ -17,8 +17,6 @@ public class AutoRepairCtrlZ : Script
     private readonly int DefaultInterval = 1700; // ms khi không hiển thị help-box
     private readonly int HelpDurationMs = 15000; // 15 giây
 
-    private const int REPAIR_CALL_DURATION_MS = 2000;
-
     // --- thêm hằng phí tối thiểu cho thay đèn ---
     private readonly int MinLightPrice = 1000;
 
@@ -29,7 +27,6 @@ public class AutoRepairCtrlZ : Script
     private readonly int HelpBoxCooldownMs = 8000;
     private int _helpBoxCooldownExpiry = 0;
 
-    private const string ES = "~INPUT_FRONTEND_CANCEL~";   // Esc
     private const string E = "~INPUT_FRONTEND_ACCEPT~";   // Enter
     private const string L = "~INPUT_FRONTEND_LEFT~";   // ICON_LEFT
 
@@ -223,6 +220,35 @@ public class AutoRepairCtrlZ : Script
         {
             ShowFeedMessage("LS Customs", "Lỗi", "AutoRepairCtrlZ Tick error: " + ex.Message);
             CloseHelpBox();
+        }
+    }
+
+    private double GetRepairBasePriceForVehicle(Vehicle v)
+    {
+        if (v == null || !v.Exists())
+            return 550.0;
+
+        int vehicleClass = Function.Call<int>(Hash.GET_VEHICLE_CLASS, v.Handle);
+
+        switch (vehicleClass)
+        {
+            case 7:  // Super
+                return 1543.2;
+            case 8:
+                return 999.0;
+            case 9:
+                return 888.0;
+            case 13:
+                return 400.0;
+            case 14:
+                return 1111.0;
+            case 15:
+            case 16:
+                return 1345.0;
+            case 19:
+                return 1600.0;
+            default:
+                return 550.0;
         }
     }
 
@@ -691,8 +717,9 @@ public class AutoRepairCtrlZ : Script
             dmgprc = (int)Math.Round(percent);
             damageSnapshotPrc = dmgprc;
 
-            // giá sửa
-            double rawPrice = dmgprc * 1543.2;
+            // giá sửa theo class xe, rồi nhân với % hư hỏng
+            double basePrice = GetRepairBasePriceForVehicle(targetVehicle);
+            double rawPrice = basePrice * dmgprc;
             rePr = (int)Math.Round(rawPrice);
 
             StartHelpStage(1);

@@ -39,6 +39,8 @@ public partial class PersistentManager : Script
 
     private const int MIN_CUSTOM_ICON_ID = 0;
     private const int MAX_CUSTOM_ICON_ID = 957;
+    private const int MIN_CUSTOM_BLIP_COLOR_ID = 0;
+    private const int MAX_CUSTOM_BLIP_COLOR_ID = 85;
 
     private const float MIN_CUSTOM_BLIP_SCALE = 0.50f;
     private const float MAX_CUSTOM_BLIP_SCALE = 2.00f;
@@ -69,7 +71,7 @@ public partial class PersistentManager : Script
     private const bool ENABLE_LOG = false;
     private static string MMI_CONTACT_NAME => L("MMI_ContactName", "Mors Mutual Insurance");
     private const int MMI_CALL_DURATION_MS = 2000;
-    
+
     private static bool _mmiRestorePending = false;
     private static int _mmiRestoreDueTime = 0;
     private bool _mmiContactAdded = false;
@@ -2469,8 +2471,12 @@ public partial class PersistentManager : Script
                         ? v.CustomBlipScale.Value.ToString(CultureInfo.InvariantCulture)
                         : "";
 
+                    string customColorStr = v.CustomBlipColorId.HasValue
+                        ? v.CustomBlipColorId.Value.ToString(CultureInfo.InvariantCulture)
+                        : "";
+
                     return string.Format(CultureInfo.InvariantCulture,
-                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}|{21}|{22}|{23}|{24}|{25}",
+                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}|{21}|{22}|{23}|{24}|{25}|{26}",
                         modelString,
                         v.Position.X, v.Position.Y, v.Position.Z,
                         v.Heading,
@@ -2494,7 +2500,8 @@ public partial class PersistentManager : Script
                         haoBranchStr,
                         haoAppliedStr,
                         customIconStr,
-                        customScaleStr
+                        customScaleStr,
+                        customColorStr
                     );
                 }).ToArray();
             }
@@ -2507,7 +2514,6 @@ public partial class PersistentManager : Script
             Log("SaveDestroyedVehiclesFileInternal failed: " + ex.ToString());
         }
     }
-
     private bool TryParsePersistentVehicleLine(string line, out PersistentVehicle vehicle)
     {
         vehicle = null;
@@ -2607,13 +2613,13 @@ public partial class PersistentManager : Script
             int? dashColor = null;
             bool collateralLocked = false;
 
-            // Thêm theo hướng dẫn của bạn
             int? haoUpgradeBranch = null;
             bool haoUpgradeApplied = false;
 
-            // Khởi tạo biến customIconId và customScale
             int? customIconId = null;
             float? customScale = null;
+
+            int? customColorId = null;
 
             try
             {
@@ -2670,7 +2676,6 @@ public partial class PersistentManager : Script
                         collateralLocked = tmp != 0;
                 }
 
-                // Thêm xử lý phân tách chuỗi cho các trường mới nằm trong khối try-catch
                 if (p.Length > 22 && !string.IsNullOrWhiteSpace(p[22]))
                 {
                     int tmp;
@@ -2685,7 +2690,6 @@ public partial class PersistentManager : Script
                         haoUpgradeApplied = tmp != 0;
                 }
 
-                // Thêm xử lý cho customIconId từ mảng p[24]
                 if (p.Length > 24 && !string.IsNullOrWhiteSpace(p[24]))
                 {
                     int tmp;
@@ -2693,12 +2697,18 @@ public partial class PersistentManager : Script
                         customIconId = tmp;
                 }
 
-                // Thêm logic xử lý customScale từ mảng p[25]
                 if (p.Length > 25 && !string.IsNullOrWhiteSpace(p[25]))
                 {
                     float tmp;
                     if (float.TryParse(p[25], NumberStyles.Float, CultureInfo.InvariantCulture, out tmp))
                         customScale = NormalizeCustomBlipScale(tmp);
+                }
+
+                if (p.Length > 26 && !string.IsNullOrWhiteSpace(p[26]))
+                {
+                    int tmp;
+                    if (int.TryParse(p[26], out tmp))
+                        customColorId = NormalizeCustomBlipColorId(tmp);
                 }
             }
             catch { }
@@ -2729,15 +2739,16 @@ public partial class PersistentManager : Script
                 DashboardColor = dashColor,
                 IsCollateralLocked = collateralLocked,
 
-                // Thêm gán thuộc tính vào Object Initializer
                 HaoUpgradeBranch = haoUpgradeBranch,
                 HaoUpgradeApplied = haoUpgradeApplied,
 
-                // Cập nhật đầy đủ theo yêu cầu mới
                 CustomIconId = customIconId,
                 PreviewIconId = null,
                 CustomBlipScale = customScale,
                 PreviewBlipScale = null,
+
+                CustomBlipColorId = customColorId,
+                PreviewBlipColorId = null,
             };
 
             return true;
@@ -2930,7 +2941,6 @@ public partial class PersistentManager : Script
                     }
                     catch { }
                 }
-
                 // Extras: if we have saved extras list, enable those extras; else fallback to enabling all existing extras
                 try
                 {
@@ -3092,7 +3102,6 @@ public partial class PersistentManager : Script
     private static BlipColor GetBlipColorForCharacter(int modelHash)
     {
         uint hash = (uint)modelHash;
-
         if (hash == (uint)PedHash.Michael) return BlipColor.Blue;
         if (hash == (uint)PedHash.Franklin) return BlipColor.Green;
         if (hash == (uint)PedHash.Trevor) return BlipColor.Orange;
@@ -3135,10 +3144,17 @@ public partial class PersistentManager : Script
     {
         try
         {
-            if (pv != null && pv.IsCollateralLocked)
+            if (pv == null)
+                return BlipColor.White;
+
+            if (pv.IsCollateralLocked)
                 return BlipColor.Red;
 
-            return GetBlipColorForCharacter(pv != null ? pv.OwnerModelHash : 0);
+            int? customColor = GetEffectiveVehicleColorId(pv);
+            if (customColor.HasValue)
+                return (BlipColor)customColor.Value;
+
+            return GetBlipColorForCharacter(pv.OwnerModelHash);
         }
         catch
         {
@@ -3190,7 +3206,7 @@ public partial class PersistentManager : Script
                         pv.MapBlip.Scale = ResolveVehicleBlipScale(pv);
                         pv.MapBlip.Color = color;
                         try { pv.MapBlip.Position = pv.RuntimeVehicle.Position; } catch { }
-                        pv.MapBlip.Name = color == BlipColor.Red
+                        pv.MapBlip.Name = color == BlipColor.Red 
                             ? L("PM_VehicleSeizedBlip", "Phương tiện bị niêm phong")
                             : L("PM_VehicleNearbyBlip", "Phương tiện đang ở gần");
                     }
@@ -3274,7 +3290,6 @@ public partial class PersistentManager : Script
             }
         }
         catch { }
-
         return BlipSprite.PersonalVehicleCar;
     }
 
@@ -3438,8 +3453,12 @@ public partial class PersistentManager : Script
                         ? v.CustomBlipScale.Value.ToString(CultureInfo.InvariantCulture)
                         : "";
 
+                    string customColorStr = v.CustomBlipColorId.HasValue
+                        ? v.CustomBlipColorId.Value.ToString(CultureInfo.InvariantCulture)
+                        : "";
+
                     return string.Format(CultureInfo.InvariantCulture,
-                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}|{21}|{22}|{23}|{24}|{25}",
+                        "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}|{19}|{20}|{21}|{22}|{23}|{24}|{25}|{26}",
                         modelString,
                         v.Position.X, v.Position.Y, v.Position.Z,
                         v.Heading,
@@ -3463,7 +3482,8 @@ public partial class PersistentManager : Script
                         haoBranchStr,
                         haoAppliedStr,
                         customIconStr,
-                        customScaleStr
+                        customScaleStr,
+                        customColorStr
                     );
                 }).ToArray();
             }
@@ -3611,7 +3631,6 @@ public partial class PersistentManager : Script
                     int purchasePrice = 0;
                     if (p.Length > 10) int.TryParse(p[10], out purchasePrice);
 
-                    // NEW/EXTENDED FIELDS (optional)
                     int? savedLivery = null;
                     int? primary = null;
                     int? secondary = null;
@@ -3625,8 +3644,9 @@ public partial class PersistentManager : Script
                     bool collateralLocked = false;
                     int? haoUpgradeBranch = null;
                     bool haoUpgradeApplied = false;
-                    int? customIconId = null; // Khởi tạo thêm biến customIconId
-                    float? customScale = null; // Khởi tạo thêm biến customScale
+                    int? customIconId = null;
+                    float? customScale = null;
+                    int? customColorId = null;
 
                     try
                     {
@@ -3697,7 +3717,6 @@ public partial class PersistentManager : Script
                                 haoUpgradeApplied = tmp != 0;
                         }
 
-                        // Thêm logic kiểm tra p[24] cho TryLoadAll
                         if (p.Length > 24 && !string.IsNullOrWhiteSpace(p[24]))
                         {
                             int tmp;
@@ -3705,12 +3724,18 @@ public partial class PersistentManager : Script
                                 customIconId = tmp;
                         }
 
-                        // Thêm logic kiểm tra p[25] cho TryLoadAll
                         if (p.Length > 25 && !string.IsNullOrWhiteSpace(p[25]))
                         {
                             float tmp;
                             if (float.TryParse(p[25], NumberStyles.Float, CultureInfo.InvariantCulture, out tmp))
                                 customScale = NormalizeCustomBlipScale(tmp);
+                        }
+
+                        if (p.Length > 26 && !string.IsNullOrWhiteSpace(p[26]))
+                        {
+                            int tmp;
+                            if (int.TryParse(p[26], out tmp))
+                                customColorId = NormalizeCustomBlipColorId(tmp);
                         }
                     }
                     catch { /* tolerate parse errors */ }
@@ -3745,11 +3770,13 @@ public partial class PersistentManager : Script
                             HaoUpgradeBranch = haoUpgradeBranch,
                             HaoUpgradeApplied = haoUpgradeApplied,
 
-                            // Áp dụng gán thuộc tính mới đầy đủ vào Object Initializer tại TryLoadAll
                             CustomIconId = customIconId,
                             PreviewIconId = null,
                             CustomBlipScale = customScale,
                             PreviewBlipScale = null,
+
+                            CustomBlipColorId = customColorId,
+                            PreviewBlipColorId = null,
                         });
                     }
                 }
@@ -3916,7 +3943,6 @@ public partial class PersistentManager : Script
 
             if (_mmiInsuranceCharacterMenu != null) _mmiInsuranceCharacterMenu.Visible = false;
             if (_mmiDestroyedVehicleMenu != null) _mmiDestroyedVehicleMenu.Visible = false;
-
             if (_mmiInsuranceMenu != null)
             {
                 _mmiInsuranceMenu.Visible = true;
@@ -4012,6 +4038,7 @@ public partial class PersistentManager : Script
             {
                 if (_mmiStandardRestoreItem != null && _mmiStandardRestoreItem.Checked)
                 {
+                    Distance.NotifyMmiActivity();
                     RestoreForCurrentPlayer();
                 }
                 else
@@ -4286,6 +4313,258 @@ public partial class PersistentManager : Script
         return null;
     }
 
+    public static int? GetPersistedVehicleColorByKey(string vehicleKey)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(vehicleKey))
+                return null;
+
+            lock (_persistVehicles)
+            {
+                var pv = _persistVehicles.FirstOrDefault(x => string.Equals(BuildVehicleKey(x), vehicleKey, StringComparison.OrdinalIgnoreCase));
+                if (pv != null)
+                    return pv.CustomBlipColorId;
+            }
+
+            lock (_destroyedVehicles)
+            {
+                var pv = _destroyedVehicles.FirstOrDefault(x => string.Equals(BuildVehicleKey(x), vehicleKey, StringComparison.OrdinalIgnoreCase));
+                if (pv != null)
+                    return pv.CustomBlipColorId;
+            }
+        }
+        catch
+        {
+            // Thực tế nên log lỗi ở đây nếu cần thiết
+        }
+
+        return null;
+    }
+
+    public static int GetVehicleEffectiveColorByKey(string vehicleKey)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(vehicleKey))
+                return -1;
+
+            lock (_persistVehicles)
+            {
+                var pv = _persistVehicles.FirstOrDefault(x => string.Equals(BuildVehicleKey(x), vehicleKey, StringComparison.OrdinalIgnoreCase));
+                if (pv != null)
+                {
+                    int? color = GetEffectiveVehicleColorId(pv);
+                    return color.HasValue ? color.Value : -1;
+                }
+            }
+
+            lock (_destroyedVehicles)
+            {
+                var pv = _destroyedVehicles.FirstOrDefault(x => string.Equals(BuildVehicleKey(x), vehicleKey, StringComparison.OrdinalIgnoreCase));
+                if (pv != null)
+                {
+                    int? color = GetEffectiveVehicleColorId(pv);
+                    return color.HasValue ? color.Value : -1;
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return -1;
+    }
+
+    public static bool SetVehicleCustomColorByKey(string vehicleKey, int colorId, bool commit)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(vehicleKey))
+                return false;
+
+            int? normalized = null;
+            if (colorId >= MIN_CUSTOM_BLIP_COLOR_ID && colorId <= MAX_CUSTOM_BLIP_COLOR_ID)
+                normalized = colorId;
+
+            bool touched = false;
+
+            lock (_persistVehicles)
+            {
+                var pv = _persistVehicles.FirstOrDefault(x => string.Equals(BuildVehicleKey(x), vehicleKey, StringComparison.OrdinalIgnoreCase));
+                if (pv != null)
+                {
+                    if (commit)
+                    {
+                        pv.CustomBlipColorId = normalized;
+                        pv.PreviewBlipColorId = null;
+                        _vehiclesDirty = true;
+                    }
+                    else
+                    {
+                        pv.PreviewBlipColorId = normalized;
+                    }
+
+                    try
+                    {
+                        RefreshSinglePersistentVehicleBlip(pv);
+                    }
+                    catch
+                    {
+                        // Thực tế nên log lỗi ở đây nếu cần thiết
+                    }
+
+                    touched = true;
+                }
+            }
+
+            lock (_destroyedVehicles)
+            {
+                var pv = _destroyedVehicles.FirstOrDefault(x => string.Equals(BuildVehicleKey(x), vehicleKey, StringComparison.OrdinalIgnoreCase));
+                if (pv != null)
+                {
+                    if (commit)
+                    {
+                        pv.CustomBlipColorId = normalized;
+                        pv.PreviewBlipColorId = null;
+                        _destroyedVehiclesDirty = true;
+                    }
+                    else
+                    {
+                        pv.PreviewBlipColorId = normalized;
+                    }
+
+                    try
+                    {
+                        RefreshSinglePersistentVehicleBlip(pv);
+                    }
+                    catch
+                    {
+                        // Thực tế nên log lỗi ở đây nếu cần thiết
+                    }
+
+                    touched = true;
+                }
+            }
+
+            if (commit)
+            {
+                try
+                {
+                    if (_vehiclesDirty)
+                        SaveVehiclesFileInternal();
+                }
+                catch
+                {
+                    // Thực tế nên log lỗi ở đây nếu cần thiết
+                }
+
+                try
+                {
+                    if (_destroyedVehiclesDirty)
+                        SaveDestroyedVehiclesFileInternal();
+                }
+                catch
+                {
+                    // Thực tế nên log lỗi ở đây nếu cần thiết
+                }
+            }
+
+            return touched;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool ClearVehiclePreviewColorByKey(string vehicleKey)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(vehicleKey))
+                return false;
+
+            bool touched = false;
+
+            lock (_persistVehicles)
+            {
+                var pv = _persistVehicles.FirstOrDefault(x => string.Equals(BuildVehicleKey(x), vehicleKey, StringComparison.OrdinalIgnoreCase));
+                if (pv != null)
+                {
+                    pv.PreviewBlipColorId = null;
+                    try
+                    {
+                        RefreshSinglePersistentVehicleBlip(pv);
+                    }
+                    catch
+                    {
+                        // Thực tế nên log lỗi ở đây nếu cần thiết
+                    }
+
+                    touched = true;
+                }
+            }
+
+            lock (_destroyedVehicles)
+            {
+                var pv = _destroyedVehicles.FirstOrDefault(x => string.Equals(BuildVehicleKey(x), vehicleKey, StringComparison.OrdinalIgnoreCase));
+                if (pv != null)
+                {
+                    pv.PreviewBlipColorId = null;
+                    try
+                    {
+                        RefreshSinglePersistentVehicleBlip(pv);
+                    }
+                    catch
+                    {
+                        // Thực tế nên log lỗi ở đây nếu cần thiết
+                    }
+
+                    touched = true;
+                }
+            }
+
+            return touched;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int NormalizeCustomBlipColorId(int colorId)
+    {
+        if (colorId < MIN_CUSTOM_BLIP_COLOR_ID)
+            return MIN_CUSTOM_BLIP_COLOR_ID;
+
+        if (colorId > MAX_CUSTOM_BLIP_COLOR_ID)
+            return MAX_CUSTOM_BLIP_COLOR_ID;
+
+        return colorId;
+    }
+
+    private static int? GetEffectiveVehicleColorId(PersistentVehicle pv)
+    {
+        try
+        {
+            if (pv == null)
+                return null;
+
+            if (pv.PreviewBlipColorId.HasValue)
+                return NormalizeCustomBlipColorId(pv.PreviewBlipColorId.Value);
+
+            if (pv.CustomBlipColorId.HasValue)
+                return NormalizeCustomBlipColorId(pv.CustomBlipColorId.Value);
+        }
+        catch
+        {
+            // Nuốt ngoại lệ (để trống như code gốc của bạn)
+        }
+
+        return null;
+    }
+
     public static float GetVehicleEffectiveScaleByKey(string vehicleKey)
     {
         try
@@ -4520,6 +4799,8 @@ public partial class PersistentManager : Script
             PreviewIconId = null,
             CustomBlipScale = src.CustomBlipScale,
             PreviewBlipScale = null,
+            CustomBlipColorId = src.CustomBlipColorId,
+            PreviewBlipColorId = null,
 
             SavedLivery = src.SavedLivery,
             PrimaryColor = src.PrimaryColor,
@@ -4629,6 +4910,7 @@ public partial class PersistentManager : Script
             SaveVehiclesFileInternal();
             SaveDestroyedVehiclesFileInternal();
 
+            Distance.NotifyMmiActivity();
             ShowFeedMessage(
                 PM_FeedInsuranceSender,
                 PM_FeedInsuranceSubject,
@@ -4857,6 +5139,8 @@ public partial class PersistentManager : Script
         // NEW: icon state
         public int? CustomIconId;   // icon đã lưu vĩnh viễn
         public int? PreviewIconId;  // icon preview tạm thời trong menu, không lưu file
+        public int? CustomBlipColorId;
+        public int? PreviewBlipColorId;
 
         public float? CustomBlipScale;
         public float? PreviewBlipScale;
@@ -4890,6 +5174,8 @@ public partial class PersistentManager : Script
             PreviewIconId = null;
             CustomBlipScale = null;
             PreviewBlipScale = null;
+            CustomBlipColorId = null;
+            PreviewBlipColorId = null;
 
             SuppressBlipWhileOccupied = false;
         }

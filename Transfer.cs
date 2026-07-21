@@ -49,6 +49,9 @@ public class Transfer : Script
     private NativeItem _confirmItem;
     private NativeItem _cancelItem;
 
+    private NativeItem _feeItem;
+    private NativeItem _totalItem;
+
     private bool _mainMenuBuilt = false;
     private bool _menuOpen = false;
     private bool _callPending = false;
@@ -104,6 +107,23 @@ public class Transfer : Script
 
     private static readonly string TransferContactName = L("Transfer_ContactName", "Transfer");
 
+    // Thêm cùng khu vực field hiện tại
+    private static readonly object _rngLock = new object();
+    private static readonly Random _rng = new Random();
+
+    private static readonly string PendingTransferRoot = Path.Combine(DataFolder, "pending_transfers");
+
+    private int _lastObservedCharacterHash = 0;
+    private int _nextPendingTransferScanDue = 0;
+
+    private sealed class PendingTransferRecord
+    {
+        public int SenderHash;
+        public int RecipientHash;
+        public long Amount;
+        public DateTime DueAt;
+    }
+
     public Transfer()
     {
         Interval = MENU_IDLE_INTERVAL_MS;
@@ -122,6 +142,8 @@ public class Transfer : Script
             SyncStateForCurrentCharacterAndDay();
             UpdateTransferContactActiveState();
 
+            UpdatePendingTransferScanClock();
+
             if (_callPending)
             {
                 if (Game.GameTime >= _callDueGameTime)
@@ -134,6 +156,7 @@ public class Transfer : Script
             }
 
             ProcessPendingTransferNotification();
+            ProcessDuePendingTransfersForAllCharacters();
 
             if (_mainMenu != null && _mainMenu.Visible)
             {
@@ -161,6 +184,425 @@ public class Transfer : Script
             if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.Back)
             {
                 CloseTransferMenu();
+            }
+        }
+        catch { }
+    }
+
+    private static int NextRandomInt(int minInclusive, int maxExclusive)
+    {
+        lock (_rngLock)
+        {
+            return _rng.Next(minInclusive, maxExclusive);
+        }
+    }
+
+    private static DateTime GetCurrentInGameDateTime()
+    {
+        try
+        {
+            int year = Function.Call<int>(Hash.GET_CLOCK_YEAR);
+            int month = Function.Call<int>(Hash.GET_CLOCK_MONTH);
+            int day = Function.Call<int>(Hash.GET_CLOCK_DAY_OF_MONTH);
+            int hour = Function.Call<int>(Hash.GET_CLOCK_HOURS);
+            int minute = Function.Call<int>(Hash.GET_CLOCK_MINUTES);
+            int second = Function.Call<int>(Hash.GET_CLOCK_SECONDS);
+
+            if (month < 1 || month > 12)
+                month += 1;
+            if (year < 1)
+                year = 1;
+            if (month < 1)
+                month = 1;
+            if (month > 12)
+                month = 12;
+
+            int maxDay = DateTime.DaysInMonth(year, month);
+            if (day < 1)
+                day = 1;
+            if (day > maxDay)
+                day = maxDay;
+
+            if (hour < 0) hour = 0;
+            if (hour > 23) hour = 23;
+            if (minute < 0) minute = 0;
+            if (minute > 59) minute = 59;
+            if (second < 0) second = 0;
+            if (second > 59) second = 59;
+
+            return new DateTime(year, month, day, hour, minute, second, DateTimeKind.Unspecified);
+        }
+        catch
+        {
+            return DateTime.MinValue;
+        }
+    }
+
+    private static string GetPendingTransfersFilePath(int recipientHash)
+    {
+        return Path.Combine(PendingTransferRoot, $"pending_{recipientHash}.dat");
+    }
+
+    private static string FormatInGameDateTime(DateTime dt)
+    {
+        return dt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+    }
+
+    private static bool TryParseInGameDateTime(string raw, out DateTime dt)
+    {
+        return DateTime.TryParseExact(
+            raw,
+            "yyyy-MM-dd HH:mm:ss",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out dt);
+    }
+
+    private void UpdatePendingTransferScanClock()
+    {
+        try
+        {
+            int currentHash = GetCurrentCharacterHash();
+            if (currentHash != _lastObservedCharacterHash)
+            {
+                _lastObservedCharacterHash = currentHash;
+                _nextPendingTransferScanDue = Game.GameTime + 10000; // đợi 10 giây sau switch
+            }
+        }
+        catch { }
+    }
+
+    private List<PendingTransferRecord> LoadPendingTransfersForRecipient(int recipientHash)
+    {
+        try
+        {
+            Directory.CreateDirectory(PendingTransferRoot);
+            string path = GetPendingTransfersFilePath(recipientHash);
+
+            var result = new List<PendingTransferRecord>();
+            if (!File.Exists(path))
+                return result;
+
+            PendingTransferRecord current = null;
+
+            foreach (string rawLine in File.ReadAllLines(path, Encoding.UTF8))
+            {
+                string line = rawLine != null ? rawLine.Trim() : null;
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    if (current != null && current.RecipientHash == recipientHash && current.Amount > 0 && current.DueAt != DateTime.MinValue)
+                        result.Add(current);
+
+                    current = null;
+                    continue;
+                }
+
+                int idx = line.IndexOf('=');
+                if (idx <= 0)
+                    continue;
+
+                string key = line.Substring(0, idx).Trim().ToLowerInvariant();
+                string val = line.Substring(idx + 1).Trim();
+
+                if (current == null)
+                    current = new PendingTransferRecord();
+
+                switch (key)
+                {
+                    case "senderhash":
+                        int senderHash;
+                        if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out senderHash))
+                            current.SenderHash = senderHash;
+                        break;
+
+                    case "recipienthash":
+                        int rHash;
+                        if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out rHash))
+                            current.RecipientHash = rHash;
+                        break;
+
+                    case "amount":
+                        long amount;
+                        if (long.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out amount))
+                            current.Amount = Math.Max(0L, amount);
+                        break;
+
+                    case "dueat":
+                        DateTime dueAt;
+                        if (TryParseInGameDateTime(val, out dueAt))
+                            current.DueAt = dueAt;
+                        break;
+                }
+            }
+
+            if (current != null && current.RecipientHash == recipientHash && current.Amount > 0 && current.DueAt != DateTime.MinValue)
+                result.Add(current);
+
+            return result;
+        }
+        catch
+        {
+            return new List<PendingTransferRecord>();
+        }
+    }
+
+    private void SavePendingTransfersForRecipient(int recipientHash, List<PendingTransferRecord> records)
+    {
+        try
+        {
+            Directory.CreateDirectory(PendingTransferRoot);
+            string path = GetPendingTransfersFilePath(recipientHash);
+
+            if (records == null || records.Count == 0)
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+                return;
+            }
+
+            var sb = new StringBuilder();
+            foreach (var r in records)
+            {
+                if (r == null)
+                    continue;
+
+                sb.AppendLine("version=1");
+                sb.AppendLine("senderHash=" + r.SenderHash.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("recipientHash=" + r.RecipientHash.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("amount=" + r.Amount.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("dueAt=" + FormatInGameDateTime(r.DueAt));
+                sb.AppendLine();
+            }
+
+            File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
+        }
+        catch { }
+    }
+
+    private void AddPendingTransferRecord(PendingTransferRecord record)
+    {
+        try
+        {
+            if (record == null || !IsValidCharacter(record.RecipientHash) || record.Amount <= 0 || record.DueAt == DateTime.MinValue)
+                return;
+
+            var list = LoadPendingTransfersForRecipient(record.RecipientHash);
+            list.Add(record);
+            SavePendingTransfersForRecipient(record.RecipientHash, list);
+        }
+        catch { }
+    }
+
+    private static bool RollTransferDelay()
+    {
+        try
+        {
+            return NextRandomInt(0, 100) < 12;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static DateTime GetRandomDelayedDueTime()
+    {
+        // 1 tiếng đến dưới 2 tiếng
+        int totalSeconds = NextRandomInt(3600, 7200);
+        return GetCurrentInGameDateTime().AddSeconds(totalSeconds);
+    }
+
+    private TransferNotificationData GetDelayedTransferSmsData(int senderHash, int recipientHash)
+    {
+        try
+        {
+            if (senderHash == MICHAEL_HASH && recipientHash == FRANKLIN_HASH)
+            {
+                return new TransferNotificationData
+                {
+                    Icon = NotificationIcon.Franklin,
+                    Title = L("Transfer_Name_Franklin", "Franklin Clinton"),
+                    Subject = L("Transfer_MessageSubject", "Tin nhắn"),
+                    Message = L("Transfer_DelayedMessage_MichaelToFranklin",
+                    "Ngân hàng bị cái gì rồi, tôi vẫn chưa thấy tiền của ông anh chuyển qua bên tôi? Ông anh đã chuyển thật chưa đấy? Để tôi đợi một thời gian xem sao đã nha?"
+                )};
+            }
+
+            if (senderHash == TREVOR_HASH && recipientHash == FRANKLIN_HASH)
+            {
+                return new TransferNotificationData
+                {
+                    Icon = NotificationIcon.Franklin,
+                    Title = L("Transfer_Name_Franklin", "Franklin Clinton"),
+                    Subject = L("Transfer_MessageSubject", "Tin nhắn"),
+                    Message = L("Transfer_DelayedMessage_TrevorToFranklin",
+                    "Tôi vẫn chưa thấy khoản tiền đó qua bên tôi, ông anh chuyển chưa đấy, hay là ngân hàng bị lỗi rồi nhỉ?"
+                )};
+            }
+
+            if (senderHash == FRANKLIN_HASH && recipientHash == MICHAEL_HASH)
+            {
+                return new TransferNotificationData
+                {
+                    Icon = NotificationIcon.Michael,
+                    Title = L("Transfer_Name_Michael", "Michael De Santa"),
+                    Subject = L("Transfer_MessageSubject", "Tin nhắn"),
+                    Message = L("Transfer_DelayedMessage_FranklinToMichael",
+                    "Chú em chuyển tiền ảo cho anh à? Anh vẫn chưa thấy số tiền mà chú em đã chuyển, có chuyển thật chưa vậy? Để anh kiểm tra lại xem đã!!!!"
+                )};
+            }
+
+            if (senderHash == TREVOR_HASH && recipientHash == MICHAEL_HASH)
+            {
+                return new TransferNotificationData
+                {
+                    Icon = NotificationIcon.Michael,
+                    Title = L("Transfer_Name_Michael", "Michael De Santa"),
+                    Subject = L("Transfer_MessageSubject", "Tin nhắn"),
+                    Message = L("Transfer_DelayedMessage_TrevorToMichael",
+                    "Ủa T, mày chuyển tiền chưa sao tao không thấy? Chuyển gấp giúp tao nhé, tao đang cần."
+                )};
+            }
+
+            if (senderHash == FRANKLIN_HASH && recipientHash == TREVOR_HASH)
+            {
+                return new TransferNotificationData
+                {
+                    Icon = NotificationIcon.Trevor,
+                    Title = L("Transfer_Name_Trevor", "Trevor Philips"),
+                    Subject = L("Transfer_MessageSubject", "Tin nhắn"),
+                    Message = L("Transfer_DelayedMessage_FranklinToTrevor",
+                    "Chú gửi tiền qua anh rồi hả? Bên anh vẫn chưa nhận được tiền. Lạ nhỉ?"
+                )};
+            }
+
+            if (senderHash == MICHAEL_HASH && recipientHash == TREVOR_HASH)
+            {
+                return new TransferNotificationData
+                {
+                    Icon = NotificationIcon.Trevor,
+                    Title = L("Transfer_Name_Trevor", "Trevor Philips"),
+                    Subject = L("Transfer_MessageSubject", "Tin nhắn"),
+                    Message = L("Transfer_DelayedMessage_MichaelToTrevor",
+                    "Mày đang bịp tao đấy à M? Mày đã thực sự chuyển chưa? Sao tao vẫn chưa nhận được khoản tiền đó vậy?"
+                )};
+            }
+        }
+        catch { }
+
+        return null;
+    }
+
+    private void ShowNotificationNow(TransferNotificationData data)
+    {
+        if (data == null)
+            return;
+
+        try
+        {
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+            Notification.Show(data.Icon, data.Title, data.Subject, data.Message);
+        }
+        catch
+        {
+            try
+            {
+                PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+                Notification.Show(data.Title + ": " + data.Message);
+            }
+            catch
+            {
+                try
+                {
+                    PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+                    GTA.UI.Screen.ShowSubtitle(data.Title + ": " + data.Message, 5000);
+                }
+                catch { }
+            }
+        }
+    }
+
+    private void ShowDelayedTransferSms(int senderHash, int recipientHash)
+    {
+        try
+        {
+            var data = GetDelayedTransferSmsData(senderHash, recipientHash);
+            if (data == null)
+                return;
+
+            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+            Notification.Show(data.Icon, data.Title, data.Subject, data.Message);
+        }
+        catch { }
+    }
+
+    private void ProcessDuePendingTransfersForAllCharacters()
+    {
+        try
+        {
+            int currentHash = GetCurrentCharacterHash();
+            
+
+            if (Game.GameTime < _nextPendingTransferScanDue)
+                return;
+
+            _nextPendingTransferScanDue = Game.GameTime + 30000;
+
+            if (!IsValidCharacter(currentHash))
+                return;
+
+            DateTime now = GetCurrentInGameDateTime();
+            int[] allCharacters =
+            {
+                FRANKLIN_HASH,
+                MICHAEL_HASH,
+                TREVOR_HASH
+            };
+
+            foreach (int recipientHash in allCharacters)
+            {
+                try
+                {
+                    var pending = LoadPendingTransfersForRecipient(recipientHash);
+                    if (pending.Count == 0)
+                        continue;
+
+                    var due = pending
+                        .Where(p => p != null && p.DueAt != DateTime.MinValue && p.DueAt <= now)
+                        .ToList();
+
+                    if (due.Count == 0)
+                        continue;
+
+                    var remaining = pending
+                        .Where(p => p == null || p.DueAt == DateTime.MinValue || p.DueAt > now)
+                        .ToList();
+
+                    SavePendingTransfersForRecipient(recipientHash, remaining);
+
+                    foreach (var record in due)
+                    {
+                        try
+                        {
+                            long recipientCash = GetCachedCashForCharacter(record.RecipientHash);
+                            if (recipientCash <= 0L)
+                                recipientCash = GetStoryCashByCharacterHash(record.RecipientHash);
+
+                            long recipientAfter = ClampMoney(recipientCash + record.Amount);
+                            SetCachedCashForCharacter(record.RecipientHash, recipientAfter);
+
+                            // Chỉ hiện SMS "cảm ơn" khi đúng lúc đó đang đứng ở nhân vật đã gửi tiền.
+                            if (currentHash == record.SenderHash)
+                            {
+                                var notice = GetTransferNotificationData(record.SenderHash, record.RecipientHash);
+                                if (notice != null)
+                                    ShowNotificationNow(notice);
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
             }
         }
         catch { }
@@ -965,10 +1407,6 @@ public class Transfer : Script
                 _focusedTarget = FocusTarget.Recipient;
                 try { SpawnRecipientPrompt(); } catch { }
             };
-            {
-                _focusedTarget = FocusTarget.Recipient;
-                try { SpawnRecipientPrompt(); } catch { }
-            };
             _recipientItem.Activated += (s, e) =>
             {
                 _focusedTarget = FocusTarget.Recipient;
@@ -1001,6 +1439,22 @@ public class Transfer : Script
                 PromptTransferAmount();
             };
             _mainMenu.Add(_amountItem);
+
+            _feeItem = new NativeItem(LT(
+                "Transfer_FeeLine",
+                "Phí giao dịch: {fee}",
+                "{fee}", _requestedTransferValid
+                    ? "$" + ComputeTransferFee(_requestedTransferAmount).ToString("N0", CultureInfo.InvariantCulture)
+                    : "N/A"));
+            _mainMenu.Add(_feeItem);
+
+            _totalItem = new NativeItem(LT(
+                "Transfer_TotalLine",
+                "Tổng số tiền: {total}",
+                "{total}", _requestedTransferValid
+                    ? "$" + ComputeTransferTotal(_requestedTransferAmount).ToString("N0", CultureInfo.InvariantCulture)
+                    : "N/A"));
+            _mainMenu.Add(_totalItem);
 
             _confirmItem = new NativeItem(L("Transfer_Confirm", "Xác nhận chuyển tiền"));
             _confirmItem.Description = L("Transfer_ConfirmHint", "Nhấn Enter để thực hiện chuyển tiền.");
@@ -1111,6 +1565,29 @@ public class Transfer : Script
         }
     }
 
+    private static long ComputeTransferFee(long transferAmount)
+    {
+        if (transferAmount <= 0L)
+            return 0L;
+
+        long fee = (long)Math.Floor((decimal)transferAmount * 0.0005m); // 0.05%
+        if (fee < 30L)
+            fee = 30L;
+        if (fee > 5000L)
+            fee = 5000L;
+
+        return fee;
+    }
+
+    private static long ComputeTransferTotal(long transferAmount)
+    {
+        if (transferAmount <= 0L)
+            return 0L;
+
+        long fee = ComputeTransferFee(transferAmount);
+        return transferAmount + fee;
+    }
+
     private void ConfirmTransfer()
     {
         try
@@ -1149,47 +1626,70 @@ public class Transfer : Script
                 return;
             }
 
-            long finalAmount = Math.Min(_requestedTransferAmount, remaining);
-            finalAmount = Math.Min(finalAmount, currentCash);
-
-            if (finalAmount <= 0)
+            // --- KHỐI THAY THẾ MỚI ---
+            long transferAmount = Math.Min(_requestedTransferAmount, remaining);
+            if (transferAmount <= 0)
             {
                 GTA.UI.Screen.ShowSubtitle(L("Transfer_NoFunds", "~r~Không đủ tiền để chuyển."), 2500);
                 PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                 return;
             }
 
+            long transferFee = ComputeTransferFee(transferAmount);
+            long totalDeduction = ComputeTransferTotal(transferAmount);
+
             if (_requestedTransferAmount > remaining)
             {
                 GTA.UI.Screen.ShowSubtitle(LT(
                     "Transfer_ClampedToRemaining",
                     "Số tiền vượt hạn mức còn lại, hệ thống sẽ chỉ chuyển ~HUD_COLOUR_PLATFORM_GREEN~${amount}~s~.",
-                    "{amount}", finalAmount.ToString("N0", CultureInfo.InvariantCulture)), 3000);
+                    "{amount}", transferAmount.ToString("N0", CultureInfo.InvariantCulture)), 3000);
             }
 
-            if (currentCash < finalAmount)
+            if (currentCash < totalDeduction)
             {
-                GTA.UI.Screen.ShowSubtitle(L("Transfer_NotEnoughCash", "Nhân vật hiện tại ~r~không đủ tiền~s~."), 2500);
+                GTA.UI.Screen.ShowSubtitle(LT(
+                    "Transfer_NotEnoughCashWithFee",
+                    "Nhân vật hiện tại ~r~không đủ tiền~s~ để trả cả phí giao dịch.",
+                    "{amount}", totalDeduction.ToString("N0", CultureInfo.InvariantCulture)), 2500);
                 PlayFrontendSound("ERROR", "HUD_FRONTEND_DEFAULT_SOUNDSET");
                 return;
             }
 
-            // --- BẮT ĐẦU KHỐI THAY THẾ ---
-            long senderAfter = Math.Max(0L, currentCash - finalAmount);
+            bool delayed = RollTransferDelay();
 
-            long recipientCash = GetCachedCashForCharacter(recipientHash);
-            if (recipientCash <= 0L)
-                recipientCash = GetStoryCashByCharacterHash(recipientHash);
-
-            long recipientAfter = ClampMoney(recipientCash + finalAmount);
-
-            // cập nhật cả 2 bên
+            long senderAfter = Math.Max(0L, currentCash - totalDeduction);
             SetCachedCashForCharacter(currentHash, senderAfter);
-            SetCachedCashForCharacter(recipientHash, recipientAfter);
-            // --- KẾT THÚC KHỐI THAY THẾ ---
+
+            if (delayed)
+            {
+                DateTime dueAt = GetRandomDelayedDueTime();
+
+                AddPendingTransferRecord(new PendingTransferRecord
+                {
+                    SenderHash = currentHash,
+                    RecipientHash = recipientHash,
+                    Amount = transferAmount,
+                    DueAt = dueAt
+                });
+
+                ShowDelayedTransferSms(currentHash, recipientHash);
+            }
+            else
+            {
+                long recipientCash = GetCachedCashForCharacter(recipientHash);
+                if (recipientCash <= 0L)
+                    recipientCash = GetStoryCashByCharacterHash(recipientHash);
+
+                long recipientAfter = ClampMoney(recipientCash + transferAmount);
+                SetCachedCashForCharacter(recipientHash, recipientAfter);
+
+                PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
+                ScheduleTransferNotification(currentHash, recipientHash);
+            }
 
             // Update daily quota.
-            _state.TransferredToday = Math.Min(_state.MaxTransferAllowed, _state.TransferredToday + finalAmount);
+            _state.TransferredToday = Math.Min(_state.MaxTransferAllowed, _state.TransferredToday + transferAmount);
             _state.BaselineCash = Math.Max(_state.BaselineCash, currentCash);
             _state.RecipientHash = recipientHash;
             SaveStateForCurrentCharacter();
@@ -1199,10 +1699,6 @@ public class Transfer : Script
                 if (_transferContact != null)
                     _transferContact.Active = false;
             }
-
-            PlayFrontendSound("Text_Arrive_Tone", "Phone_SoundSet_Default");
-
-            ScheduleTransferNotification(currentHash, recipientHash);
 
             CloseTransferMenu();
         }
@@ -1233,8 +1729,7 @@ public class Transfer : Script
                     Icon = NotificationIcon.Michael,
                     Title = L("Transfer_Name_Michael", "Michael De Santa"),
                     Subject = L("Transfer_MessageSubject", "Tin nhắn"),
-                    Message = L(
-                        "Transfer_Message_FranklinToMichael",
+                    Message = L("Transfer_Message_FranklinToMichael",
                         "Anh nhận được tiền từ chú em rồi nhé. Cảm ơn chú em đã giúp anh! Nếu được thì anh sẽ trả lại hoặc giúp lại chú em sau nhá!")
                 };
             }
@@ -1247,8 +1742,7 @@ public class Transfer : Script
                     Icon = NotificationIcon.Trevor,
                     Title = L("Transfer_Name_Trevor", "Trevor Philips"),
                     Subject = L("Transfer_MessageSubject", "Tin nhắn"),
-                    Message = L(
-                        "Transfer_Message_FranklinToTrevor",
+                    Message = L("Transfer_Message_FranklinToTrevor",
                         "Anh thấy tiền của chú chuyển qua cho anh rồi. Cảm ơn nhiều nhé Franklin!")
                 };
             }
@@ -1261,8 +1755,7 @@ public class Transfer : Script
                     Icon = NotificationIcon.Franklin,
                     Title = L("Transfer_Name_Franklin", "Franklin Clinton"),
                     Subject = L("Transfer_MessageSubject", "Tin nhắn"),
-                    Message = L(
-                        "Transfer_Message_MichaelToFranklin",
+                    Message = L("Transfer_Message_MichaelToFranklin",
                         "Tiền ông anh chuyển qua, tui thấy thông báo ngân hàng rồi. Cảm ơn lòng tốt của ông anh nhé!")
                 };
             }
@@ -1275,8 +1768,7 @@ public class Transfer : Script
                     Icon = NotificationIcon.Trevor,
                     Title = L("Transfer_Name_Trevor", "Trevor Philips"),
                     Subject = L("Transfer_MessageSubject", "Tin nhắn"),
-                    Message = L(
-                        "Transfer_Message_MichaelToTrevor",
+                    Message = L("Transfer_Message_MichaelToTrevor",
                         "Đúng là bạn thân nhất của tao, biết giúp tao như vậy mới đúng là bạn thân của tao chứ!!!! Hahahahaha")
                 };
             }
@@ -1289,8 +1781,7 @@ public class Transfer : Script
                     Icon = NotificationIcon.Franklin,
                     Title = L("Transfer_Name_Franklin", "Franklin Clinton"),
                     Subject = L("Transfer_MessageSubject", "Tin nhắn"),
-                    Message = L(
-                        "Transfer_Message_TrevorToFranklin",
+                    Message = L("Transfer_Message_TrevorToFranklin",
                         "Tôi nhận được tiền từ tài khoản của ông anh rồi. Cảm ơn đã gửi nha Trev!!!")
                 };
             }
@@ -1303,8 +1794,7 @@ public class Transfer : Script
                     Icon = NotificationIcon.Michael,
                     Title = L("Transfer_Name_Michael", "Michael De Santa"),
                     Subject = L("Transfer_MessageSubject", "Tin nhắn"),
-                    Message = L(
-                        "Transfer_Message_TrevorToMichael",
+                    Message = L("Transfer_Message_TrevorToMichael",
                         "Thực ra tao không muốn mượn tiền gì mày đâu, nhưng tao thì ngại mượn thằng ku Frank nên mới nhờ mày một tí. Cảm ơn vì số tiền đã gửi qua nhé! Tao sẽ trả lại sau!!!")
                 };
             }
